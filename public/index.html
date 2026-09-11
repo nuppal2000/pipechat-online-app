@@ -35,6 +35,11 @@
       min-height: 100vh;
     }
 
+    body.auth-locked .app,
+    body.auth-locked .toast {
+      display: none;
+    }
+
     button, input, textarea, select {
       font: inherit;
     }
@@ -43,6 +48,83 @@
       display: grid;
       grid-template-columns: minmax(300px, 28%) minmax(520px, 1fr) minmax(320px, 28%);
       min-height: 100vh;
+    }
+
+    .auth-screen {
+      display: none;
+      min-height: 100vh;
+      place-items: center;
+      padding: 32px;
+      background: radial-gradient(circle at top left, #e7f3f6, transparent 34%), var(--bg);
+    }
+
+    body.auth-locked .auth-screen {
+      display: grid;
+    }
+
+    .auth-card {
+      width: min(440px, 100%);
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 28px;
+    }
+
+    .auth-card h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .auth-card p {
+      margin: 0 0 20px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .auth-field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .auth-field label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+
+    .auth-field input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px 12px;
+      color: var(--text);
+      background: #fff;
+    }
+
+    .auth-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .auth-message {
+      min-height: 20px;
+      margin-top: 12px;
+      color: var(--red);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .account-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
 
     .pane {
@@ -662,7 +744,30 @@
     }
   </style>
 </head>
-<body>
+<body class="auth-locked">
+  <section class="auth-screen" aria-label="PipeChat sign in">
+    <form id="authForm" class="auth-card">
+      <h1>Sign in to PipeChat</h1>
+      <p>Your CRM table, imports, manual edits, and chatbot usage are saved to your own account.</p>
+      <div id="nameField" class="auth-field" hidden>
+        <label for="authName">Name</label>
+        <input id="authName" name="name" autocomplete="name" />
+      </div>
+      <div class="auth-field">
+        <label for="authEmail">Email</label>
+        <input id="authEmail" name="email" type="email" autocomplete="email" required />
+      </div>
+      <div class="auth-field">
+        <label for="authPassword">Password</label>
+        <input id="authPassword" name="password" type="password" autocomplete="current-password" minlength="8" required />
+      </div>
+      <div class="auth-actions">
+        <button id="authSubmitBtn" class="btn primary" type="submit">Sign in</button>
+        <button id="authToggleBtn" class="btn" type="button">Create account</button>
+      </div>
+      <div id="authMessage" class="auth-message" role="status"></div>
+    </form>
+  </section>
   <div class="app">
     <aside class="pane chat-pane">
       <header class="pane-header">
@@ -670,7 +775,10 @@
           <h1>PipeChat</h1>
           <span>Conversational pipeline workspace</span>
         </div>
-        <span class="pill">Solo beta</span>
+        <div class="account-actions">
+          <span id="accountPill" class="pill">Account</span>
+          <button id="logoutBtn" class="btn" type="button">Sign out</button>
+        </div>
       </header>
 
       <section id="chatFeed" class="chat-feed" aria-live="polite"></section>
@@ -820,6 +928,8 @@
     const PIPECHAT_USAGE_ENDPOINT = window.PIPECHAT_USAGE_ENDPOINT || localStorage.getItem("pipechat_usage_endpoint") || "/api/chat-usage";
     let databaseOnline = false;
     let chatUsage = null;
+    let currentUser = null;
+    let authMode = "login";
     const ALLOWED_FIELDS = ["account", "owner", "stage", "value", "close", "next", "follow", "activity", "health"];
     const FIELD_LABELS = {
       account: "Account",
@@ -844,7 +954,86 @@
     const chatInput = document.getElementById("chatInput");
     const sendBtn = document.getElementById("sendBtn");
     const trustBody = document.getElementById("trustBody");
+    const authForm = document.getElementById("authForm");
+    const authName = document.getElementById("authName");
+    const authEmail = document.getElementById("authEmail");
+    const authPassword = document.getElementById("authPassword");
+    const authMessage = document.getElementById("authMessage");
+    const authSubmitBtn = document.getElementById("authSubmitBtn");
+    const authToggleBtn = document.getElementById("authToggleBtn");
+    const nameField = document.getElementById("nameField");
+    const accountPill = document.getElementById("accountPill");
+    const logoutBtn = document.getElementById("logoutBtn");
     document.getElementById("aiModeLabel").textContent = PIPECHAT_AI_ENDPOINT ? "connected model" : "local interpreter";
+
+    function setAuthMode(mode) {
+      authMode = mode;
+      const creating = mode === "signup";
+      nameField.hidden = !creating;
+      authSubmitBtn.textContent = creating ? "Create account" : "Sign in";
+      authToggleBtn.textContent = creating ? "I already have an account" : "Create account";
+      authPassword.autocomplete = creating ? "new-password" : "current-password";
+      authMessage.textContent = "";
+    }
+
+    function showSignedOut(message = "") {
+      currentUser = null;
+      document.body.classList.add("auth-locked");
+      accountPill.textContent = "Account";
+      authMessage.textContent = message;
+      chatFeed.innerHTML = "";
+      trustBody.innerHTML = "";
+    }
+
+    function showSignedIn(user) {
+      currentUser = user;
+      document.body.classList.remove("auth-locked");
+      accountPill.textContent = user.email;
+    }
+
+    async function requestAuth(path, body = null) {
+      const response = await fetch(path, {
+        method: body ? "POST" : "GET",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Request failed with ${response.status}`);
+      return payload;
+    }
+
+    async function startSignedInSession(user) {
+      showSignedIn(user);
+      deals.splice(0, deals.length, ...structuredClone(DEFAULT_DEALS));
+      expandedId = null;
+      pendingPlan = null;
+      lastSnapshot = null;
+      commandCount = 0;
+      activeFilter = null;
+      manualActivity = [];
+      conversationHistory = [];
+      pendingClarification = null;
+      chatUsage = null;
+      chatFeed.innerHTML = "";
+      addMessage("ai", "<strong>Today needs attention.</strong> Four follow-ups are due, three records are stale, and one account has no owner. Tell me what happened today or try a demo command.<small>Examples: bulk close dates, paste a conversation, create a missing field, or share this view with Sarah.</small>");
+      renderTrustEmpty();
+      renderAll();
+      await loadCrmDatabase();
+      await loadChatUsage();
+    }
+
+    async function checkAuth() {
+      try {
+        const payload = await requestAuth("/api/auth/me");
+        if (!payload.user) {
+          showSignedOut("");
+          return;
+        }
+        await startSignedInSession(payload.user);
+      } catch (error) {
+        showSignedOut("Please sign in to continue.");
+      }
+    }
 
     function renderChatLockState() {
       const locked = Boolean(chatUsage?.paymentRequired);
@@ -2358,6 +2547,35 @@
 
     document.getElementById("undoBtn").addEventListener("click", undoLastChange);
     document.getElementById("quickUndoBtn").addEventListener("click", undoLastChange);
+    authToggleBtn.addEventListener("click", () => {
+      setAuthMode(authMode === "login" ? "signup" : "login");
+    });
+    authForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      authMessage.textContent = "";
+      authSubmitBtn.disabled = true;
+      try {
+        const endpoint = authMode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+        const payload = await requestAuth(endpoint, {
+          name: authName.value.trim(),
+          email: authEmail.value.trim(),
+          password: authPassword.value
+        });
+        authPassword.value = "";
+        await startSignedInSession(payload.user);
+      } catch (error) {
+        authMessage.textContent = error.message;
+      } finally {
+        authSubmitBtn.disabled = false;
+      }
+    });
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        await requestAuth("/api/auth/logout", {});
+      } finally {
+        showSignedOut("Signed out.");
+      }
+    });
 
     function showSharePlan() {
       setTab("dashboard");
@@ -2499,11 +2717,8 @@
       renderActivity();
     }
 
-    addMessage("ai", "<strong>Today needs attention.</strong> Four follow-ups are due, three records are stale, and one account has no owner. Tell me what happened today or try a demo command.<small>Examples: bulk close dates, paste a conversation, create a missing field, or share this view with Sarah.</small>");
-    renderTrustEmpty();
-    renderAll();
-    loadCrmDatabase();
-    loadChatUsage();
+    setAuthMode("login");
+    checkAuth();
     rotatePlaceholder();
   </script>
 </body>
