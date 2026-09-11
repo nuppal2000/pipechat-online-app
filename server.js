@@ -1,15 +1,16 @@
 const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const PORT = Number(process.env.PORT || process.env.PIPECHAT_AI_PORT || 8787);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.PIPECHAT_MODEL || "gpt-4.1-mini";
 const DATA_DIR = process.env.PIPECHAT_DATA_DIR || path.join(__dirname, "data");
-const DATA_FILE = path.join(DATA_DIR, "pipechat-crm-data.json");
-const USAGE_FILE = path.join(DATA_DIR, "pipechat-chat-usage.json");
+const AUTH_FILE = path.join(DATA_DIR, "pipechat-auth.json");
 const FREE_CHAT_LIMIT = Number(process.env.PIPECHAT_FREE_CHAT_LIMIT || 1000);
 const STATIC_ROOT = path.join(__dirname, "public");
+const SESSION_COOKIE = "pipechat_session";
 
 const actionSchema = {
   type: "object",
@@ -206,6 +207,17 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function sendJsonWithHeaders(res, status, payload, headers = {}) {
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    ...headers
+  });
+  res.end(JSON.stringify(payload));
+}
+
 function sendText(res, status, text, contentType) {
   res.writeHead(status, {
     "Content-Type": contentType,
@@ -242,6 +254,87 @@ function extractOutputText(data) {
   return chunks.join("");
 }
 
+function userDataFile(userId, fileName) {
+  return path.join(DATA_DIR, "users", userId, fileName);
+}
+
+function getCookie(req, name) {
+  const cookie = req.headers.cookie || "";
+  for (const part of cookie.split(";")) {
+    const [rawKey, ...rawValue] = part.trim().split("=");
+    if (rawKey === name) return decodeURIComponent(rawValue.join("="));
+  }
+  return null;
+}
+
+async function readAuthStore() {
+  try {
+    const text = await fs.readFile(AUTH_FILE, "utf8");
+    const payload = JSON.parse(text);
+    return {
+      users: Array.isArray(payload.users) ? payload.users : [],
+      sessions: payload.sessions && typeof payload.sessions === "object" ? payload.sessions : {}
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") return { users: [], sessions: {} };
+    throw error;
+  }
+}
+
+async function writeAuthStore(store) {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  const tempFile = `${AUTH_FILE}.tmp`;
+  await fs.writeFile(tempFile, JSON.stringify(store, null, 2));
+  await fs.rename(tempFile, AUTH_FILE);
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name || ""
+  };
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const hash = crypto.pbkdf2Sync(password, salt, 120000, 32, "sha256").toString("hex");
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  const [salt, expectedHash] = String(stored || "").split(":");
+  if (!salt || !expectedHash) return false;
+  const actualHash = hashPassword(password, salt).split(":")[1];
+  return crypto.timingSafeEqual(Buffer.from(actualHash, "hex"), Buffer.from(expectedHash, "hex"));
+}
+
+function sessionCookie(token) {
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`;
+}
+
+function clearSessionCookie() {
+  return `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
+}
+
+async function getAuthenticatedUser(req) {
+  const token = getCookie(req, SESSION_COOKIE);
+  if (!token) return null;
+  const store = await readAuthStore();
+  const session = store.sessions[token];
+  if (!session) return null;
+  const user = store.users.find(item => item.id === session.userId);
+  return user || null;
+}
+
+async function requireUser(req, res) {
+  const user = await getAuthenticatedUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Please sign in to access your PipeChat CRM." });
+    return null;
+  }
+  return user;
+}
+
 function normalizeDeal(input, index) {
   return {
     id: Number(input.id) || index + 1,
@@ -259,9 +352,10 @@ function normalizeDeal(input, index) {
   };
 }
 
-async function readCrmData() {
+async function readCrmData(userId) {
+  const dataFile = userDataFile(userId, "pipechat-crm-data.json");
   try {
-    const text = await fs.readFile(DATA_FILE, "utf8");
+    const text = await fs.readFile(dataFile, "utf8");
     const payload = JSON.parse(text);
     return {
       deals: Array.isArray(payload.deals) ? payload.deals.map(normalizeDeal).filter(deal => deal.account) : [],
@@ -273,21 +367,23 @@ async function readCrmData() {
   }
 }
 
-async function writeCrmData(deals) {
+async function writeCrmData(userId, deals) {
+  const dataFile = userDataFile(userId, "pipechat-crm-data.json");
   const payload = {
     updatedAt: new Date().toISOString(),
     deals: deals.map(normalizeDeal).filter(deal => deal.account)
   };
-  const tempFile = `${DATA_FILE}.tmp`;
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  const tempFile = `${dataFile}.tmp`;
+  await fs.mkdir(path.dirname(dataFile), { recursive: true });
   await fs.writeFile(tempFile, JSON.stringify(payload, null, 2));
-  await fs.rename(tempFile, DATA_FILE);
+  await fs.rename(tempFile, dataFile);
   return payload;
 }
 
-async function readChatUsage() {
+async function readChatUsage(userId) {
+  const usageFile = userDataFile(userId, "pipechat-chat-usage.json");
   try {
-    const text = await fs.readFile(USAGE_FILE, "utf8");
+    const text = await fs.readFile(usageFile, "utf8");
     const payload = JSON.parse(text);
     const used = Number(payload.used || 0);
     return {
@@ -311,8 +407,9 @@ async function readChatUsage() {
   }
 }
 
-async function incrementChatUsage() {
-  const current = await readChatUsage();
+async function incrementChatUsage(userId) {
+  const usageFile = userDataFile(userId, "pipechat-chat-usage.json");
+  const current = await readChatUsage(userId);
   const used = current.used + 1;
   const payload = {
     used,
@@ -321,10 +418,10 @@ async function incrementChatUsage() {
     paymentRequired: used >= FREE_CHAT_LIMIT,
     updatedAt: new Date().toISOString()
   };
-  const tempFile = `${USAGE_FILE}.tmp`;
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  const tempFile = `${usageFile}.tmp`;
+  await fs.mkdir(path.dirname(usageFile), { recursive: true });
   await fs.writeFile(tempFile, JSON.stringify(payload, null, 2));
-  await fs.rename(tempFile, USAGE_FILE);
+  await fs.rename(tempFile, usageFile);
   return payload;
 }
 
@@ -435,28 +532,94 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/auth/me") {
+      const user = await getAuthenticatedUser(req);
+      return sendJson(res, 200, { user: user ? publicUser(user) : null });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/signup") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      const email = String(payload.email || "").trim().toLowerCase();
+      const password = String(payload.password || "");
+      const name = String(payload.name || "").trim();
+      if (!email.includes("@") || password.length < 8) {
+        return sendJson(res, 400, { error: "Use a valid email and a password with at least 8 characters." });
+      }
+      const store = await readAuthStore();
+      if (store.users.some(user => user.email === email)) {
+        return sendJson(res, 409, { error: "An account with that email already exists. Sign in instead." });
+      }
+      const user = {
+        id: crypto.randomUUID(),
+        email,
+        name,
+        passwordHash: hashPassword(password),
+        createdAt: new Date().toISOString()
+      };
+      const token = crypto.randomBytes(32).toString("hex");
+      store.users.push(user);
+      store.sessions[token] = { userId: user.id, createdAt: new Date().toISOString() };
+      await writeAuthStore(store);
+      return sendJsonWithHeaders(res, 200, { user: publicUser(user) }, { "Set-Cookie": sessionCookie(token) });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/login") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      const email = String(payload.email || "").trim().toLowerCase();
+      const password = String(payload.password || "");
+      const store = await readAuthStore();
+      const user = store.users.find(item => item.email === email);
+      if (!user || !verifyPassword(password, user.passwordHash)) {
+        return sendJson(res, 401, { error: "Email or password is incorrect." });
+      }
+      const token = crypto.randomBytes(32).toString("hex");
+      store.sessions[token] = { userId: user.id, createdAt: new Date().toISOString() };
+      await writeAuthStore(store);
+      return sendJsonWithHeaders(res, 200, { user: publicUser(user) }, { "Set-Cookie": sessionCookie(token) });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+      const token = getCookie(req, SESSION_COOKIE);
+      if (token) {
+        const store = await readAuthStore();
+        delete store.sessions[token];
+        await writeAuthStore(store);
+      }
+      return sendJsonWithHeaders(res, 200, { ok: true }, { "Set-Cookie": clearSessionCookie() });
+    }
+
     if (req.method === "GET" && url.pathname === "/api/crm-data") {
-      const data = await readCrmData();
+      const user = await requireUser(req, res);
+      if (!user) return;
+      const data = await readCrmData(user.id);
       return sendJson(res, 200, data);
     }
 
     if (req.method === "GET" && url.pathname === "/api/chat-usage") {
-      const usage = await readChatUsage();
+      const user = await requireUser(req, res);
+      if (!user) return;
+      const usage = await readChatUsage(user.id);
       return sendJson(res, 200, usage);
     }
 
     if (req.method === "PUT" && url.pathname === "/api/crm-data") {
+      const user = await requireUser(req, res);
+      if (!user) return;
       const body = await readBody(req);
       const payload = JSON.parse(body || "{}");
       if (!Array.isArray(payload.deals)) {
         return sendJson(res, 400, { error: "Expected { deals: [...] }" });
       }
-      const saved = await writeCrmData(payload.deals);
+      const saved = await writeCrmData(user.id, payload.deals);
       return sendJson(res, 200, saved);
     }
 
     if (req.method === "POST" && url.pathname === "/api/pipechat-ai") {
-      const usage = await readChatUsage();
+      const user = await requireUser(req, res);
+      if (!user) return;
+      const usage = await readChatUsage(user.id);
       if (usage.paymentRequired) {
         return sendJson(res, 402, {
           error: "Free chatbot usage limit reached. Payment is required to continue using the AI chatbot.",
@@ -466,7 +629,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const payload = JSON.parse(body || "{}");
       const action = await planPipeChatAction(payload);
-      const updatedUsage = await incrementChatUsage();
+      const updatedUsage = await incrementChatUsage(user.id);
       return sendJson(res, 200, { ...action, usage: updatedUsage });
     }
 
@@ -484,7 +647,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`PipeChat app running at http://127.0.0.1:${PORT}/`);
   console.log(`PipeChat AI server running at http://127.0.0.1:${PORT}/api/pipechat-ai`);
-  console.log(`PipeChat CRM database: ${DATA_FILE}`);
-  console.log(`PipeChat chat usage: ${USAGE_FILE} (${FREE_CHAT_LIMIT} free AI messages)`);
+  console.log(`PipeChat data directory: ${DATA_DIR}`);
+  console.log(`Free AI messages per user: ${FREE_CHAT_LIMIT}`);
   console.log(`Model: ${OPENAI_MODEL}`);
 });

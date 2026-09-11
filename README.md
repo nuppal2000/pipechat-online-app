@@ -5,7 +5,7 @@ This folder is the deployable app version of the PipeChat prototype. It packages
 ## What is included
 
 - `public/index.html` - PipeChat CRM app UI.
-- `server.js` - backend API for CRM data, AI chat, static hosting, and usage limits.
+- `server.js` - backend API for login, per-user CRM data, AI chat, static hosting, and usage limits.
 - `data/` - local saved CRM data and chat usage files, created automatically.
 - `db/supabase-schema.sql` - cloud database schema for the production version.
 - `render.yaml` - starter deploy config for Render with a persistent disk.
@@ -51,3 +51,9 @@ Recommended production stack:
 - AI: OpenAI API from the backend only
 
 The app already has the right product boundaries for paid usage: when free AI messages are exhausted, the chatbot locks while the CRM table remains manually editable.
+
+## Accounts and CRM isolation
+
+PipeChat now requires sign-in before showing the CRM. The local/Render MVP stores accounts, sessions, each user's CRM rows, and each user's chatbot usage under `PIPECHAT_DATA_DIR`.
+
+Each signed-in user gets a separate CRM dataset. One user cannot load or edit another user's CRM through the app APIs.
