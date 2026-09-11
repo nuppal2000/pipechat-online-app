@@ -1,0 +1,2510 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PipeChat CRM Prototype</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --line: #d9e1ea;
+      --line-soft: #e9eef4;
+      --text: #17202a;
+      --muted: #6c7785;
+      --blue: #176b87;
+      --blue-2: #e7f3f6;
+      --teal: #1b8a7a;
+      --red: #b83232;
+      --red-bg: #fff0f0;
+      --yellow: #916b00;
+      --yellow-bg: #fff8df;
+      --green: #1d7a4d;
+      --green-bg: #eaf8f1;
+      --gray-bg: #f1f3f5;
+      --shadow: 0 10px 30px rgba(23, 32, 42, .08);
+      font-family: Inter, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    button, input, textarea, select {
+      font: inherit;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(300px, 28%) minmax(520px, 1fr) minmax(320px, 28%);
+      min-height: 100vh;
+    }
+
+    .pane {
+      min-width: 0;
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+    }
+
+    .right-pane {
+      border-right: 0;
+      box-shadow: -8px 0 24px rgba(23, 32, 42, .04);
+    }
+
+    .pane-header {
+      min-height: 72px;
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand h1, .pane-title h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .brand span, .pane-title span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      color: var(--blue);
+      background: var(--blue-2);
+      border: 1px solid #c9e4eb;
+      white-space: nowrap;
+    }
+
+    .chat-pane {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: 100vh;
+    }
+
+    .chat-feed {
+      overflow: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .message {
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      padding: 12px;
+      line-height: 1.35;
+      font-size: 14px;
+      background: #fff;
+    }
+
+    .message.user {
+      background: #eef7fa;
+      border-color: #cfe7ed;
+    }
+
+    .message.ai strong {
+      color: var(--blue);
+    }
+
+    .message small {
+      display: block;
+      color: var(--muted);
+      margin-top: 8px;
+      font-size: 12px;
+    }
+
+    .chat-input-wrap {
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      background: #fff;
+    }
+
+    .beta-warning {
+      font-size: 12px;
+      line-height: 1.3;
+      color: #775b10;
+      background: var(--yellow-bg);
+      border: 1px solid #f0df9b;
+      border-radius: 8px;
+      padding: 9px 10px;
+      margin-bottom: 10px;
+    }
+
+    .composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    textarea {
+      width: 100%;
+      resize: none;
+      min-height: 82px;
+      max-height: 160px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      color: var(--text);
+      outline: none;
+      line-height: 1.35;
+    }
+
+    textarea:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(23, 107, 135, .14);
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 7px;
+      padding: 9px 12px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 38px;
+    }
+
+    .btn:hover { background: #f7f9fb; }
+
+    .btn:disabled,
+    textarea:disabled {
+      cursor: not-allowed;
+      opacity: .58;
+    }
+
+    textarea:disabled {
+      background: #f5f7f8;
+      color: var(--muted);
+    }
+
+    .btn.primary {
+      background: var(--blue);
+      color: #fff;
+      border-color: var(--blue);
+    }
+
+    .btn.primary:hover { background: #13586f; }
+
+    .btn.danger {
+      color: var(--red);
+      border-color: #f0c8c8;
+    }
+
+    .btn.icon {
+      width: 38px;
+      padding: 0;
+    }
+
+    .main-pane {
+      display: grid;
+      grid-template-rows: auto auto auto 1fr;
+      height: 100vh;
+      background: var(--bg);
+    }
+
+    .summary {
+      padding: 16px 18px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 12px;
+    }
+
+    .metric {
+      background: #fff;
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: 0 6px 18px rgba(23, 32, 42, .04);
+    }
+
+    .metric b {
+      display: block;
+      font-size: 22px;
+      margin-bottom: 3px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .toolbar {
+      padding: 0 18px 14px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .filter-strip {
+      margin: 0 18px 12px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid #c9e4eb;
+      border-radius: 8px;
+      background: #f1f9fb;
+      color: var(--blue);
+      padding: 9px 11px;
+      font-size: 13px;
+    }
+
+    .filter-strip.show {
+      display: flex;
+    }
+
+    .filter-strip strong {
+      color: var(--text);
+    }
+
+    .undo-strip {
+      margin: 0 18px 12px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid #bfe6d0;
+      border-radius: 8px;
+      background: var(--green-bg);
+      color: var(--green);
+      padding: 9px 11px;
+      font-size: 13px;
+    }
+
+    .undo-strip.show {
+      display: flex;
+    }
+
+    .undo-strip strong {
+      color: var(--text);
+    }
+
+    .segmented {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .segmented button {
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: #fff;
+      padding: 8px 12px;
+      cursor: pointer;
+      color: var(--muted);
+    }
+
+    .segmented button:last-child { border-right: 0; }
+    .segmented button.active {
+      color: var(--blue);
+      background: var(--blue-2);
+    }
+
+    .table-wrap {
+      margin: 0 18px 18px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 860px;
+      font-size: 14px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line-soft);
+      padding: 10px 11px;
+      text-align: left;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    th {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+      background: #f9fbfc;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    tr:nth-child(even):not(.expanded-row) td { background: #fbfcfd; }
+    tr.overdue td { background: var(--red-bg); }
+    tr.due td { background: var(--yellow-bg); }
+    tr.updated td { background: var(--green-bg); }
+    tr.stale td { color: #7c858f; background: var(--gray-bg); }
+    tr.ghost td {
+      color: #79828d;
+      font-style: italic;
+      background: #eef2f6;
+    }
+
+    tr.data-row { cursor: pointer; }
+    tr.data-row:hover td { background: #eef7fa; }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      border: 1px solid transparent;
+    }
+
+    .status.warm { color: #7c5d00; background: #fff1b8; border-color: #ead47a; }
+    .status.proposal { color: #145d79; background: #e2f2f7; border-color: #bcdde7; }
+    .status.discovery { color: #565f6b; background: #eef1f4; border-color: #d7dee6; }
+    .status.done { color: var(--green); background: var(--green-bg); border-color: #bfe6d0; }
+    .status.risk { color: var(--red); background: var(--red-bg); border-color: #f1c3c3; }
+
+    .cell-input, .cell-select {
+      width: 100%;
+      min-width: 96px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit;
+      padding: 6px 7px;
+      margin: -6px -7px;
+      outline: none;
+    }
+
+    .cell-input:hover, .cell-select:hover {
+      border-color: var(--line);
+      background: #fff;
+    }
+
+    .cell-input:focus, .cell-select:focus {
+      border-color: var(--blue);
+      background: #fff;
+      box-shadow: 0 0 0 3px rgba(23, 107, 135, .12);
+    }
+
+    .cell-input.next-step {
+      min-width: 180px;
+    }
+
+    .manual-cue {
+      color: var(--muted);
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .expanded-row td {
+      white-space: normal;
+      background: #fff !important;
+      padding: 0;
+    }
+
+    .record-detail {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 16px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .detail-block h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+    }
+
+    .detail-block p, .activity-item p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .activity-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .activity-item {
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+    }
+
+    .dashboard {
+      display: none;
+      margin: 0 18px 18px;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      overflow: auto;
+    }
+
+    .chart-card, .share-preview {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .chart-card h3, .share-preview h3 {
+      margin: 0 0 14px;
+      font-size: 15px;
+    }
+
+    .bar {
+      display: grid;
+      grid-template-columns: 120px 1fr 38px;
+      gap: 10px;
+      align-items: center;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: #edf1f5;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: var(--teal);
+      border-radius: 999px;
+    }
+
+    .trust-pane {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100vh;
+    }
+
+    .trust-body {
+      overflow: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .plan-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .plan-card h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .plan-meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .meta {
+      border: 1px solid var(--line-soft);
+      border-radius: 7px;
+      padding: 8px;
+      background: #fbfcfd;
+    }
+
+    .meta b {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+
+    .mini-table {
+      width: 100%;
+      min-width: 0;
+      font-size: 12px;
+      margin-top: 10px;
+    }
+
+    .mini-table th, .mini-table td {
+      padding: 8px;
+      white-space: normal;
+    }
+
+    .assumption {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line-soft);
+      border-radius: 7px;
+      padding: 9px;
+      font-size: 13px;
+      background: #fbfcfd;
+    }
+
+    .assumption span {
+      color: var(--muted);
+    }
+
+    .trust-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 12px;
+    }
+
+    .empty-trust {
+      color: var(--muted);
+      line-height: 1.45;
+      border: 1px dashed #cbd5df;
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfd;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%) translateY(90px);
+      opacity: 0;
+      pointer-events: none;
+      background: #17202a;
+      color: #fff;
+      border-radius: 8px;
+      padding: 11px 14px;
+      box-shadow: var(--shadow);
+      transition: .2s ease;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+      pointer-events: auto;
+    }
+
+    .toast button {
+      border: 0;
+      background: transparent;
+      color: #9be7dc;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .mobile-note { display: none; }
+
+    @media (max-width: 1080px) {
+      .app { grid-template-columns: 320px 1fr; }
+      .right-pane {
+        grid-column: 1 / -1;
+        height: auto;
+        border-top: 1px solid var(--line);
+      }
+      .trust-pane { height: auto; }
+      .trust-body { max-height: 420px; }
+    }
+
+    @media (max-width: 760px) {
+      .app { display: block; }
+      .chat-pane, .main-pane, .trust-pane { height: auto; min-height: 540px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      .dashboard { grid-template-columns: 1fr; }
+      .record-detail { grid-template-columns: 1fr; }
+      .mobile-note {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="pane chat-pane">
+      <header class="pane-header">
+        <div class="brand">
+          <h1>PipeChat</h1>
+          <span>Conversational pipeline workspace</span>
+        </div>
+        <span class="pill">Solo beta</span>
+      </header>
+
+      <section id="chatFeed" class="chat-feed" aria-live="polite"></section>
+
+      <footer class="chat-input-wrap">
+        <div class="beta-warning">
+          Workflow prototype. Use sample or fake data only. AI endpoint: <strong id="aiModeLabel">local interpreter</strong>. Usage: <strong id="usageLabel">checking...</strong>.
+        </div>
+        <div class="composer">
+          <textarea id="chatInput" placeholder="What happened today?"></textarea>
+          <button id="sendBtn" class="btn primary icon" title="Send command">➜</button>
+        </div>
+      </footer>
+    </aside>
+
+    <main class="pane main-pane">
+      <header class="pane-header">
+        <div class="pane-title">
+          <h2>Sales Pipeline</h2>
+          <span>Today’s follow-ups stay at the top. Click a row to expand it inline.</span>
+          <span class="mobile-note">On small screens the three panes stack so the prototype remains usable.</span>
+        </div>
+        <button id="shareBtn" class="btn">Share view</button>
+      </header>
+
+      <section class="summary">
+        <div class="metric"><b id="followupsMetric">4</b><span>Follow-ups due today</span></div>
+        <div class="metric"><b id="staleMetric">3</b><span>Stale with no next step</span></div>
+        <div class="metric"><b id="missingOwnerMetric">1</b><span>Missing owners</span></div>
+        <div class="metric"><b id="activityMetric">8</b><span>Updates in last 24 hours</span></div>
+      </section>
+
+      <div class="toolbar">
+        <div class="segmented" role="tablist" aria-label="View">
+          <button id="tableTab" class="active" type="button">Table</button>
+          <button id="dashboardTab" type="button">Dashboard</button>
+          <button id="activityTab" type="button">Activity</button>
+        </div>
+        <div class="segmented" aria-label="Demo commands">
+          <button type="button" data-demo="today">Today follow-ups</button>
+          <button type="button" data-demo="bulk">Bulk close dates</button>
+          <button type="button" data-demo="paste">Paste conversation</button>
+          <button type="button" data-demo="field">Create field</button>
+        </div>
+        <button id="addAccountBtn" class="btn">Add account</button>
+        <button id="importCsvBtn" class="btn">Import CSV</button>
+        <input id="csvFileInput" type="file" accept=".csv,text/csv" hidden />
+        <span class="manual-cue">Manual edits save instantly. Undo is available.</span>
+      </div>
+
+      <div id="filterStrip" class="filter-strip">
+        <span id="filterText"></span>
+        <button id="clearFilterBtn" class="btn">Clear view</button>
+      </div>
+
+      <div id="undoStrip" class="undo-strip">
+        <span id="undoText"><strong>Change saved.</strong> You can reverse the last table edit.</span>
+        <button id="quickUndoBtn" class="btn">Undo last change</button>
+      </div>
+
+      <section id="tableView" class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Owner</th>
+              <th>Stage</th>
+              <th>Value</th>
+              <th>Close date</th>
+              <th>Next step</th>
+              <th>Follow-up</th>
+              <th>Activity</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="dealRows"></tbody>
+        </table>
+      </section>
+
+      <section id="dashboardView" class="dashboard">
+        <div class="chart-card">
+          <h3>Pipeline by stage</h3>
+          <div id="stageBars"></div>
+        </div>
+        <div class="chart-card">
+          <h3>Attention queue</h3>
+          <div id="attentionBars"></div>
+        </div>
+        <div class="share-preview">
+          <h3>Shared internal view</h3>
+          <p id="shareSummary">Shared by Ravi, updated just now. Viewers can filter, inspect ownership, and see current next steps. Editing requires joining the workspace.</p>
+          <table class="mini-table">
+            <thead><tr><th>Account</th><th>Stage</th><th>Next step</th></tr></thead>
+            <tbody id="sharedRows"></tbody>
+          </table>
+        </div>
+        <div class="chart-card">
+          <h3>Plan guardrail</h3>
+          <div class="activity-item"><p>Solo includes 500 AI actions/month. Team unlocks collaboration when a second person edits.</p></div>
+          <div class="activity-item"><p>Current prototype session: <strong id="usageCount">0</strong> of 10 demo commands used.</p></div>
+        </div>
+      </section>
+
+      <section id="activityView" class="dashboard">
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <h3>Today’s activity</h3>
+          <div id="activityList" class="activity-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="pane right-pane trust-pane">
+      <header class="pane-header">
+        <div class="pane-title">
+          <h2>Preview</h2>
+          <span>What PipeChat understood before anything changes.</span>
+        </div>
+      </header>
+      <section id="trustBody" class="trust-body"></section>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast"><span id="toastText">Done.</span><button id="undoBtn">Undo</button></div>
+
+  <script>
+    const DEFAULT_DEALS = [
+      { id: 1, account: "RBC Corp", owner: "Ravi", stage: "Proposal Sent", value: 42000, close: "Dec 18, 2025", next: "Send security answers", follow: "Today", activity: "2h ago", health: "overdue", notes: "Procurement wants security answers before legal review.", history: ["AI mapped 'send the packet' to next step.", "Ravi confirmed proposal was sent."] },
+      { id: 2, account: "Acme Foods", owner: "Sarah", stage: "Warm", value: 25000, close: "Dec 22, 2025", next: "Follow up on revised quote", follow: "Today", activity: "20m ago", health: "updated", notes: "Buyer likes the smaller pilot. CFO wants the revised quote.", history: ["Recently updated from team conversation.", "PipeChat inferred Warm from 'looks decent'."] },
+      { id: 3, account: "Northstar Logistics", owner: "Daniel", stage: "Discovery", value: 18000, close: "Dec 29, 2025", next: "Book operations call", follow: "This week", activity: "5d ago", health: "due", notes: "Operations lead asked for examples from similar field teams.", history: ["No owner change.", "Next step due this week."] },
+      { id: 4, account: "Blue Harbor", owner: "Ravi", stage: "Discovery", value: 31000, close: "Jan 15, 2026", next: "Confirm budget range", follow: "Tomorrow", activity: "8d ago", health: "stale", notes: "Budget likely $20-30k. Needs confirmation before proposal.", history: ["PipeChat estimated $25k from a range.", "No activity in 8 days."] },
+      { id: 5, account: "Maple Clinic", owner: "", stage: "Warm", value: 16000, close: "Jan 28, 2026", next: "Assign owner", follow: "Today", activity: "1d ago", health: "overdue", notes: "Practice manager wants a simple shared follow-up board.", history: ["Missing owner flagged.", "Follow-up is overdue."] },
+      { id: 6, account: "Cedar Studio", owner: "Sarah", stage: "Proposal Sent", value: 21000, close: "Feb 6, 2026", next: "Wait for partner review", follow: "Next week", activity: "9d ago", health: "stale", notes: "Partner review delayed. Good candidate for a shared view.", history: ["Partner review was moved to next week."] },
+      { id: 7, account: "Orbit Agency", owner: "Daniel", stage: "Won", value: 12000, close: "Dec 9, 2025", next: "Kickoff handoff", follow: "Done", activity: "3h ago", health: "updated", notes: "Closed small pilot. Needs onboarding checklist.", history: ["Won status confirmed.", "Undo available after update."] }
+    ];
+
+    let deals = structuredClone(DEFAULT_DEALS);
+    let expandedId = null;
+    let pendingPlan = null;
+    let lastSnapshot = null;
+    let commandCount = 0;
+    let activeFilter = null;
+    let manualActivity = [];
+    let conversationHistory = [];
+    let pendingClarification = null;
+    const PIPECHAT_AI_ENDPOINT = window.PIPECHAT_AI_ENDPOINT || localStorage.getItem("pipechat_ai_endpoint") || "/api/pipechat-ai";
+    const PIPECHAT_DATA_ENDPOINT = window.PIPECHAT_DATA_ENDPOINT || localStorage.getItem("pipechat_data_endpoint") || "/api/crm-data";
+    const PIPECHAT_USAGE_ENDPOINT = window.PIPECHAT_USAGE_ENDPOINT || localStorage.getItem("pipechat_usage_endpoint") || "/api/chat-usage";
+    let databaseOnline = false;
+    let chatUsage = null;
+    const ALLOWED_FIELDS = ["account", "owner", "stage", "value", "close", "next", "follow", "activity", "health"];
+    const FIELD_LABELS = {
+      account: "Account",
+      owner: "Owner",
+      stage: "Stage",
+      value: "Value",
+      close: "Close date",
+      next: "Next step",
+      follow: "Follow-up",
+      activity: "Activity",
+      health: "Health"
+    };
+    const placeholders = [
+      "What happened today?",
+      "New opportunity. Acme Corp, $25k, proposal sent today...",
+      "Move all December close dates to January 31.",
+      "Show me all stale deals with no next step.",
+      "Share this week's pipeline with Sarah."
+    ];
+
+    const chatFeed = document.getElementById("chatFeed");
+    const chatInput = document.getElementById("chatInput");
+    const sendBtn = document.getElementById("sendBtn");
+    const trustBody = document.getElementById("trustBody");
+    document.getElementById("aiModeLabel").textContent = PIPECHAT_AI_ENDPOINT ? "connected model" : "local interpreter";
+
+    function renderChatLockState() {
+      const locked = Boolean(chatUsage?.paymentRequired);
+      chatInput.disabled = locked;
+      sendBtn.disabled = locked;
+      sendBtn.title = locked ? "AI chatbot locked until payment is connected" : "Send command";
+      if (locked) {
+        chatInput.value = "";
+        chatInput.placeholder = "AI chatbot locked. You can still edit the CRM table manually.";
+      }
+    }
+
+    function renderUsageLabel() {
+      const label = document.getElementById("usageLabel");
+      if (!label) return;
+      if (!chatUsage) {
+        label.textContent = "local only";
+        renderChatLockState();
+        return;
+      }
+      label.textContent = chatUsage.paymentRequired
+        ? `0 of ${chatUsage.limit} AI messages left`
+        : `${chatUsage.remaining} of ${chatUsage.limit} AI messages left`;
+      renderChatLockState();
+    }
+
+    async function loadChatUsage() {
+      try {
+        const response = await fetch(PIPECHAT_USAGE_ENDPOINT);
+        if (!response.ok) throw new Error(`Usage endpoint returned ${response.status}`);
+        chatUsage = await response.json();
+      } catch (error) {
+        chatUsage = null;
+      }
+      renderUsageLabel();
+    }
+
+    function applyUsageUpdate(usage) {
+      if (!usage) return;
+      chatUsage = usage;
+      renderUsageLabel();
+    }
+
+    async function loadCrmDatabase() {
+      try {
+        const response = await fetch(PIPECHAT_DATA_ENDPOINT);
+        if (!response.ok) throw new Error(`Database returned ${response.status}`);
+        const payload = await response.json();
+        if (Array.isArray(payload.deals) && payload.deals.length) {
+          deals.splice(0, deals.length, ...payload.deals);
+        } else {
+          await saveCrmDatabase({ quiet: true });
+        }
+        databaseOnline = true;
+        addMessage("ai", `<strong>Database connected.</strong> CRM rows are loading from the backend and will save after each table change.`);
+      } catch (error) {
+        databaseOnline = false;
+        addMessage("ai", `<strong>Local-only mode.</strong> I could not reach the backend database, so changes will stay in this browser session.<small>${escapeHtml(error.message)}</small>`);
+      }
+      renderAll();
+    }
+
+    async function saveCrmDatabase(options = {}) {
+      try {
+        const response = await fetch(PIPECHAT_DATA_ENDPOINT, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ deals })
+        });
+        if (!response.ok) throw new Error(`Database returned ${response.status}`);
+        databaseOnline = true;
+        return true;
+      } catch (error) {
+        databaseOnline = false;
+        if (!options.quiet) {
+          addMessage("ai", `<strong>Database save failed.</strong> The table updated on screen, but it was not saved to the backend.<small>${escapeHtml(error.message)}</small>`);
+        }
+        return false;
+      }
+    }
+
+    function money(n) {
+      return "$" + Math.round(n / 1000) + "k";
+    }
+
+    function statusClass(stage) {
+      if (stage === "Warm") return "warm";
+      if (stage === "Proposal Sent") return "proposal";
+      if (stage === "Won") return "done";
+      if (stage === "At Risk") return "risk";
+      return "discovery";
+    }
+
+    function rowClass(deal) {
+      if (pendingPlan && pendingPlan.ids.includes(deal.id)) return "ghost";
+      return deal.health || "";
+    }
+
+    function getVisibleDeals() {
+      if (!activeFilter) return deals;
+      return deals.filter(activeFilter.predicate);
+    }
+
+    function renderRows() {
+      const body = document.getElementById("dealRows");
+      body.innerHTML = "";
+      const visibleDeals = getVisibleDeals();
+      if (!visibleDeals.length) {
+        body.innerHTML = `<tr><td colspan="9" style="text-align:center; color: var(--muted); padding: 24px;">No records match this view.</td></tr>`;
+        renderFilterStrip();
+        return;
+      }
+      visibleDeals.forEach(deal => {
+        const tr = document.createElement("tr");
+        tr.className = "data-row " + rowClass(deal);
+        tr.innerHTML = `
+          <td><strong>${editableInput(deal, "account", deal.account, "Account")}</strong></td>
+          <td>${editableInput(deal, "owner", deal.owner, "Owner")}</td>
+          <td>${editableSelect(deal, "stage", deal.stage, ["Discovery", "Warm", "Proposal Sent", "At Risk", "Won"])}</td>
+          <td>${editableInput(deal, "value", deal.value, "Value", "number")}</td>
+          <td>${editableInput(deal, "close", deal.close, "Close date")}</td>
+          <td>${editableInput(deal, "next", deal.next, "Next step", "text", "next-step")}</td>
+          <td>${editableSelect(deal, "follow", deal.follow, ["Today", "Tomorrow", "This week", "Next week", "Done"])}</td>
+          <td>${deal.activity}</td>
+          <td><button class="btn danger icon row-delete" data-delete-id="${deal.id}" title="Delete account">×</button></td>
+        `;
+        tr.addEventListener("click", event => {
+          if (event.target.closest("[data-edit-field], [data-delete-id]")) return;
+          expandedId = expandedId === deal.id ? null : deal.id;
+          renderRows();
+        });
+        body.appendChild(tr);
+
+        if (expandedId === deal.id) {
+          const detail = document.createElement("tr");
+          detail.className = "expanded-row";
+          detail.innerHTML = `
+            <td colspan="9">
+              <div class="record-detail">
+                <div class="detail-block">
+                  <h3>${deal.account} notes</h3>
+                  <p>${deal.notes}</p>
+                </div>
+                <div class="detail-block">
+                  <h3>History and assumptions</h3>
+                  <div class="activity-list">
+                    ${deal.history.map(item => `<div class="activity-item"><p>${item}</p></div>`).join("")}
+                  </div>
+                </div>
+              </div>
+            </td>
+          `;
+          body.appendChild(detail);
+        }
+      });
+      bindManualEditors();
+      bindDeleteButtons();
+      renderFilterStrip();
+    }
+
+    function previewValue(deal, field) {
+      if (!pendingPlan || !pendingPlan.ids.includes(deal.id) || !pendingPlan.preview[field]) return deal[field];
+      return `${deal[field]} → ${pendingPlan.preview[field]}`;
+    }
+
+    function editableInput(deal, field, value, label, type = "text", extraClass = "") {
+      if (pendingPlan && pendingPlan.ids.includes(deal.id) && pendingPlan.preview[field]) {
+        return escapeHtml(previewValue(deal, field));
+      }
+      const displayValue = field === "value" ? String(value) : value;
+      return `<input class="cell-input ${extraClass}" data-edit-field="${field}" data-deal-id="${deal.id}" aria-label="${label} for ${deal.account}" type="${type}" value="${escapeAttribute(displayValue || "")}" />`;
+    }
+
+    function editableSelect(deal, field, value, options) {
+      if (pendingPlan && pendingPlan.ids.includes(deal.id) && pendingPlan.preview[field]) {
+        return escapeHtml(previewValue(deal, field));
+      }
+      const optionHtml = options.map(option => `<option value="${escapeAttribute(option)}" ${option === value ? "selected" : ""}>${option}</option>`).join("");
+      return `<select class="cell-select" data-edit-field="${field}" data-deal-id="${deal.id}" aria-label="${FIELD_LABELS[field]} for ${deal.account}">${optionHtml}</select>`;
+    }
+
+    function bindManualEditors() {
+      document.querySelectorAll("[data-edit-field]").forEach(editor => {
+        editor.addEventListener("click", event => event.stopPropagation());
+        editor.addEventListener("change", event => {
+          const target = event.currentTarget;
+          const deal = deals.find(item => item.id === Number(target.dataset.dealId));
+          if (!deal) return;
+          const field = target.dataset.editField;
+          const rawValue = target.value.trim();
+          const value = field === "value" ? Number(rawValue || 0) : rawValue;
+          updateDealManually(deal, field, value);
+        });
+        editor.addEventListener("keydown", event => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+          if (event.key === "Escape") {
+            renderRows();
+          }
+        });
+      });
+    }
+
+    function bindDeleteButtons() {
+      document.querySelectorAll("[data-delete-id]").forEach(button => {
+        button.addEventListener("click", event => {
+          event.stopPropagation();
+          const deal = deals.find(item => item.id === Number(event.currentTarget.dataset.deleteId));
+          if (!deal) return;
+          pendingClarification = null;
+          pendingPlan = createDeletePlanFromAction({
+            ids: [deal.id],
+            title: "Delete account",
+            summary: `I drafted a deletion for ${deal.account}. Confirm before removing it from the CRM table.`,
+            risk: "High",
+            assumptions: [
+              { label: "Record matched", value: deal.account },
+              { label: "Data impact", value: "This removes the full row from the table" },
+              { label: "Undo", value: "Available after confirmation" }
+            ]
+          });
+          renderTrustPlan(pendingPlan);
+          renderAll();
+          addMessage("ai", `<strong>Delete drafted.</strong> Review the preview before removing ${escapeHtml(deal.account)} from the table.`);
+        });
+      });
+    }
+
+    function updateDealManually(deal, field, value) {
+      if (!(field in deal) || deal[field] === value) return;
+      lastSnapshot = JSON.stringify(deals);
+      const oldValue = deal[field] || "blank";
+      deal[field] = value;
+      deal.activity = "just now";
+      deal.health = "updated";
+      const label = FIELD_LABELS[field] || field;
+      const newValue = value || "blank";
+      const entry = `Manual edit: ${deal.account} ${label} changed from ${oldValue} to ${newValue}.`;
+      deal.history.unshift(entry);
+      manualActivity.unshift(entry);
+      manualActivity = manualActivity.slice(0, 8);
+      renderAll();
+      renderManualTrust(deal, label, oldValue, newValue);
+      addMessage("ai", `<strong>Manual edit saved.</strong> ${escapeHtml(deal.account)} ${escapeHtml(label)} changed from ${escapeHtml(String(oldValue))} to ${escapeHtml(String(newValue))}.<small>Undo is available below.</small>`);
+      showQuickUndo("Manual edit saved.");
+      showToast("Manual edit saved.");
+      saveCrmDatabase();
+    }
+
+    function renderManualTrust(deal, label, oldValue, newValue) {
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>Manual edit saved</h3>
+          <p>You changed ${escapeHtml(deal.account)} directly in the table. PipeChat logged the change and kept undo available.</p>
+          <div class="plan-meta">
+            <div class="meta"><b>Record</b>${escapeHtml(deal.account)}</div>
+            <div class="meta"><b>Field</b>${escapeHtml(label)}</div>
+            <div class="meta"><b>Before</b>${escapeHtml(String(oldValue))}</div>
+            <div class="meta"><b>After</b>${escapeHtml(String(newValue))}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function highlightIfFiltered(deal, field) {
+      if (activeFilter && activeFilter.field === field && activeFilter.predicate(deal)) {
+        return `<span class="status proposal">${deal[field]}</span>`;
+      }
+      return deal[field];
+    }
+
+    function renderFilterStrip() {
+      const strip = document.getElementById("filterStrip");
+      const text = document.getElementById("filterText");
+      if (!activeFilter) {
+        strip.classList.remove("show");
+        return;
+      }
+      text.innerHTML = `<strong>AI view:</strong> ${activeFilter.label} · ${getVisibleDeals().length} of ${deals.length} records shown`;
+      strip.classList.add("show");
+    }
+
+    function showQuickUndo(message) {
+      const strip = document.getElementById("undoStrip");
+      document.getElementById("undoText").innerHTML = `<strong>${escapeHtml(message)}</strong> You can reverse the last table edit.`;
+      strip.classList.add("show");
+    }
+
+    function hideQuickUndo() {
+      document.getElementById("undoStrip").classList.remove("show");
+    }
+
+    function renderMetrics() {
+      document.getElementById("followupsMetric").textContent = deals.filter(d => ["Today", "Tomorrow"].includes(d.follow)).length;
+      document.getElementById("staleMetric").textContent = deals.filter(d => d.health === "stale").length;
+      document.getElementById("missingOwnerMetric").textContent = deals.filter(d => !d.owner).length;
+      document.getElementById("activityMetric").textContent = deals.filter(d => d.health === "updated").length + 6;
+      document.getElementById("usageCount").textContent = commandCount;
+    }
+
+    function renderCharts() {
+      const stageCounts = countBy(deals, "stage");
+      document.getElementById("stageBars").innerHTML = Object.entries(stageCounts).map(([label, count]) => bar(label, count, deals.length)).join("");
+      const attention = {
+        "Overdue": deals.filter(d => d.health === "overdue").length,
+        "Due this week": deals.filter(d => d.health === "due").length,
+        "Stale": deals.filter(d => d.health === "stale").length,
+        "Missing owner": deals.filter(d => !d.owner).length
+      };
+      document.getElementById("attentionBars").innerHTML = Object.entries(attention).map(([label, count]) => bar(label, count, 4)).join("");
+      document.getElementById("sharedRows").innerHTML = deals.slice(0, 4).map(d => `<tr><td>${d.account}</td><td>${d.stage}</td><td>${d.next}</td></tr>`).join("");
+    }
+
+    function countBy(items, key) {
+      return items.reduce((acc, item) => {
+        acc[item[key]] = (acc[item[key]] || 0) + 1;
+        return acc;
+      }, {});
+    }
+
+    function bar(label, count, max) {
+      const width = Math.max(8, Math.round((count / max) * 100));
+      return `<div class="bar"><span>${label}</span><div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div><strong>${count}</strong></div>`;
+    }
+
+    function renderActivity() {
+      const items = [
+        ...manualActivity,
+        "Ravi confirmed 3 close-date changes.",
+        "PipeChat mapped 'looks decent' to Warm. Change?",
+        "Sarah updated Acme Foods from a pasted team conversation.",
+        "Daniel has 2 stale records with no fresh next step.",
+        "Maple Clinic is missing an owner.",
+        "Orbit Agency moved to Won and triggered a kickoff handoff."
+      ];
+      document.getElementById("activityList").innerHTML = items.map(item => `<div class="activity-item"><p>${item}</p></div>`).join("");
+    }
+
+    function renderTrustEmpty() {
+      trustBody.innerHTML = `
+        <div class="empty-trust">
+          Type a command or use a demo command. PipeChat will show matched records, proposed field changes, assumptions, and risk before updating the table.
+        </div>
+        <div class="plan-card">
+          <h3>Safe-edit loop</h3>
+          <div class="assumption"><strong>Preview first</strong><span>No blind writes</span></div>
+          <div class="assumption"><strong>Confirm second</strong><span>User stays in control</span></div>
+          <div class="assumption"><strong>Undo after</strong><span>Quiet recovery</span></div>
+        </div>
+      `;
+    }
+
+    function renderTrustPlan(plan) {
+      if (plan.type === "add-record") {
+        renderAddRecordPlan(plan);
+        return;
+      }
+      if (plan.type === "import-records") {
+        renderImportRecordsPlan(plan);
+        return;
+      }
+      const examples = deals.filter(d => plan.ids.includes(d.id)).slice(0, 5);
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>${plan.title}</h3>
+          <p>${plan.summary}</p>
+          <div class="plan-meta">
+            <div class="meta"><b>Records matched</b>${plan.ids.length}</div>
+            <div class="meta"><b>Risk level</b>${plan.risk}</div>
+            <div class="meta"><b>Field changing</b>${plan.fieldLabel}</div>
+            <div class="meta"><b>New value</b>${Object.values(plan.preview).join(", ")}</div>
+          </div>
+          <table class="mini-table">
+            <thead><tr><th>Record</th><th>Current</th><th>New</th></tr></thead>
+            <tbody>
+              ${examples.map(d => `<tr><td>${d.account}</td><td>${d[plan.field]}</td><td>${plan.preview[plan.field]}</td></tr>`).join("")}
+            </tbody>
+          </table>
+          <div class="trust-actions">
+            <button class="btn primary" onclick="confirmPlan()">Confirm</button>
+            <button class="btn danger" onclick="cancelPlan()">Cancel</button>
+          </div>
+        </div>
+        <div class="plan-card">
+          <h3>Assumptions</h3>
+          ${plan.assumptions.map(a => `<div class="assumption"><strong>${a.label}</strong><span>${a.value}</span></div>`).join("")}
+        </div>
+      `;
+    }
+
+    function renderImportRecordsPlan(plan) {
+      const records = plan.preview.records;
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>${plan.title}</h3>
+          <p>${plan.summary}</p>
+          <div class="plan-meta">
+            <div class="meta"><b>Action</b>Import CSV</div>
+            <div class="meta"><b>Rows found</b>${records.length}</div>
+            <div class="meta"><b>Risk level</b>${plan.risk}</div>
+            <div class="meta"><b>Import mode</b>${plan.preview.mode}</div>
+          </div>
+          <table class="mini-table">
+            <thead><tr><th>Account</th><th>Owner</th><th>Stage</th><th>Follow-up</th></tr></thead>
+            <tbody>
+              ${records.slice(0, 6).map(record => `<tr><td>${escapeHtml(record.account)}</td><td>${escapeHtml(record.owner || "blank")}</td><td>${escapeHtml(record.stage)}</td><td>${escapeHtml(record.follow)}</td></tr>`).join("")}
+            </tbody>
+          </table>
+          <div class="trust-actions">
+            <button class="btn primary" onclick="confirmPlan()">Confirm</button>
+            <button class="btn danger" onclick="cancelPlan()">Cancel</button>
+          </div>
+        </div>
+        <div class="plan-card">
+          <h3>AI mapping</h3>
+          ${plan.assumptions.map(a => `<div class="assumption"><strong>${escapeHtml(a.label)}</strong><span>${escapeHtml(a.value)}</span></div>`).join("")}
+        </div>
+      `;
+    }
+
+    function renderAddRecordPlan(plan) {
+      const record = plan.preview;
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>${plan.title}</h3>
+          <p>${plan.summary}</p>
+          <div class="plan-meta">
+            <div class="meta"><b>Action</b>Add row</div>
+            <div class="meta"><b>Risk level</b>${plan.risk}</div>
+            <div class="meta"><b>Account</b>${escapeHtml(record.account)}</div>
+            <div class="meta"><b>Stage</b>${escapeHtml(record.stage)}</div>
+          </div>
+          <table class="mini-table">
+            <thead><tr><th>Field</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td>Account</td><td>${escapeHtml(record.account)}</td></tr>
+              <tr><td>Owner</td><td>${escapeHtml(record.owner || "blank")}</td></tr>
+              <tr><td>Stage</td><td>${escapeHtml(record.stage)}</td></tr>
+              <tr><td>Value</td><td>${money(record.value)}</td></tr>
+              <tr><td>Close date</td><td>${escapeHtml(record.close || "blank")}</td></tr>
+              <tr><td>Next step</td><td>${escapeHtml(record.next)}</td></tr>
+              <tr><td>Follow-up</td><td>${escapeHtml(record.follow)}</td></tr>
+            </tbody>
+          </table>
+          <div class="trust-actions">
+            <button class="btn primary" onclick="confirmPlan()">Confirm</button>
+            <button class="btn danger" onclick="cancelPlan()">Cancel</button>
+          </div>
+        </div>
+        <div class="plan-card">
+          <h3>Assumptions</h3>
+          ${plan.assumptions.map(a => `<div class="assumption"><strong>${escapeHtml(a.label)}</strong><span>${escapeHtml(a.value)}</span></div>`).join("")}
+        </div>
+      `;
+    }
+
+    function renderTrustView(intent) {
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>${intent.title}</h3>
+          <p>${intent.summary}</p>
+          <div class="plan-meta">
+            <div class="meta"><b>Action</b>Filter view</div>
+            <div class="meta"><b>Records shown</b>${getVisibleDeals().length}</div>
+            <div class="meta"><b>Data changed</b>No</div>
+            <div class="meta"><b>Risk level</b>Low</div>
+          </div>
+          <table class="mini-table">
+            <thead><tr><th>Record</th><th>${intent.fieldLabel}</th><th>Next step</th></tr></thead>
+            <tbody>
+              ${getVisibleDeals().slice(0, 5).map(d => `<tr><td>${d.account}</td><td>${d[intent.field]}</td><td>${d.next}</td></tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        <div class="plan-card">
+          <h3>AI interpretation</h3>
+          ${intent.assumptions.map(a => `<div class="assumption"><strong>${a.label}</strong><span>${a.value}</span></div>`).join("")}
+        </div>
+      `;
+    }
+
+    function addMessage(type, html) {
+      const node = document.createElement("div");
+      node.className = "message " + type;
+      node.innerHTML = html;
+      chatFeed.appendChild(node);
+      chatFeed.scrollTop = chatFeed.scrollHeight;
+    }
+
+    function rememberTurn(role, text) {
+      conversationHistory.push({ role, text, at: new Date().toISOString() });
+      conversationHistory = conversationHistory.slice(-30);
+    }
+
+    function isNegativeClarificationReply(command) {
+      return /^(no|nope|nah|cancel|don't|do not|stop|never mind|nevermind)$/i.test(command.trim());
+    }
+
+    function isAffirmativeClarificationReply(command) {
+      return /^(yes|yep|yeah|sure|ok|okay|do it|please do|that's fine|that is fine)$/i.test(command.trim());
+    }
+
+    function resolveClarificationCommand(command) {
+      if (!pendingClarification) return command;
+      if (!isAffirmativeClarificationReply(command)) return command;
+      return [
+        `The user answered YES to the pending clarification.`,
+        `Original user request: ${pendingClarification.originalCommand || "unknown"}`,
+        `Pending clarification question: ${pendingClarification.question}`,
+        `User answer: ${command}`,
+        `Resolve the original request using this yes answer. Do not ask what yes means.`
+      ].join("\n");
+    }
+
+    function cancelPendingClarification() {
+      const cancelledQuestion = pendingClarification?.question || "the pending clarification";
+      pendingClarification = null;
+      pendingPlan = null;
+      renderTrustEmpty();
+      renderAll();
+      addMessage("ai", `<strong>Cancelled.</strong> No changes were made for: ${escapeHtml(cancelledQuestion)}`);
+      rememberTurn("assistant", `Cancelled. No changes were made for: ${cancelledQuestion}`);
+    }
+
+    function createBulkPlan() {
+      const ids = deals.filter(d => d.close.startsWith("Dec")).map(d => d.id);
+      return {
+        type: "bulk",
+        title: "Bulk update close dates",
+        summary: "I found December close dates and drafted the new date before changing records.",
+        ids,
+        field: "close",
+        fieldLabel: "Close date",
+        preview: { close: "Jan 31, 2026" },
+        risk: "Medium",
+        assumptions: [
+          { label: "December", value: "All records with Dec 2025 close dates" },
+          { label: "Execution", value: "Software updates matched rows after confirmation" },
+          { label: "Undo", value: "Available after confirmation" }
+        ]
+      };
+    }
+
+    function createPastePlan() {
+      const ids = [2, 3, 4];
+      return {
+        type: "paste",
+        title: "Conversation extraction",
+        summary: "I found three tracker updates in the pasted conversation and labeled what was explicit vs inferred.",
+        ids,
+        field: "next",
+        fieldLabel: "Next step",
+        preview: { next: "Confirm next meeting" },
+        risk: "Low",
+        assumptions: [
+          { label: "Explicit", value: "Acme asked for revised quote" },
+          { label: "Inferred", value: "'Looks decent' mapped to Warm" },
+          { label: "Safe default", value: "'Next week' means Monday" }
+        ]
+      };
+    }
+
+    function createFieldPlan() {
+      return {
+        type: "field",
+        title: "Schema evolution",
+        summary: "I do not have a Decision Maker field. Create it and fill the obvious records?",
+        ids: [1, 2],
+        field: "next",
+        fieldLabel: "New field",
+        preview: { next: "Decision Maker" },
+        risk: "Low",
+        assumptions: [
+          { label: "New field", value: "Decision Maker" },
+          { label: "Mapped examples", value: "CFO, Procurement lead" },
+          { label: "No settings needed", value: "Field is created from chat after confirmation" }
+        ]
+      };
+    }
+
+    function createStagePlan(accountName, stageName) {
+      const match = deals.find(d => d.account.toLowerCase() === accountName.toLowerCase());
+      return {
+        type: "stage",
+        title: "Stage change",
+        summary: `I matched ${match.account} and drafted a stage change for review.`,
+        ids: [match.id],
+        field: "stage",
+        fieldLabel: "Stage",
+        preview: { stage: stageName },
+        risk: "Medium",
+        assumptions: [
+          { label: "Identity", value: `${match.account} matched exactly` },
+          { label: "Current stage", value: match.stage },
+          { label: "Requires confirmation", value: "Stage changes can affect reporting" }
+        ]
+      };
+    }
+
+    function createUpdatePlanFromAction(action) {
+      const field = normalizeField(action.field);
+      const ids = resolveRecordIds(action);
+      if (!field || !ids.length || !("value" in action)) return null;
+      return {
+        type: "ai-update",
+        title: action.title || "AI drafted update",
+        summary: action.summary || `I matched ${ids.length} record${ids.length === 1 ? "" : "s"} and drafted a ${FIELD_LABELS[field]} update for review.`,
+        ids,
+        field,
+        fieldLabel: FIELD_LABELS[field],
+        preview: { [field]: action.value },
+        risk: action.risk || "Medium",
+        assumptions: normalizeAssumptions(action.assumptions, [
+          { label: "Source", value: action.source || "AI model interpretation" },
+          { label: "Requires confirmation", value: "This changes pipeline data" }
+        ])
+      };
+    }
+
+    function createDeletePlanFromAction(action) {
+      const ids = resolveRecordIds(action);
+      if (!ids.length) return null;
+      return {
+        type: "delete-records",
+        title: action.title || "Delete account",
+        summary: action.summary || `I matched ${ids.length} record${ids.length === 1 ? "" : "s"} for deletion. Confirm before removing anything.`,
+        ids,
+        field: "account",
+        fieldLabel: "Delete row",
+        preview: { account: "Remove from table" },
+        risk: action.risk || "High",
+        assumptions: normalizeAssumptions(action.assumptions, [
+          { label: "Data impact", value: "Deletes the full matching row from the table" },
+          { label: "Requires confirmation", value: "Deletion is always high risk" },
+          { label: "Undo", value: "Available after confirmation" }
+        ])
+      };
+    }
+
+    function createAddRecordPlanFromAction(action) {
+      const record = normalizeNewRecord(action.record || action.values || action);
+      if (!record.account) return null;
+      return {
+        type: "add-record",
+        title: action.title || "Add new account",
+        summary: action.summary || `I drafted a new sales pipeline row for ${record.account}.`,
+        ids: [],
+        field: "account",
+        fieldLabel: "New account",
+        preview: record,
+        risk: action.risk || "Medium",
+        assumptions: normalizeAssumptions(action.assumptions, [
+          { label: "Account", value: record.account },
+          { label: "Defaults", value: "Blank fields can be edited after creation" },
+          { label: "Requires confirmation", value: "New rows change pipeline data" }
+        ])
+      };
+    }
+
+    function createManualAddAccountPlan() {
+      return createAddRecordPlanFromAction({
+        title: "Add account manually",
+        summary: "I drafted a blank sales pipeline row. Confirm it, then edit the cells directly in the table.",
+        record: {
+          account: "New Account",
+          owner: "",
+          stage: "Discovery",
+          value: 0,
+          close: "",
+          next: "Set next step",
+          follow: "This week",
+          notes: "Created manually."
+        },
+        risk: "Low",
+        assumptions: [
+          { label: "Manual creation", value: "You can edit every field after confirming" },
+          { label: "Default stage", value: "Discovery" },
+          { label: "Default follow-up", value: "This week" }
+        ]
+      });
+    }
+
+    function createImportRecordsPlanFromAction(action) {
+      const rawRecords = Array.isArray(action.records) ? action.records : [];
+      const records = rawRecords
+        .map((record, index) => normalizeNewRecord({ ...record, id: nextDealId() + index }))
+        .filter(record => record.account);
+      if (!records.length) return null;
+      return {
+        type: "import-records",
+        title: action.title || "Import CSV records",
+        summary: action.summary || `I mapped ${records.length} CSV row${records.length === 1 ? "" : "s"} into the CRM table.`,
+        ids: [],
+        field: "account",
+        fieldLabel: "CSV import",
+        preview: {
+          mode: action.mode || "Append rows",
+          records
+        },
+        risk: action.risk || "High",
+        assumptions: normalizeAssumptions(action.assumptions, [
+          { label: "Import mode", value: "Add imported rows to the existing table after confirmation" },
+          { label: "Mapping", value: "CSV columns mapped into Account, Owner, Stage, Value, Close date, Next step, Follow-up, and Notes" },
+          { label: "Undo", value: "Available after confirmation" }
+        ])
+      };
+    }
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let value = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const next = text[i + 1];
+        if (char === '"' && inQuotes && next === '"') {
+          value += '"';
+          i++;
+        } else if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === "," && !inQuotes) {
+          row.push(value);
+          value = "";
+        } else if ((char === "\n" || char === "\r") && !inQuotes) {
+          if (char === "\r" && next === "\n") i++;
+          row.push(value);
+          if (row.some(cell => cell.trim())) rows.push(row);
+          row = [];
+          value = "";
+        } else {
+          value += char;
+        }
+      }
+      row.push(value);
+      if (row.some(cell => cell.trim())) rows.push(row);
+      return rows;
+    }
+
+    function rowsToObjects(rows) {
+      const headers = (rows[0] || []).map(header => header.trim());
+      return {
+        headers,
+        rows: rows.slice(1).map(row => Object.fromEntries(headers.map((header, index) => [header, row[index] || ""])))
+      };
+    }
+
+    async function importCsvFile(file) {
+      const text = await file.text();
+      const parsed = rowsToObjects(parseCsv(text));
+      if (!parsed.headers.length || !parsed.rows.length) {
+        addMessage("ai", "<strong>Import failed.</strong> I could not find headers and data rows in that CSV.");
+        return;
+      }
+
+      addMessage("ai", `<strong>Analyzing CSV.</strong> I found ${parsed.rows.length} row${parsed.rows.length === 1 ? "" : "s"} and ${parsed.headers.length} columns. I’ll map them into the CRM table before changing anything.`);
+      pendingPlan = await createImportPlanWithAI(parsed, file.name);
+      renderTrustPlan(pendingPlan);
+      renderAll();
+      addMessage("ai", `<strong>CSV import drafted.</strong> Review the mapped records in the preview panel, then confirm to add them to the CRM table.`);
+    }
+
+    async function createImportPlanWithAI(parsed, fileName) {
+      const localPlan = () => createImportRecordsPlanFromAction({
+        title: "Import CSV records",
+        summary: `I mapped ${parsed.rows.length} rows from ${fileName} using local column matching.`,
+        records: mapCsvRowsLocally(parsed.headers, parsed.rows),
+        mode: "Append rows",
+        risk: "High",
+        assumptions: [
+          { label: "File", value: fileName },
+          { label: "Fallback mapper", value: "Matched likely column names without the AI bridge" },
+          { label: "Import mode", value: "Add imported rows to the existing table after confirmation" }
+        ]
+      });
+
+      try {
+        const response = await askAIModelForAction("Import this CSV and map it into the PipeChat CRM sales pipeline table.", {
+          csvImport: {
+            fileName,
+            headers: parsed.headers,
+            rows: parsed.rows.slice(0, 50),
+            totalRows: parsed.rows.length
+          }
+        });
+        const action = response?.crmAction || response?.action ? (response.crmAction || response) : null;
+        if (action?.action === "import_mapping") {
+          const aiMappedRecords = mapCsvRowsWithColumnMap(action.columnMap || {}, parsed.rows);
+          const aiPlan = createImportRecordsPlanFromAction({
+            ...action,
+            action: "import_records",
+            title: action.title || "Import CSV records",
+            summary: action.summary || `I used AI to map CSV columns and prepared ${aiMappedRecords.length} CRM rows from ${fileName}.`,
+            records: aiMappedRecords,
+            mode: action.mode || "Append rows",
+            risk: action.risk || "High"
+          });
+          if (aiPlan) return aiPlan;
+        }
+        if (action?.action === "import_records") {
+          const aiPlan = createImportRecordsPlanFromAction(action);
+          if (aiPlan) return aiPlan;
+        }
+      } catch (error) {
+        addMessage("ai", `<strong>AI import unavailable.</strong> I used local CSV mapping instead.<small>${escapeHtml(error.message)}</small>`);
+      }
+
+      return localPlan();
+    }
+
+    function mapCsvRowsLocally(headers, rows) {
+      const fieldMap = {
+        account: ["account", "company", "company name", "organization", "client", "prospect", "deal", "opportunity", "name"],
+        owner: ["owner", "rep", "sales rep", "assigned", "assignee", "account owner"],
+        stage: ["stage", "status", "pipeline stage", "deal stage"],
+        value: ["value", "amount", "deal value", "revenue", "price", "budget"],
+        close: ["close", "close date", "closing date", "expected close", "target close"],
+        next: ["next", "next step", "action", "todo", "follow up notes", "notes"],
+        follow: ["follow", "follow-up", "follow up", "followup", "due", "due date", "next follow up"],
+        notes: ["notes", "note", "description", "details", "summary"]
+      };
+      const normalizedHeaders = headers.map(header => ({ original: header, normalized: normalizeHeader(header) }));
+      const pick = (row, field) => {
+        const candidates = fieldMap[field];
+        const exact = normalizedHeaders.find(header => candidates.includes(header.normalized));
+        const fuzzy = normalizedHeaders.find(header => candidates.some(candidate => header.normalized.includes(candidate) || candidate.includes(header.normalized)));
+        const match = exact || fuzzy;
+        return match ? row[match.original] || "" : "";
+      };
+
+      return rows.map(row => ({
+        account: pick(row, "account") || "Imported Account",
+        owner: pick(row, "owner"),
+        stage: normalizeStage(pick(row, "stage")),
+        value: parseMoney(pick(row, "value")),
+        close: pick(row, "close"),
+        next: pick(row, "next") || "Set next step",
+        follow: normalizeFollowUp(pick(row, "follow")),
+        notes: pick(row, "notes") || "Imported from CSV."
+      }));
+    }
+
+    function mapCsvRowsWithColumnMap(columnMap, rows) {
+      const get = (row, field) => {
+        const header = columnMap[field];
+        return header && row[header] != null ? row[header] : "";
+      };
+      return rows.map(row => ({
+        account: get(row, "account") || "Imported Account",
+        owner: get(row, "owner"),
+        stage: normalizeStage(get(row, "stage")),
+        value: parseMoney(get(row, "value")),
+        close: get(row, "close"),
+        next: get(row, "next") || "Set next step",
+        follow: normalizeFollowUp(get(row, "follow")),
+        notes: get(row, "notes") || "Imported from CSV."
+      }));
+    }
+
+    function normalizeHeader(value) {
+      return String(value || "").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+    }
+
+    function normalizeStage(value) {
+      const normalized = String(value || "").toLowerCase();
+      if (normalized.includes("proposal")) return "Proposal Sent";
+      if (normalized.includes("warm")) return "Warm";
+      if (normalized.includes("risk")) return "At Risk";
+      if (normalized.includes("won") || normalized.includes("closed")) return "Won";
+      return "Discovery";
+    }
+
+    function normalizeFollowUp(value) {
+      const normalized = String(value || "").toLowerCase();
+      if (normalized.includes("today")) return "Today";
+      if (normalized.includes("tomorrow")) return "Tomorrow";
+      if (normalized.includes("next")) return "Next week";
+      if (normalized.includes("done") || normalized.includes("complete")) return "Done";
+      return value ? String(value) : "This week";
+    }
+
+    function parseMoney(value) {
+      const number = Number(String(value || "").replace(/[^0-9.-]/g, ""));
+      return Number.isFinite(number) ? number : 0;
+    }
+
+    function normalizeNewRecord(input = {}) {
+      return {
+        id: nextDealId(),
+        account: String(input.account || input.recordMatch || input.name || "").trim(),
+        owner: String(input.owner || "").trim(),
+        stage: String(input.stage || "Discovery").trim(),
+        value: Number(input.value || 0),
+        close: String(input.close || input.closeDate || "").trim(),
+        next: String(input.next || input.nextStep || "Set next step").trim(),
+        follow: String(input.follow || input.followUp || "This week").trim(),
+        activity: "just now",
+        health: "updated",
+        notes: String(input.notes || "Created from PipeChat. Add notes here.").trim(),
+        history: ["Created from PipeChat preview."]
+      };
+    }
+
+    function nextDealId() {
+      return Math.max(0, ...deals.map(deal => deal.id)) + 1;
+    }
+
+    function buildPipelineContext() {
+      return {
+        schema: {
+          fields: ALLOWED_FIELDS.map(field => ({ name: field, label: FIELD_LABELS[field] || field })),
+          stages: [...new Set(deals.map(deal => deal.stage))],
+          followUpValues: [...new Set(deals.map(deal => deal.follow))],
+          owners: [...new Set(deals.map(deal => deal.owner).filter(Boolean))]
+        },
+        rows: deals.map(deal => ({
+          id: deal.id,
+          account: deal.account,
+          owner: deal.owner,
+          stage: deal.stage,
+          value: deal.value,
+          close: deal.close,
+          next: deal.next,
+          follow: deal.follow,
+          activity: deal.activity,
+          health: deal.health
+        }))
+      };
+    }
+
+    function getAIInstructions() {
+      return [
+        "You are PipeChat, a conversational CRM assistant for a sales pipeline table.",
+        "Return JSON only with this shape: { assistantMessage, crmAction, memoryNote }.",
+        "assistantMessage is the natural chat reply shown to the user.",
+        "crmAction is null for normal conversation, advice, explanation, or questions that do not need table changes.",
+        "crmAction is a structured action only when the user asks to view, filter, add, rename, or update CRM table data.",
+        "You receive short conversation history and possibly a pending clarification.",
+        "If the latest user command is a short answer like yes, no, use that, add them, assign it, or a name, interpret it as an answer to the pending clarification.",
+        "Do not treat yes/no replies as standalone commands when pendingClarification is present.",
+        "If pendingClarification is present and the user answered yes, resolve the originalCommand using the clarification answer.",
+        "If pendingClarification is present and the user answered no, cancel safely and do not create a new clarification.",
+        "Allowed crmAction values:",
+        "{ action: 'filter_view', field, operator: 'equals'|'contains'|'is_blank', value, label, title, summary, assumptions }",
+        "{ action: 'clear_view', title, summary, assumptions }",
+        "{ action: 'update_record', recordMatch, field, value, title, summary, risk, assumptions }",
+        "{ action: 'bulk_update', filter: { field, operator, value }, field, value, title, summary, risk, assumptions }",
+        "{ action: 'add_record', record: { account, owner, stage, value, close, next, follow, notes }, title, summary, risk, assumptions }",
+        "{ action: 'delete_record', recordMatch, ids, title, summary, risk, assumptions }",
+        "{ action: 'import_records', records: [{ account, owner, stage, value, close, next, follow, notes }], mode, title, summary, risk, assumptions }",
+        "{ action: 'import_mapping', columnMap: { account, owner, stage, value, close, next, follow, notes }, mode, title, summary, risk, assumptions }",
+        "Use filter_view for show/find/filter requests. These do not mutate data.",
+        "Use update_record or bulk_update only when the user asks to change data.",
+        "Use update_record with field account when the user asks to rename or change an account name.",
+        "Use add_record when the user asks to add, create, or track a new account/company/opportunity.",
+        "Use delete_record when the user asks to delete, remove, or archive an account/row. Deletions are high risk and require confirmation.",
+        "Use import_mapping when csvImport is provided. Return the CSV header name that maps to each CRM field, or null if missing. Set mode to Append rows because CSV imports add to the existing table. The app will apply the mapping to every CSV row.",
+        "Never invent fields outside the provided schema.",
+        "If a data change is ambiguous, put a clarify action in crmAction and ask one specific question in assistantMessage.",
+        "For normal conversation, answer helpfully and keep crmAction null."
+      ].join("\n");
+    }
+
+    async function askAIModelForAction(command, extraContext = {}) {
+      if (!PIPECHAT_AI_ENDPOINT) return null;
+      const response = await fetch(PIPECHAT_AI_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instructions: getAIInstructions(),
+          userCommand: command,
+          pipeline: buildPipelineContext(),
+          conversationHistory: conversationHistory.slice(-20),
+          pendingClarification,
+          ...extraContext
+        })
+      });
+      if (!response.ok) {
+        let detail = "";
+        let errorPayload = null;
+        try {
+          errorPayload = await response.json();
+          detail = errorPayload.error ? `: ${errorPayload.error}` : "";
+        } catch (_) {
+          detail = "";
+        }
+        const apiError = new Error(`AI endpoint returned ${response.status}${detail}`);
+        apiError.status = response.status;
+        apiError.usage = errorPayload?.usage || null;
+        throw apiError;
+      }
+      const data = await response.json();
+      applyUsageUpdate(data.usage);
+      return data.result || data;
+    }
+
+    function normalizeAIAction(action) {
+      if (!action || typeof action !== "object") return null;
+
+      if (action.action === "clear_view") {
+        return {
+          kind: "view",
+          title: action.title || "All pipeline records",
+          summary: action.summary || "I cleared the current view filter and restored the full sales pipeline.",
+          filter: null,
+          field: "account",
+          fieldLabel: "Account",
+          assumptions: normalizeAssumptions(action.assumptions, [
+            { label: "Intent", value: "Reset table view" },
+            { label: "Data changed", value: "No records were edited" }
+          ])
+        };
+      }
+
+      if (action.action === "filter_view") {
+        const field = normalizeField(action.field);
+        const predicate = buildPredicate(field, action.operator, action.value);
+        if (!field || !predicate) return null;
+        return {
+          kind: "view",
+          title: action.title || action.label || `${FIELD_LABELS[field]} filter`,
+          summary: action.summary || `I filtered the sales pipeline where ${FIELD_LABELS[field]} ${action.operator || "equals"} ${action.value || "blank"}.`,
+          filter: {
+            label: action.label || `${FIELD_LABELS[field]} ${action.operator || "equals"} ${action.value || "blank"}`,
+            field,
+            predicate
+          },
+          field,
+          fieldLabel: FIELD_LABELS[field],
+          assumptions: normalizeAssumptions(action.assumptions, [
+            { label: "Intent", value: "Show matching records, not edit records" },
+            { label: "Field", value: FIELD_LABELS[field] }
+          ])
+        };
+      }
+
+      if (action.action === "update_record" || action.action === "bulk_update") {
+        const plan = createUpdatePlanFromAction(action);
+        return plan ? { kind: "update", plan } : null;
+      }
+
+      if (action.action === "add_record") {
+        const plan = createAddRecordPlanFromAction(action);
+        return plan ? { kind: "update", plan } : null;
+      }
+
+      if (action.action === "delete_record") {
+        const plan = createDeletePlanFromAction(action);
+        return plan ? { kind: "update", plan } : null;
+      }
+
+      if (action.action === "import_records") {
+        const plan = createImportRecordsPlanFromAction(action);
+        return plan ? { kind: "update", plan } : null;
+      }
+
+      if (action.action === "clarify") {
+        return {
+          kind: "clarify",
+          question: action.question || "Which record should I update?",
+          assumptions: normalizeAssumptions(action.assumptions, []),
+          originalCommand: action.originalCommand || null
+        };
+      }
+
+      return null;
+    }
+
+    function normalizeAIResponse(response) {
+      if (!response || typeof response !== "object") return null;
+
+      if ("assistantMessage" in response || "crmAction" in response) {
+        const assistantMessage = response.assistantMessage || "I understand.";
+        if (!response.crmAction) {
+          return {
+            kind: "conversation",
+            assistantMessage,
+            memoryNote: response.memoryNote || null
+          };
+        }
+        const interpreted = normalizeAIAction(response.crmAction);
+        if (!interpreted) {
+          return {
+            kind: "conversation",
+            assistantMessage,
+            memoryNote: response.memoryNote || null
+          };
+        }
+        interpreted.assistantMessage = assistantMessage;
+        interpreted.memoryNote = response.memoryNote || null;
+        return interpreted;
+      }
+
+      return normalizeAIAction(response);
+    }
+
+    async function interpretPipelineCommandWithAI(command) {
+      try {
+        const response = await askAIModelForAction(command);
+        const interpreted = normalizeAIResponse(response);
+        if (interpreted) return interpreted;
+      } catch (error) {
+        if (error.status === 402) {
+          applyUsageUpdate(error.usage);
+          return {
+            kind: "conversation",
+            assistantMessage: "You have used all 1000 free AI chatbot messages. Payment will be required to continue using the AI chatbot once billing is connected."
+          };
+        }
+        addMessage("ai", `<strong>AI endpoint unavailable.</strong> I used the local interpreter for this command.<small>${escapeHtml(error.message)}</small>`);
+      }
+
+      const localIntent = interpretPipelineCommand(command);
+      if (localIntent) return localIntent;
+      return null;
+    }
+
+    function normalizeField(field) {
+      if (!field) return null;
+      const normalized = String(field).toLowerCase().trim().replace(/[\s-]+/g, "_");
+      const aliases = {
+        company: "account",
+        record: "account",
+        close_date: "close",
+        next_step: "next",
+        follow_up: "follow",
+        followups: "follow",
+        follow_ups: "follow",
+        status: "stage"
+      };
+      const resolved = aliases[normalized] || normalized;
+      return ALLOWED_FIELDS.includes(resolved) ? resolved : null;
+    }
+
+    function buildPredicate(field, operator, value) {
+      if (!field) return null;
+      const op = operator || "equals";
+      if (op === "is_blank") return deal => !deal[field];
+      if (op === "equals") return deal => String(deal[field] || "").toLowerCase() === String(value || "").toLowerCase();
+      if (op === "contains") return deal => String(deal[field] || "").toLowerCase().includes(String(value || "").toLowerCase());
+      return null;
+    }
+
+    function resolveRecordIds(action) {
+      if (Array.isArray(action.ids)) {
+        const requestedIds = action.ids
+          .map(id => Number(id))
+          .filter(id => Number.isFinite(id));
+        return requestedIds.filter(id => deals.some(deal => deal.id === id));
+      }
+      if (action.filter) {
+        const field = normalizeField(action.filter.field);
+        const predicate = buildPredicate(field, action.filter.operator, action.filter.value);
+        return predicate ? deals.filter(predicate).map(deal => deal.id) : [];
+      }
+      if (action.recordMatch) {
+        const matchText = String(action.recordMatch).toLowerCase();
+        return deals
+          .filter(deal => {
+            const account = deal.account.toLowerCase();
+            return account === matchText || account.includes(matchText) || matchText.includes(account);
+          })
+          .map(deal => deal.id);
+      }
+      return [];
+    }
+
+    function normalizeAssumptions(assumptions, fallback) {
+      if (!Array.isArray(assumptions) || !assumptions.length) return fallback;
+      return assumptions.map(item => {
+        if (typeof item === "string") return { label: "Assumption", value: item };
+        return { label: item.label || "Assumption", value: item.value || item.text || "" };
+      });
+    }
+
+    function interpretPipelineCommand(command) {
+      const lower = command.toLowerCase();
+
+      if (lower.includes("clear") || lower.includes("reset") || lower.includes("show all")) {
+        return {
+          kind: "view",
+          title: "All pipeline records",
+          summary: "I cleared the current view filter and restored the full sales pipeline.",
+          filter: null,
+          field: "account",
+          fieldLabel: "Account",
+          assumptions: [
+            { label: "Intent", value: "Reset table view" },
+            { label: "Data changed", value: "No records were edited" }
+          ]
+        };
+      }
+
+      if ((lower.includes("show") || lower.includes("filter") || lower.includes("find")) && (lower.includes("follow") || lower.includes("follow-up") || lower.includes("follow up"))) {
+        if (lower.includes("today")) {
+          return {
+            kind: "view",
+            title: "Follow-ups due today",
+            summary: "I filtered the sales pipeline to records where the Follow-up field is Today.",
+            filter: {
+              label: "Follow-up equals Today",
+              field: "follow",
+              predicate: deal => deal.follow === "Today"
+            },
+            field: "follow",
+            fieldLabel: "Follow-up",
+            assumptions: [
+              { label: "Intent", value: "Show matching records, not edit records" },
+              { label: "Field", value: "Follow-up" },
+              { label: "Condition", value: "Equals Today" }
+            ]
+          };
+        }
+
+        if (lower.includes("tomorrow")) {
+          return {
+            kind: "view",
+            title: "Follow-ups due tomorrow",
+            summary: "I filtered the sales pipeline to records where the Follow-up field is Tomorrow.",
+            filter: {
+              label: "Follow-up equals Tomorrow",
+              field: "follow",
+              predicate: deal => deal.follow === "Tomorrow"
+            },
+            field: "follow",
+            fieldLabel: "Follow-up",
+            assumptions: [
+              { label: "Intent", value: "Show matching records, not edit records" },
+              { label: "Field", value: "Follow-up" },
+              { label: "Condition", value: "Equals Tomorrow" }
+            ]
+          };
+        }
+      }
+
+      if ((lower.includes("show") || lower.includes("filter") || lower.includes("find")) && lower.includes("stale")) {
+        return {
+          kind: "view",
+          title: "Stale records",
+          summary: "I filtered the sales pipeline to records marked stale.",
+          filter: {
+            label: "Activity status is Stale",
+            field: "activity",
+            predicate: deal => deal.health === "stale"
+          },
+          field: "activity",
+          fieldLabel: "Activity",
+          assumptions: [
+            { label: "Intent", value: "Show matching records, not edit records" },
+            { label: "Condition", value: "No fresh activity in 7+ days" }
+          ]
+        };
+      }
+
+      if ((lower.includes("show") || lower.includes("filter") || lower.includes("find")) && lower.includes("missing owner")) {
+        return {
+          kind: "view",
+          title: "Records missing owners",
+          summary: "I filtered the sales pipeline to records where Owner is blank.",
+          filter: {
+            label: "Owner is missing",
+            field: "owner",
+            predicate: deal => !deal.owner
+          },
+          field: "owner",
+          fieldLabel: "Owner",
+          assumptions: [
+            { label: "Intent", value: "Show matching records, not edit records" },
+            { label: "Condition", value: "Owner is blank" }
+          ]
+        };
+      }
+
+      if ((lower.includes("show") || lower.includes("filter") || lower.includes("find")) && lower.includes("warm")) {
+        return {
+          kind: "view",
+          title: "Warm opportunities",
+          summary: "I filtered the sales pipeline to records where Stage is Warm.",
+          filter: {
+            label: "Stage equals Warm",
+            field: "stage",
+            predicate: deal => deal.stage === "Warm"
+          },
+          field: "stage",
+          fieldLabel: "Stage",
+          assumptions: [
+            { label: "Intent", value: "Show matching records, not edit records" },
+            { label: "Field", value: "Stage" },
+            { label: "Condition", value: "Equals Warm" }
+          ]
+        };
+      }
+
+      return null;
+    }
+
+    function applyViewIntent(intent) {
+      activeFilter = intent.filter;
+      pendingPlan = null;
+      pendingClarification = null;
+      expandedId = null;
+      setTab("table");
+      renderAll();
+      renderTrustView(intent);
+      const reply = intent.assistantMessage ? escapeHtml(intent.assistantMessage) : `<strong>${intent.title}.</strong> I updated the table view and did not change any records.<small>${intent.summary}</small>`;
+      addMessage("ai", reply);
+      rememberTurn("assistant", stripHtml(reply));
+    }
+
+    function applyUpdateIntent(interpreted) {
+      pendingPlan = interpreted.plan;
+      activeFilter = null;
+      pendingClarification = null;
+      renderTrustPlan(pendingPlan);
+      renderAll();
+      const reply = interpreted.assistantMessage ? escapeHtml(interpreted.assistantMessage) : `<strong>${pendingPlan.title}.</strong> I drafted the change and held it for review in the preview panel.<small>${pendingPlan.summary}</small>`;
+      addMessage("ai", reply);
+      rememberTurn("assistant", stripHtml(reply));
+    }
+
+    function applyClarification(interpreted) {
+      pendingPlan = null;
+      pendingClarification = {
+        question: interpreted.question,
+        assumptions: interpreted.assumptions,
+        originalCommand: conversationHistory.filter(turn => turn.role === "user").at(-1)?.text || ""
+      };
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>Clarification needed</h3>
+          <p>${interpreted.question}</p>
+          ${interpreted.assumptions.map(a => `<div class="assumption"><strong>${a.label}</strong><span>${a.value}</span></div>`).join("")}
+        </div>
+      `;
+      const reply = interpreted.assistantMessage ? escapeHtml(interpreted.assistantMessage) : `<strong>Quick clarification.</strong> ${escapeHtml(interpreted.question)}`;
+      addMessage("ai", reply);
+      rememberTurn("assistant", stripHtml(reply));
+    }
+
+    function applyConversationReply(interpreted) {
+      pendingPlan = null;
+      const reply = escapeHtml(interpreted.assistantMessage || "I understand.");
+      addMessage("ai", reply);
+      rememberTurn("assistant", interpreted.assistantMessage || "I understand.");
+    }
+
+    async function submitCommand(text) {
+      const command = text.trim();
+      if (!command) return;
+      if (chatUsage?.paymentRequired) {
+        addMessage("user", escapeHtml(command));
+        addMessage("ai", "<strong>AI chatbot limit reached.</strong> You have used all 1000 free messages. Payment will be required to continue once billing is connected.");
+        return;
+      }
+      commandCount++;
+      addMessage("user", escapeHtml(command));
+      rememberTurn("user", command);
+
+      if (pendingClarification && isNegativeClarificationReply(command)) {
+        cancelPendingClarification();
+        return;
+      }
+
+      const lower = command.toLowerCase();
+      addMessage("ai", `<strong>Reading the pipeline context.</strong> I am interpreting this against ${deals.length} records and ${ALLOWED_FIELDS.length} fields.<small>${PIPECHAT_AI_ENDPOINT ? "Using connected AI endpoint." : "Using local interpreter until an AI endpoint is configured."}</small>`);
+      const commandForAI = resolveClarificationCommand(command);
+      const interpreted = await interpretPipelineCommandWithAI(commandForAI);
+      if (interpreted) {
+        if (interpreted.kind === "conversation") applyConversationReply(interpreted);
+        if (interpreted.kind === "view") applyViewIntent(interpreted);
+        if (interpreted.kind === "update") applyUpdateIntent(interpreted);
+        if (interpreted.kind === "clarify") applyClarification(interpreted);
+        return;
+      }
+
+      if (lower.includes("rbc corp") && lower.includes("stage") && lower.includes("warm")) {
+        pendingClarification = null;
+        pendingPlan = createStagePlan("RBC Corp", "Warm");
+        addMessage("ai", "<strong>Drafted a stage change.</strong> I matched RBC Corp and put the Warm stage into preview. Confirm in the preview panel when ready.<small>1 record matched. Medium risk because stage changes affect reports.</small>");
+      } else if (lower.includes("december") || lower.includes("close date") || lower.includes("january 31")) {
+        pendingClarification = null;
+        pendingPlan = createBulkPlan();
+        addMessage("ai", "<strong>Drafted a bulk update.</strong> I matched December close dates and put ghost changes in the table. Confirm in the preview panel when ready.<small>3 records matched. Medium risk because close dates affect forecasts.</small>");
+      } else if (lower.includes("paste") || lower.includes("conversation") || lower.includes("feedback")) {
+        pendingClarification = null;
+        pendingPlan = createPastePlan();
+        addMessage("ai", "<strong>I found 3 updates in that conversation.</strong> Explicit and inferred fields are shown in the preview panel before anything changes.<small>Low risk. No deletions, ownership changes, or won/lost status changes.</small>");
+      } else if (lower.includes("field") || lower.includes("decision maker") || lower.includes("no field")) {
+        pendingClarification = null;
+        pendingPlan = createFieldPlan();
+        addMessage("ai", "<strong>This needs a new field.</strong> I can create Decision Maker and populate obvious values after you confirm.<small>Schema evolves from the conversation. No settings screen required.</small>");
+      } else if (lower.includes("share")) {
+        pendingClarification = null;
+        showSharePlan();
+        addMessage("ai", "<strong>Created a guided share preview.</strong> Sarah can view the pipeline without an account. Editing triggers the Team upgrade path.<small>Shared by Ravi, updated just now.</small>");
+      } else if (lower.includes("delete") || lower.includes("remove")) {
+        pendingClarification = null;
+        const matched = deals.find(deal => lower.includes(deal.account.toLowerCase()));
+        if (matched) {
+          pendingPlan = createDeletePlanFromAction({
+            ids: [matched.id],
+            title: "Delete account",
+            summary: `I matched ${matched.account} for deletion. Confirm before removing it from the CRM table.`,
+            risk: "High"
+          });
+          addMessage("ai", `<strong>Delete drafted.</strong> I matched ${escapeHtml(matched.account)} and held the deletion for review.`);
+        } else {
+          addMessage("ai", "<strong>Quick clarification.</strong> Which account should I delete?");
+          pendingClarification = {
+            question: "Which account should I delete?",
+            assumptions: [{ label: "Action", value: "Delete account" }],
+            originalCommand: command
+          };
+          return;
+        }
+      } else if (lower.includes("add account") || lower.includes("new account") || lower.includes("create account")) {
+        pendingClarification = null;
+        const accountName = command
+          .replace(/^(add|create|new)\s+(an?\s+)?(account|company|opportunity)\s*/i, "")
+          .trim() || "New Account";
+        pendingPlan = createAddRecordPlanFromAction({
+          title: "Add new account",
+          summary: `I drafted a new row for ${accountName}.`,
+          record: { account: accountName, stage: "Discovery", value: 0, next: "Set next step", follow: "This week" },
+          risk: "Low"
+        });
+        addMessage("ai", `<strong>Drafted a new account.</strong> I prepared a new row for ${escapeHtml(accountName)}. Confirm in the preview panel when ready.`);
+      } else {
+        pendingPlan = createPastePlan();
+        addMessage("ai", "<strong>I drafted the safest matching update.</strong> I treated this as a tracker update and held it for review in the preview panel.<small>PipeChat asks one question only when ambiguity could corrupt data.</small>");
+      }
+      renderTrustPlan(pendingPlan);
+      renderAll();
+    }
+
+    window.confirmPlan = async function() {
+      if (!pendingPlan) return;
+      lastSnapshot = JSON.stringify(deals);
+      let count = pendingPlan.ids.length;
+
+      if (pendingPlan.type === "add-record") {
+        deals.unshift({ ...pendingPlan.preview, id: nextDealId() });
+        count = 1;
+      } else if (pendingPlan.type === "delete-records") {
+        const deleteIds = new Set(pendingPlan.ids);
+        const beforeDeleteCount = deals.length;
+        for (let i = deals.length - 1; i >= 0; i--) {
+          if (deleteIds.has(deals[i].id)) deals.splice(i, 1);
+        }
+        activeFilter = null;
+        count = beforeDeleteCount - deals.length;
+      } else if (pendingPlan.type === "import-records") {
+        const startingId = nextDealId();
+        deals.push(...pendingPlan.preview.records.map((record, index) => ({
+          ...record,
+          id: startingId + index,
+          activity: record.activity || "just now",
+          health: record.health || "updated",
+          history: record.history?.length ? record.history : ["Imported from CSV."]
+        })));
+        activeFilter = null;
+        count = pendingPlan.preview.records.length;
+      } else {
+        deals.forEach(deal => {
+          if (!pendingPlan.ids.includes(deal.id)) return;
+          Object.entries(pendingPlan.preview).forEach(([field, value]) => {
+            if (field in deal) deal[field] = value;
+          });
+          deal.activity = "just now";
+          deal.health = "updated";
+          deal.history.unshift("Confirmed from PipeChat preview.");
+        });
+      }
+
+      pendingPlan = null;
+      renderTrustEmpty();
+      renderAll();
+      addMessage("ai", `<strong>Done.</strong> Updated ${count} records. Undo is available below.`);
+      showQuickUndo(`Updated ${count} records.`);
+      showToast(`Done. Updated ${count} records.`);
+      await saveCrmDatabase();
+    };
+
+    window.cancelPlan = function() {
+      pendingPlan = null;
+      renderTrustEmpty();
+      renderAll();
+      addMessage("ai", "<strong>Cancelled.</strong> No records changed.");
+    };
+
+    function showToast(text) {
+      document.getElementById("toastText").textContent = text;
+      document.getElementById("toast").classList.add("show");
+      clearTimeout(window.toastTimer);
+      window.toastTimer = setTimeout(() => document.getElementById("toast").classList.remove("show"), 5000);
+    }
+
+    async function undoLastChange() {
+      if (!lastSnapshot) return;
+      const restored = JSON.parse(lastSnapshot);
+      deals.splice(0, deals.length, ...restored);
+      lastSnapshot = null;
+      document.getElementById("toast").classList.remove("show");
+      hideQuickUndo();
+      renderAll();
+      addMessage("ai", "<strong>Undone.</strong> The last confirmed update was reversed.");
+      await saveCrmDatabase();
+    }
+
+    document.getElementById("undoBtn").addEventListener("click", undoLastChange);
+    document.getElementById("quickUndoBtn").addEventListener("click", undoLastChange);
+
+    function showSharePlan() {
+      setTab("dashboard");
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>Shared view preview</h3>
+          <p>Ravi shares this live pipeline with Sarah. Sarah can inspect the view without setup. Editing requires joining the workspace.</p>
+          <div class="plan-meta">
+            <div class="meta"><b>Recipient</b>Sarah</div>
+            <div class="meta"><b>Access</b>View-only</div>
+            <div class="meta"><b>Updated</b>Just now</div>
+            <div class="meta"><b>Upgrade trigger</b>Second editor</div>
+          </div>
+          <button class="btn primary" onclick="showUpgrade()">Simulate Sarah editing</button>
+        </div>
+      `;
+    }
+
+    window.showUpgrade = function() {
+      trustBody.innerHTML = `
+        <div class="plan-card">
+          <h3>Team upgrade moment</h3>
+          <p>Sarah joined and started collaborating. Unlock Team now.</p>
+          <div class="assumption"><strong>Value proven</strong><span>Sarah took over 4 follow-ups</span></div>
+          <div class="assumption"><strong>Solo boundary</strong><span>View-only sharing remains available</span></div>
+          <div class="assumption"><strong>Team plan</strong><span>$99/month, up to 5 users</span></div>
+          <div class="trust-actions">
+            <button class="btn primary">Unlock Team</button>
+            <button class="btn">Keep view-only</button>
+          </div>
+        </div>
+      `;
+      addMessage("ai", "<strong>Upgrade nudge shown.</strong> Sarah's edit turns a shared link into active collaboration.");
+    };
+
+    function setTab(tab) {
+      ["table", "dashboard", "activity"].forEach(name => {
+        document.getElementById(name + "Tab").classList.toggle("active", name === tab);
+      });
+      document.getElementById("tableView").style.display = tab === "table" ? "block" : "none";
+      document.getElementById("dashboardView").style.display = tab === "dashboard" ? "grid" : "none";
+      document.getElementById("activityView").style.display = tab === "activity" ? "grid" : "none";
+    }
+
+    document.getElementById("tableTab").addEventListener("click", () => setTab("table"));
+    document.getElementById("dashboardTab").addEventListener("click", () => setTab("dashboard"));
+    document.getElementById("activityTab").addEventListener("click", () => setTab("activity"));
+    document.getElementById("shareBtn").addEventListener("click", showSharePlan);
+    document.getElementById("addAccountBtn").addEventListener("click", () => {
+      pendingClarification = null;
+      pendingPlan = createManualAddAccountPlan();
+      renderTrustPlan(pendingPlan);
+      renderAll();
+      addMessage("ai", "<strong>Drafted a blank account row.</strong> Confirm it, then edit the row directly in the table.");
+    });
+    document.getElementById("importCsvBtn").addEventListener("click", () => {
+      document.getElementById("csvFileInput").click();
+    });
+    document.getElementById("csvFileInput").addEventListener("change", event => {
+      const file = event.target.files && event.target.files[0];
+      if (file) importCsvFile(file);
+      event.target.value = "";
+    });
+    document.getElementById("clearFilterBtn").addEventListener("click", () => {
+      submitCommand("show all records");
+    });
+    sendBtn.addEventListener("click", () => {
+      if (chatUsage?.paymentRequired) return;
+      submitCommand(chatInput.value);
+      chatInput.value = "";
+    });
+    chatInput.addEventListener("keydown", event => {
+      if (chatUsage?.paymentRequired) return;
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        submitCommand(chatInput.value);
+        chatInput.value = "";
+      }
+    });
+    document.addEventListener("paste", event => {
+      const text = (event.clipboardData || window.clipboardData).getData("text");
+      if (text && text.length > 80 && document.activeElement !== chatInput) {
+        event.preventDefault();
+        chatInput.value = text;
+        addMessage("ai", "<strong>I found a long pasted conversation.</strong> Apply extraction preview?");
+        pendingPlan = createPastePlan();
+        renderTrustPlan(pendingPlan);
+        renderAll();
+      }
+    });
+
+    document.querySelectorAll("[data-demo]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const type = btn.dataset.demo;
+        const command = type === "today"
+          ? "Show me all follow ups for today."
+          : type === "bulk"
+          ? "Move all December close dates to January 31."
+          : type === "paste"
+            ? "Paste hiring-manager-style team conversation and extract updates."
+            : "We mentioned CFO and procurement lead, but I do not have a decision maker field.";
+        chatInput.value = command;
+        submitCommand(command);
+        chatInput.value = "";
+      });
+    });
+
+    function rotatePlaceholder() {
+      let i = 0;
+      setInterval(() => {
+        if (chatUsage?.paymentRequired) return;
+        i = (i + 1) % placeholders.length;
+        chatInput.placeholder = placeholders[i];
+      }, 3500);
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;"
+      }[char]));
+    }
+
+    function escapeAttribute(value) {
+      return String(value).replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;"
+      }[char]));
+    }
+
+    function stripHtml(value) {
+      const div = document.createElement("div");
+      div.innerHTML = value;
+      return div.textContent || div.innerText || "";
+    }
+
+    function renderAll() {
+      renderRows();
+      renderMetrics();
+      renderCharts();
+      renderActivity();
+    }
+
+    addMessage("ai", "<strong>Today needs attention.</strong> Four follow-ups are due, three records are stale, and one account has no owner. Tell me what happened today or try a demo command.<small>Examples: bulk close dates, paste a conversation, create a missing field, or share this view with Sarah.</small>");
+    renderTrustEmpty();
+    renderAll();
+    loadCrmDatabase();
+    loadChatUsage();
+    rotatePlaceholder();
+  </script>
+</body>
+</html>
