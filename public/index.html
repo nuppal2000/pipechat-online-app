@@ -1,754 +1,60 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PipeChat CRM Prototype</title>
-  <style>
-    :root {
-      --bg: #f6f8fb;
-      --panel: #ffffff;
-      --line: #d9e1ea;
-      --line-soft: #e9eef4;
-      --text: #17202a;
-      --muted: #6c7785;
-      --blue: #176b87;
-      --blue-2: #e7f3f6;
-      --teal: #1b8a7a;
-      --red: #b83232;
-      --red-bg: #fff0f0;
-      --yellow: #916b00;
-      --yellow-bg: #fff8df;
-      --green: #1d7a4d;
-      --green-bg: #eaf8f1;
-      --gray-bg: #f1f3f5;
-      --shadow: 0 10px 30px rgba(23, 32, 42, .08);
-      font-family: Inter, Arial, sans-serif;
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-    }
-
-    body.auth-locked .app,
-    body.auth-locked .toast {
-      display: none;
-    }
-
-    button, input, textarea, select {
-      font: inherit;
-    }
-
-    .app {
-      display: grid;
-      grid-template-columns: minmax(300px, 28%) minmax(520px, 1fr) minmax(320px, 28%);
-      min-height: 100vh;
-    }
-
-    .auth-screen {
-      display: none;
-      min-height: 100vh;
-      place-items: center;
-      padding: 32px;
-      background: radial-gradient(circle at top left, #e7f3f6, transparent 34%), var(--bg);
-    }
-
-    body.auth-locked .auth-screen {
-      display: grid;
-    }
-
-    .auth-card {
-      width: min(440px, 100%);
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      box-shadow: var(--shadow);
-      padding: 28px;
-    }
-
-    .auth-card h1 {
-      margin: 0 0 6px;
-      font-size: 24px;
-      letter-spacing: 0;
-    }
-
-    .auth-card p {
-      margin: 0 0 20px;
-      color: var(--muted);
-      line-height: 1.45;
-    }
-
-    .auth-field {
-      display: grid;
-      gap: 6px;
-      margin-bottom: 12px;
-    }
-
-    .auth-field label {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--muted);
-    }
-
-    .auth-field input {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 11px 12px;
-      color: var(--text);
-      background: #fff;
-    }
-
-    .auth-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 16px;
-    }
-
-    .auth-message {
-      min-height: 20px;
-      margin-top: 12px;
-      color: var(--red);
-      font-size: 13px;
-      line-height: 1.35;
-    }
-
-    .account-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-
-    .pane {
-      min-width: 0;
-      background: var(--panel);
-      border-right: 1px solid var(--line);
-    }
-
-    .right-pane {
-      border-right: 0;
-      box-shadow: -8px 0 24px rgba(23, 32, 42, .04);
-    }
-
-    .pane-header {
-      min-height: 72px;
-      padding: 18px 20px 14px;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-
-    .brand {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .brand h1, .pane-title h2 {
-      margin: 0;
-      font-size: 18px;
-      letter-spacing: 0;
-    }
-
-    .brand span, .pane-title span {
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border-radius: 999px;
-      padding: 4px 9px;
-      font-size: 12px;
-      color: var(--blue);
-      background: var(--blue-2);
-      border: 1px solid #c9e4eb;
-      white-space: nowrap;
-    }
-
-    .chat-pane {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      height: 100vh;
-    }
-
-    .chat-feed {
-      overflow: auto;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .message {
-      border: 1px solid var(--line-soft);
-      border-radius: 8px;
-      padding: 12px;
-      line-height: 1.35;
-      font-size: 14px;
-      background: #fff;
-    }
-
-    .message.user {
-      background: #eef7fa;
-      border-color: #cfe7ed;
-    }
-
-    .message.ai strong {
-      color: var(--blue);
-    }
-
-    .message small {
-      display: block;
-      color: var(--muted);
-      margin-top: 8px;
-      font-size: 12px;
-    }
-
-    .chat-input-wrap {
-      border-top: 1px solid var(--line);
-      padding: 12px;
-      background: #fff;
-    }
-
-    .beta-warning {
-      font-size: 12px;
-      line-height: 1.3;
-      color: #775b10;
-      background: var(--yellow-bg);
-      border: 1px solid #f0df9b;
-      border-radius: 8px;
-      padding: 9px 10px;
-      margin-bottom: 10px;
-    }
-
-    .composer {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-      align-items: end;
-    }
-
-    textarea {
-      width: 100%;
-      resize: none;
-      min-height: 82px;
-      max-height: 160px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-      color: var(--text);
-      outline: none;
-      line-height: 1.35;
-    }
-
-    textarea:focus {
-      border-color: var(--blue);
-      box-shadow: 0 0 0 3px rgba(23, 107, 135, .14);
-    }
-
-    .btn {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--text);
-      border-radius: 7px;
-      padding: 9px 12px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 7px;
-      min-height: 38px;
-    }
-
-    .btn:hover { background: #f7f9fb; }
-
-    .btn:disabled,
-    textarea:disabled {
-      cursor: not-allowed;
-      opacity: .58;
-    }
-
-    textarea:disabled {
-      background: #f5f7f8;
-      color: var(--muted);
-    }
-
-    .btn.primary {
-      background: var(--blue);
-      color: #fff;
-      border-color: var(--blue);
-    }
-
-    .btn.primary:hover { background: #13586f; }
-
-    .btn.danger {
-      color: var(--red);
-      border-color: #f0c8c8;
-    }
-
-    .btn.icon {
-      width: 38px;
-      padding: 0;
-    }
-
-    .main-pane {
-      display: grid;
-      grid-template-rows: auto auto auto 1fr;
-      height: 100vh;
-      background: var(--bg);
-    }
-
-    .summary {
-      padding: 16px 18px;
-      display: grid;
-      grid-template-columns: repeat(4, minmax(120px, 1fr));
-      gap: 12px;
-    }
-
-    .metric {
-      background: #fff;
-      border: 1px solid var(--line-soft);
-      border-radius: 8px;
-      padding: 12px;
-      box-shadow: 0 6px 18px rgba(23, 32, 42, .04);
-    }
-
-    .metric b {
-      display: block;
-      font-size: 22px;
-      margin-bottom: 3px;
-    }
-
-    .metric span {
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .toolbar {
-      padding: 0 18px 14px;
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-    }
-
-    .filter-strip {
-      margin: 0 18px 12px;
-      display: none;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      border: 1px solid #c9e4eb;
-      border-radius: 8px;
-      background: #f1f9fb;
-      color: var(--blue);
-      padding: 9px 11px;
-      font-size: 13px;
-    }
-
-    .filter-strip.show {
-      display: flex;
-    }
-
-    .filter-strip strong {
-      color: var(--text);
-    }
-
-    .undo-strip {
-      margin: 0 18px 12px;
-      display: none;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      border: 1px solid #bfe6d0;
-      border-radius: 8px;
-      background: var(--green-bg);
-      color: var(--green);
-      padding: 9px 11px;
-      font-size: 13px;
-    }
-
-    .undo-strip.show {
-      display: flex;
-    }
-
-    .undo-strip strong {
-      color: var(--text);
-    }
-
-    .segmented {
-      display: inline-flex;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      overflow: hidden;
-      background: #fff;
-    }
-
-    .segmented button {
-      border: 0;
-      border-right: 1px solid var(--line);
-      background: #fff;
-      padding: 8px 12px;
-      cursor: pointer;
-      color: var(--muted);
-    }
-
-    .segmented button:last-child { border-right: 0; }
-    .segmented button.active {
-      color: var(--blue);
-      background: var(--blue-2);
-    }
-
-    .table-wrap {
-      margin: 0 18px 18px;
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      overflow: auto;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 860px;
-      font-size: 14px;
-    }
-
-    th, td {
-      border-bottom: 1px solid var(--line-soft);
-      padding: 10px 11px;
-      text-align: left;
-      vertical-align: middle;
-      white-space: nowrap;
-    }
-
-    th {
-      font-size: 12px;
-      color: var(--muted);
-      font-weight: 700;
-      background: #f9fbfc;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-
-    tr:nth-child(even):not(.expanded-row) td { background: #fbfcfd; }
-    tr.overdue td { background: var(--red-bg); }
-    tr.due td { background: var(--yellow-bg); }
-    tr.updated td { background: var(--green-bg); }
-    tr.stale td { color: #7c858f; background: var(--gray-bg); }
-    tr.ghost td {
-      color: #79828d;
-      font-style: italic;
-      background: #eef2f6;
-    }
-
-    tr.data-row { cursor: pointer; }
-    tr.data-row:hover td { background: #eef7fa; }
-
-    .status {
-      display: inline-flex;
-      align-items: center;
-      border-radius: 999px;
-      padding: 3px 8px;
-      font-size: 12px;
-      border: 1px solid transparent;
-    }
-
-    .status.warm { color: #7c5d00; background: #fff1b8; border-color: #ead47a; }
-    .status.proposal { color: #145d79; background: #e2f2f7; border-color: #bcdde7; }
-    .status.discovery { color: #565f6b; background: #eef1f4; border-color: #d7dee6; }
-    .status.done { color: var(--green); background: var(--green-bg); border-color: #bfe6d0; }
-    .status.risk { color: var(--red); background: var(--red-bg); border-color: #f1c3c3; }
-
-    .cell-input, .cell-select {
-      width: 100%;
-      min-width: 96px;
-      border: 1px solid transparent;
-      border-radius: 6px;
-      background: transparent;
-      color: inherit;
-      padding: 6px 7px;
-      margin: -6px -7px;
-      outline: none;
-    }
-
-    .cell-input:hover, .cell-select:hover {
-      border-color: var(--line);
-      background: #fff;
-    }
-
-    .cell-input:focus, .cell-select:focus {
-      border-color: var(--blue);
-      background: #fff;
-      box-shadow: 0 0 0 3px rgba(23, 107, 135, .12);
-    }
-
-    .cell-input.next-step {
-      min-width: 180px;
-    }
-
-    .manual-cue {
-      color: var(--muted);
-      font-size: 12px;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .expanded-row td {
-      white-space: normal;
-      background: #fff !important;
-      padding: 0;
-    }
-
-    .record-detail {
-      display: grid;
-      grid-template-columns: 1.1fr .9fr;
-      gap: 16px;
-      padding: 16px;
-      border-bottom: 1px solid var(--line-soft);
-    }
-
-    .detail-block h3 {
-      margin: 0 0 8px;
-      font-size: 14px;
-    }
-
-    .detail-block p, .activity-item p {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.4;
-    }
-
-    .activity-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .activity-item {
-      border: 1px solid var(--line-soft);
-      border-radius: 8px;
-      padding: 10px;
-      background: #fff;
-    }
-
-    .dashboard {
-      display: none;
-      margin: 0 18px 18px;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-      overflow: auto;
-    }
-
-    .chart-card, .share-preview {
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 16px;
-    }
-
-    .chart-card h3, .share-preview h3 {
-      margin: 0 0 14px;
-      font-size: 15px;
-    }
-
-    .bar {
-      display: grid;
-      grid-template-columns: 120px 1fr 38px;
-      gap: 10px;
-      align-items: center;
-      margin: 10px 0;
-      font-size: 13px;
-    }
-
-    .bar-track {
-      height: 10px;
-      border-radius: 999px;
-      background: #edf1f5;
-      overflow: hidden;
-    }
-
-    .bar-fill {
-      height: 100%;
-      background: var(--teal);
-      border-radius: 999px;
-    }
-
-    .trust-pane {
-      display: grid;
-      grid-template-rows: auto 1fr;
-      height: 100vh;
-    }
-
-    .trust-body {
-      overflow: auto;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-
-    .plan-card {
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 14px;
-      box-shadow: var(--shadow);
-    }
-
-    .plan-card h3 {
-      margin: 0 0 8px;
-      font-size: 16px;
-    }
-
-    .plan-meta {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin: 12px 0;
-    }
-
-    .meta {
-      border: 1px solid var(--line-soft);
-      border-radius: 7px;
-      padding: 8px;
-      background: #fbfcfd;
-    }
-
-    .meta b {
-      display: block;
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 3px;
-    }
-
-    .mini-table {
-      width: 100%;
-      min-width: 0;
-      font-size: 12px;
-      margin-top: 10px;
-    }
-
-    .mini-table th, .mini-table td {
-      padding: 8px;
-      white-space: normal;
-    }
-
-    .assumption {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: center;
-      border: 1px solid var(--line-soft);
-      border-radius: 7px;
-      padding: 9px;
-      font-size: 13px;
-      background: #fbfcfd;
-    }
-
-    .assumption span {
-      color: var(--muted);
-    }
-
-    .trust-actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 9px;
-      margin-top: 12px;
-    }
-
-    .empty-trust {
-      color: var(--muted);
-      line-height: 1.45;
-      border: 1px dashed #cbd5df;
-      border-radius: 8px;
-      padding: 14px;
-      background: #fbfcfd;
-    }
-
-    .toast {
-      position: fixed;
-      left: 50%;
-      bottom: 18px;
-      transform: translateX(-50%) translateY(90px);
-      opacity: 0;
-      pointer-events: none;
-      background: #17202a;
-      color: #fff;
-      border-radius: 8px;
-      padding: 11px 14px;
-      box-shadow: var(--shadow);
-      transition: .2s ease;
-      z-index: 10;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-size: 14px;
-    }
-
-    .toast.show {
-      opacity: 1;
-      transform: translateX(-50%) translateY(0);
-      pointer-events: auto;
-    }
-
-    .toast button {
-      border: 0;
-      background: transparent;
-      color: #9be7dc;
-      cursor: pointer;
-      font-weight: 700;
-    }
-
-    .mobile-note { display: none; }
-
-    @media (max-width: 1080px) {
-      .app { grid-template-columns: 320px 1fr; }
-      .right-pane {
-        grid-column: 1 / -1;
-        height: auto;
-        border-top: 1px solid var(--line);
-      }
-      .trust-pane { height: auto; }
-      .trust-body { max-height: 420px; }
-    }
-
-    @media (max-width: 760px) {
-      .app { display: block; }
-      .chat-pane, .main-pane, .trust-pane { height: auto; min-height: 540px; }
-      .summary { grid-template-columns: 1fr 1fr; }
-      .dashboard { grid-template-columns: 1fr; }
-      .record-detail { grid-template-columns: 1fr; }
-      .mobile-note {
-        display: block;
-        margin-top: 8px;
-        color: var(--muted);
-        font-size: 12px;
-      }
-    }
-  </style>
-</head>
-<body class="auth-locked">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PipeChat CRM</title><script id="local-file-launcher">if (location.protocol === 'file:') location.replace("http://127.0.0.1:8787/");</script><style>:root {
+  --bg:#f6f7f8; --panel:#fff; --soft:#f7f9fa; --line:#dfe4e6; --line-soft:#edf0f1;
+  --text:#252c30; --muted:#69757c; --blue:#167364; --blue-2:#e9f5f0; --teal:#167364;
+  --red:#b54449; --red-bg:#fff1f2; --yellow:#886712; --yellow-bg:#fff8df;
+  --green:#267453; --green-bg:#eaf6ef; --gray-bg:#f3f4f5; --radius:5px; --row-height:51px;
+  --shadow:0 8px 28px #15222b12; --body-font:'Segoe UI',Arial,sans-serif;
+  font-family:var(--body-font); font-size:13px; color-scheme:light;
+}
+*{box-sizing:border-box;letter-spacing:0}
+body{margin:0;background:var(--bg);color:var(--text);min-width:320px;font-family:var(--body-font)}
+button,input,textarea,select{font:inherit;color:inherit}button,a,summary{touch-action:manipulation}button,summary{cursor:pointer}button:disabled,textarea:disabled{cursor:not-allowed;opacity:.48}
+button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+svg{flex-shrink:0;vertical-align:middle}button svg{pointer-events:none}a{color:inherit}
+[hidden]{display:none!important}
+.app{display:grid;grid-template-columns:minmax(0,1fr) 360px;grid-template-rows:72px minmax(450px,56vh) minmax(310px,1fr);min-height:100vh;grid-template-areas:'head head' 'main chat' 'main trust'}
+.masthead{grid-area:head;display:flex;align-items:center;gap:22px;padding:0 26px;border-bottom:1px solid var(--line);background:var(--panel);min-width:0;z-index:5}
+.wordmark{display:flex;align-items:center;gap:10px;font-size:21px;font-weight:700;text-decoration:none;white-space:nowrap}
+.brand-mark{display:grid;place-items:center;background:var(--blue);color:#fff;width:32px;height:32px;border-radius:var(--radius)}
+.brand-mark svg{width:21px;height:21px}.design-name{color:var(--muted);font-size:12px;white-space:nowrap}
+.account-actions{display:flex;gap:10px;align-items:center;margin-left:auto;min-width:0}.pill{font-size:12px;color:var(--muted);overflow-wrap:anywhere;min-width:0}.gallery-link{display:grid;place-items:center;width:34px;height:34px;flex-shrink:0;color:var(--muted)}
+.view-tabs{display:flex;align-self:stretch;align-items:stretch;gap:4px}.view-tabs button{background:transparent;border:0;border-bottom:2px solid transparent;display:flex;align-items:center;gap:8px;padding:0 13px;color:var(--muted);white-space:nowrap;font-weight:500}.view-tabs button.active{border-color:var(--blue);color:var(--blue)}.view-tabs button:hover{background:var(--soft)}
+.pane{min-width:0;background:var(--panel)}.main-pane{grid-area:main;display:flex;flex-direction:column;border-right:1px solid var(--line)}.chat-pane{grid-area:chat;display:grid;grid-template-rows:auto minmax(120px,1fr) auto;min-height:0;border-bottom:1px solid var(--line)}.trust-pane{grid-area:trust;display:flex;flex-direction:column;min-height:0}
+.pane-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:24px 26px;min-width:0}.pane-title{min-width:0}.pane-title h2{margin:0;font-size:25px;font-weight:600;line-height:1.2}.main-pane>.pane-header .pane-title{display:flex;flex-direction:column-reverse;gap:8px}.pane-title span{font-size:10px;font-weight:600;color:var(--muted)}
+.chat-pane>.pane-header,.trust-pane>.pane-header{padding:19px 20px;border-bottom:1px solid var(--line-soft);min-height:74px}.brand h1,.trust-pane h2{margin:0;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}.brand h1 svg,.trust-pane h2 svg{color:var(--blue)}.brand span,.trust-pane .pane-title span{display:block;margin-top:5px;font-size:11px;font-weight:400;color:var(--muted)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--line);background:var(--panel);border-radius:var(--radius);padding:8px 12px;min-height:36px;line-height:1.2;font-weight:500;white-space:nowrap}.btn:hover{background:var(--soft)}.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}.btn.primary:hover{filter:brightness(.94)}.btn.quiet{border-color:transparent;background:transparent}.btn.danger{color:var(--red)}.btn.icon{width:36px;height:36px;flex-shrink:0;padding:0}.btn.icon>span{position:absolute;clip-path:inset(50%);width:1px;height:1px;overflow:hidden}
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:0 26px 22px;padding:18px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);gap:0}.metric{min-width:0;padding:0 18px;border-right:1px solid var(--line)}.metric:first-child{padding-left:0}.metric:last-child{border-right:0}.metric b{display:block;font-size:29px;font-weight:600;margin-bottom:6px;font-variant-numeric:tabular-nums}.metric span{display:block;color:var(--muted);font-size:11px;line-height:1.5}.metric:nth-child(1) b{color:var(--blue)}.metric:nth-child(2) b{color:var(--red)}.metric:nth-child(3) b{color:var(--yellow)}
+.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:0 26px 16px;position:relative;z-index:3}.quick-prompts{margin-right:auto;position:relative}.quick-prompts summary{display:flex;align-items:center;gap:8px;list-style:none;font-size:12px;min-height:36px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}.quick-prompts summary::-webkit-details-marker{display:none}.prompt-menu{position:absolute;top:calc(100% + 6px);left:0;width:220px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:6px;z-index:10}.prompt-menu button{display:block;text-align:left;padding:10px;width:100%;border:0;background:transparent;border-radius:3px;font-size:12px}.prompt-menu button:hover{background:var(--blue-2);color:var(--blue)}
+.table-wrap{overflow:auto;margin:0 26px 24px;min-width:0;flex:1;border-top:1px solid var(--line);scrollbar-width:thin;scrollbar-color:var(--line) transparent}.table-wrap>table{width:100%;min-width:1140px;table-layout:fixed;border-collapse:collapse;font-size:12px}.table-wrap th{position:sticky;top:0;z-index:2;font-size:10px;font-weight:600;background:var(--soft);color:var(--muted);height:40px;text-align:left}.table-wrap th,.table-wrap td{padding:9px 10px;border-bottom:1px solid var(--line-soft);vertical-align:middle}.table-wrap th:first-child{width:172px}.table-wrap th:nth-child(2){width:110px}.table-wrap th:nth-child(3){width:143px}.table-wrap th:nth-child(4){width:90px}.table-wrap th:nth-child(5){width:128px}.table-wrap th:nth-child(6){width:198px}.table-wrap th:nth-child(7){width:121px}.table-wrap th:nth-child(8){width:88px}.table-wrap th:nth-child(9){width:70px;text-align:center}.table-wrap .data-row{height:var(--row-height)}.table-wrap td:last-child{text-align:center}.table-wrap td:first-child{box-shadow:inset 3px 0 transparent}.table-wrap .overdue td:first-child{box-shadow:inset 3px 0 var(--red)}.table-wrap .due td:first-child{box-shadow:inset 3px 0 var(--yellow)}.table-wrap .updated td:first-child{box-shadow:inset 3px 0 var(--green)}.table-wrap .stale td{color:var(--muted)}.table-wrap .ghost td{background:var(--blue-2)}.table-wrap .data-row:hover td{background:var(--soft)}
+.cell-input,.cell-select{width:100%;min-width:0;border:1px solid transparent;background:transparent;border-radius:3px;color:inherit;padding:6px 3px;margin:0;outline:none;line-height:1.35;font-size:12px}.cell-input:hover,.cell-select:hover{border-color:var(--line);background:var(--panel)}.cell-input:focus,.cell-select:focus{border-color:var(--blue);background:var(--panel);outline:2px solid var(--blue-2)}.cell-input[type=number]{font-variant-numeric:tabular-nums}.cell-select[data-edit-field=stage]{background:var(--blue-2);color:var(--blue);font-size:11px}.cell-select[data-edit-field=follow]{font-size:11px}.row-delete{border:0;background:transparent;font-size:0!important}.row-delete::before{content:'';width:16px;height:16px;display:block;background:currentColor;mask-size:contain;mask-repeat:no-repeat;-webkit-mask-size:contain;-webkit-mask-repeat:no-repeat}
+.status{display:inline-flex;padding:3px 6px;border-radius:4px;font-size:11px}.status.warm{color:var(--yellow);background:var(--yellow-bg)}.status.proposal{color:var(--blue);background:var(--blue-2)}.status.done{color:var(--green);background:var(--green-bg)}.status.risk{color:var(--red);background:var(--red-bg)}
+.table-wrap .data-row td:last-child{position:sticky;right:0;z-index:1;background:var(--panel);border-left:1px solid var(--line);box-shadow:-5px 0 8px #1b292908}.table-wrap th:last-child{position:sticky;right:0;z-index:3;border-left:1px solid var(--line)}
+.chat-feed{display:flex;flex-direction:column;overflow:auto;padding:20px;gap:20px;scrollbar-width:thin;min-width:0}.message{font-size:12px;line-height:1.65;overflow-wrap:anywhere;flex-shrink:0;min-width:0}.message strong{font-weight:600}.message.ai strong{color:var(--text)}.message.user{align-self:flex-end;padding:10px 13px;background:var(--blue-2);border-radius:6px;max-width:94%;color:var(--text)}.message small{display:block;color:var(--muted);font-size:11px;margin-top:8px;line-height:1.6}.chat-input-wrap{padding:14px 16px 18px;border-top:1px solid var(--line-soft);min-width:0;background:var(--panel)}.beta-warning{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;align-items:center;font-size:10px;color:var(--muted);margin-bottom:10px;line-height:1.5}.beta-warning strong{font-weight:400}.model-state{display:flex;gap:5px;align-items:center}.model-state svg{width:12px;height:12px}.composer{display:grid;grid-template-columns:minmax(0,1fr) 36px;gap:8px;align-items:end;border:1px solid var(--line);border-radius:6px;padding:8px;background:var(--soft)}.composer:focus-within{border-color:var(--blue)}textarea{width:100%;border:0;outline:0;background:transparent;min-height:58px;max-height:160px;resize:vertical;padding:4px;font-size:12px;line-height:1.6}textarea::placeholder{color:var(--muted)}
+.trust-body{overflow:auto;padding:16px 20px;display:flex;flex-direction:column;gap:18px;min-width:0;scrollbar-width:thin}.empty-trust{font-size:12px;line-height:1.65;color:var(--muted);padding:2px 0}.plan-card{padding:0;box-shadow:none;min-width:0}.plan-card+.plan-card{border-top:1px solid var(--line);padding-top:16px}.plan-card h3{font-size:13px;margin:0 0 12px;font-weight:600}.plan-card p{font-size:12px;line-height:1.6;color:var(--muted);margin:0 0 10px;overflow-wrap:anywhere}.plan-meta{display:grid;grid-template-columns:1fr 1fr;gap:12px 8px;padding:12px 0;border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);margin:12px 0}.meta{font-size:12px;overflow-wrap:anywhere}.meta b{display:block;font-size:10px;color:var(--muted);margin-bottom:4px;font-weight:500}.assumption{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:11px;padding:9px 0;border-bottom:1px solid var(--line-soft);line-height:1.5;overflow-wrap:anywhere}.assumption strong{font-weight:500}.assumption span{color:var(--muted);text-align:right}.trust-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}.mini-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:11px}.mini-table th,.mini-table td{padding:8px 4px;border-bottom:1px solid var(--line-soft);text-align:left;overflow-wrap:anywhere;vertical-align:top;font-weight:400}.mini-table th{color:var(--muted);font-size:10px}
+.filter-strip,.undo-strip{display:none;margin:0 26px 12px;padding:8px 12px;align-items:center;justify-content:space-between;gap:12px;font-size:12px;line-height:1.5;background:var(--blue-2);color:var(--blue);border-radius:4px;overflow-wrap:anywhere}.filter-strip.show,.undo-strip.show{display:flex}.undo-strip{background:var(--green-bg);color:var(--green)}.filter-strip .btn,.undo-strip .btn{flex-shrink:0;font-size:11px;min-height:30px}.filter-strip>span,.undo-strip>span{min-width:0}
+.dashboard{display:none;grid-template-columns:1fr 1fr;gap:24px;margin:0 26px 24px;overflow:auto;min-width:0}.chart-card,.share-preview{min-width:0;padding:16px 0;border-top:1px solid var(--line)}.chart-card h3,.share-preview h3{font-size:14px;margin:0 0 18px}.chart-card p,.share-preview p,.detail-block p,.activity-item p{font-size:12px;line-height:1.6;color:var(--muted);margin:0 0 12px;overflow-wrap:anywhere}.bar{display:grid;grid-template-columns:100px minmax(20px,1fr) 24px;align-items:center;gap:8px;margin:15px 0;font-size:11px}.bar-track{height:7px;background:var(--soft);border-radius:2px;overflow:hidden}.bar-fill{height:100%;background:var(--teal)}.activity-item{padding:10px 0;border-bottom:1px solid var(--line-soft)}.record-detail{display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:20px;text-align:left;background:var(--soft)}.detail-block h3{font-size:13px;margin:0 0 12px}.expanded-row td{padding:0}.toast{position:fixed;z-index:20;bottom:20px;left:50%;transform:translateX(-50%);max-width:calc(100vw - 32px);background:var(--text);color:var(--panel);padding:12px 18px;border-radius:6px;box-shadow:var(--shadow);display:none;gap:20px;align-items:center;font-size:12px;line-height:1.5}.toast.show{display:flex}.toast button{background:transparent;border:0;color:inherit;text-decoration:underline;font-weight:600}
+.auth-screen{display:none;min-height:100vh;place-items:center;padding:30px;background:var(--bg);border-top:5px solid var(--blue)}body.auth-locked .auth-screen{display:grid}body.auth-locked .app,body.auth-locked .toast{display:none!important}.auth-card{width:min(400px,100%);padding:12px 0}.auth-brand{margin-bottom:54px}.auth-eyebrow{font-size:10px;color:var(--muted);font-weight:600}.auth-card h1{font-size:30px;font-weight:600;margin:12px 0}.auth-card p{font-size:13px;color:var(--muted);margin:0 0 30px;line-height:1.6}.auth-field{display:grid;gap:8px;margin:18px 0}.auth-field label{font-size:12px;font-weight:500}.auth-field input{min-height:44px;width:100%;border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px;background:var(--panel)}.auth-field input:focus{outline:2px solid var(--blue-2);border-color:var(--blue)}.auth-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}.auth-message{font-size:12px;line-height:1.5;color:var(--red);margin-top:16px;overflow-wrap:anywhere}
+@media(min-width:1750px){.table-wrap>table{min-width:1180px}}
+@media(max-width:1250px){.masthead{gap:14px;padding:0 20px}.design-name{display:none}.view-tabs button{padding:0 9px}.app{grid-template-columns:minmax(0,1fr) 330px}.pane-header{padding:22px 20px}.summary{margin-left:20px;margin-right:20px}.toolbar{padding-left:20px;padding-right:20px}.table-wrap,.dashboard{margin-left:20px;margin-right:20px}.metric{padding:0 12px}}
+@media(max-width:900px){body .app{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto auto minmax(520px,auto);grid-template-areas:'head head' 'main main' 'chat trust'}body .masthead{display:flex;flex-wrap:wrap;gap:12px;padding:14px 18px}body .masthead .view-tabs{order:5;width:100%;min-height:42px}.view-tabs button{flex:1;justify-content:center}body .main-pane{min-height:540px;border:0}body .chat-pane{border-right:1px solid var(--line);min-height:520px}body .trust-pane{border-top:1px solid var(--line);min-height:0}body .main-pane .summary{grid-template-columns:repeat(4,minmax(0,1fr))}.account-actions{gap:6px}#accountPill{max-width:210px}.table-wrap{max-height:570px}.record-detail{grid-template-columns:1fr}}
+@media(max-width:600px){body .app{display:flex;flex-direction:column}body .masthead{order:0;padding:14px 16px;gap:10px}.wordmark{font-size:19px}.brand-mark{width:29px;height:29px}body .design-name{display:none}.account-actions{margin-left:auto}.account-actions .pill{display:none}.account-actions .btn{padding:6px;width:32px}.account-actions .btn span{display:none}.gallery-link{width:28px}.view-tabs{gap:0}.view-tabs button{font-size:12px;padding:8px}.view-tabs svg{width:16px}.main-pane{order:1}.chat-pane{order:2}.trust-pane{order:3}body .main-pane{display:flex;min-height:480px}.pane-header{padding:22px 16px}.pane-title h2{font-size:23px}.pane-header .btn{font-size:11px;padding:8px}.pane-header .btn svg{width:14px}.summary,body .main-pane .summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin:0 16px 16px;padding:0;gap:0}.metric,.metric:first-child{padding:16px 12px;border-bottom:1px solid var(--line-soft)}.metric:nth-child(2){border-right:0}.metric b{font-size:25px}.metric span{font-size:11px}.toolbar{padding:0 16px 16px;gap:8px}.toolbar .btn{font-size:11px;padding:8px}.quick-prompts{width:100%;margin:0}.quick-prompts summary{width:fit-content}.table-wrap,.dashboard{margin:0 16px 20px;max-height:500px}.dashboard{grid-template-columns:1fr}.table-wrap>table{min-width:1140px}.filter-strip,.undo-strip{margin:0 16px 12px;flex-wrap:wrap}.record-detail{grid-template-columns:1fr}body .chat-pane{min-height:520px;height:580px;border:0;border-top:1px solid var(--line)}body .trust-pane{min-height:260px;height:auto;max-height:none}.trust-body{overflow:visible}.chat-feed{padding:20px}.auth-screen{padding:24px}.auth-brand{margin-bottom:42px}.toast{bottom:12px;align-items:start}.plan-meta{gap:14px}.bar{grid-template-columns:100px minmax(20px,1fr) 24px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+
+.row-delete::before { mask-image: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20width%3D%2218%22%20height%3D%2218%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Cpath%20d%3D%22M10%2011v6%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M14%2011v6%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M19%206v14a2%202%200%200%201-2%202H7a2%202%200%200%201-2-2V6%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M3%206h18%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M8%206V4a2%202%200%200%201%202-2h4a2%202%200%200%201%202%202v2%22%3E%3C%2Fpath%3E%3C%2Fsvg%3E'); -webkit-mask-image: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20width%3D%2218%22%20height%3D%2218%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Cpath%20d%3D%22M10%2011v6%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M14%2011v6%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M19%206v14a2%202%200%200%201-2%202H7a2%202%200%200%201-2-2V6%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M3%206h18%22%3E%3C%2Fpath%3E%3Cpath%20d%3D%22M8%206V4a2%202%200%200%201%202-2h4a2%202%200%200%201%202%202v2%22%3E%3C%2Fpath%3E%3C%2Fsvg%3E'); }
+
+    .theme-1 .masthead{box-shadow:0 2px 8px #1f333304}
+    .theme-1 .trust-pane{background:#fafcfc}
+    .theme-1 .summary{border-top:0;padding-top:0}
+    .theme-1 .metric b{font-size:32px}
+    .theme-1 .chat-pane>.pane-header{background:#f0f8f4}
+    @media(min-width:901px){.theme-1 .app{grid-template-columns:minmax(0,1fr) 348px}}
+  </style></head>
+<body class="auth-locked theme-1">
   <section class="auth-screen" aria-label="PipeChat sign in">
     <form id="authForm" class="auth-card">
-      <h1>Sign in to PipeChat</h1>
-      <p>Your CRM table, imports, manual edits, and chatbot usage are saved to your own account.</p>
+      <a class="auth-brand wordmark" href="/"><span class="brand-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"></path></svg></span>PipeChat</a><span class="auth-eyebrow">YOUR WORKSPACE</span><h1>Welcome back.</h1>
+      <p>Sign in to your PipeChat account.</p>
       <div id="nameField" class="auth-field" hidden>
         <label for="authName">Name</label>
         <input id="authName" name="name" autocomplete="name" />
@@ -768,28 +74,36 @@
       <div id="authMessage" class="auth-message" role="status"></div>
     </form>
   </section>
-  <div class="app">
+  <div class="app"><header class="masthead">
+    <a class="wordmark" href="/" title="PipeChat home"><span class="brand-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"></path></svg></span>PipeChat</a>
+            <div class="segmented view-tabs" role="tablist" aria-label="View">
+          <button id="tableTab" class="active" type="button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"></path></svg><span>Pipeline</span></button>
+          <button id="dashboardTab" type="button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16v5"></path><path d="M16 14v7"></path><path d="M20 10v11"></path><path d="m22 3-8.646 8.646a.5.5 0 0 1-.708 0L9.354 8.354a.5.5 0 0 0-.707 0L2 15"></path><path d="M4 18v3"></path><path d="M8 14v7"></path></svg><span>Overview</span></button>
+          <button id="activityTab" type="button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg><span>Activity</span></button>
+        </div>
+            <div class="account-actions">
+          <span id="accountPill" class="pill">Account</span>
+          <button id="logoutBtn" class="btn quiet" type="button" title="Sign out" aria-label="Sign out"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 17 5-5-5-5"></path><path d="M21 12H9"></path><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path></svg><span>Sign out</span></button>
+        </div>
+  </header>
     <aside class="pane chat-pane">
       <header class="pane-header">
         <div class="brand">
-          <h1>PipeChat</h1>
-          <span>Conversational pipeline workspace</span>
+          <h1><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"></path><path d="M20 2v4"></path><path d="M22 4h-4"></path><circle cx="4" cy="20" r="2"></circle></svg> PipeChat assistant</h1>
+          <span>Your pipeline, in conversation</span>
         </div>
-        <div class="account-actions">
-          <span id="accountPill" class="pill">Account</span>
-          <button id="logoutBtn" class="btn" type="button">Sign out</button>
-        </div>
+
       </header>
 
       <section id="chatFeed" class="chat-feed" aria-live="polite"></section>
 
       <footer class="chat-input-wrap">
         <div class="beta-warning">
-          Workflow prototype. Use sample or fake data only. AI endpoint: <strong id="aiModeLabel">local interpreter</strong>. Usage: <strong id="usageLabel">checking...</strong>.
+          <span class="model-state"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"></path><path d="M20 2v4"></path><path d="M22 4h-4"></path><circle cx="4" cy="20" r="2"></circle></svg><strong id="aiModeLabel">local interpreter</strong></span><strong id="usageLabel">checking...</strong>
         </div>
         <div class="composer">
-          <textarea id="chatInput" placeholder="What happened today?"></textarea>
-          <button id="sendBtn" class="btn primary icon" title="Send command">➜</button>
+          <textarea id="chatInput" aria-label="Message PipeChat" placeholder="What happened today?"></textarea>
+          <button id="sendBtn" class="btn primary icon" type="button" title="Send message" aria-label="Send message"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg><span>Send message</span></button>
         </div>
       </footer>
     </aside>
@@ -798,10 +112,9 @@
       <header class="pane-header">
         <div class="pane-title">
           <h2>Sales Pipeline</h2>
-          <span>Today’s follow-ups stay at the top. Click a row to expand it inline.</span>
-          <span class="mobile-note">On small screens the three panes stack so the prototype remains usable.</span>
+          <span>WORKSPACE / SALES</span>
         </div>
-        <button id="shareBtn" class="btn">Share view</button>
+        <button id="shareBtn" class="btn" type="button" title="Share view" aria-label="Share view"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"></line><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"></line></svg><span>Share view</span></button>
       </header>
 
       <section class="summary">
@@ -812,31 +125,27 @@
       </section>
 
       <div class="toolbar">
-        <div class="segmented" role="tablist" aria-label="View">
-          <button id="tableTab" class="active" type="button">Table</button>
-          <button id="dashboardTab" type="button">Dashboard</button>
-          <button id="activityTab" type="button">Activity</button>
-        </div>
-        <div class="segmented" aria-label="Demo commands">
+
+        <details class="quick-prompts"><summary><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"></path><path d="M20 2v4"></path><path d="M22 4h-4"></path><circle cx="4" cy="20" r="2"></circle></svg><span>Quick prompts</span><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary><div class="prompt-menu" aria-label="Demo commands">
           <button type="button" data-demo="today">Today follow-ups</button>
           <button type="button" data-demo="bulk">Bulk close dates</button>
           <button type="button" data-demo="paste">Paste conversation</button>
           <button type="button" data-demo="field">Create field</button>
-        </div>
-        <button id="addAccountBtn" class="btn">Add account</button>
-        <button id="importCsvBtn" class="btn">Import CSV</button>
+        </div></details>
+        <button id="addAccountBtn" class="btn primary" type="button" title="Add account" aria-label="Add account"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg><span>Add account</span></button>
+        <button id="importCsvBtn" class="btn" type="button" title="Import CSV" aria-label="Import CSV"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"></path><path d="m17 8-5-5-5 5"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path></svg><span>Import CSV</span></button>
         <input id="csvFileInput" type="file" accept=".csv,text/csv" hidden />
-        <span class="manual-cue">Manual edits save instantly. Undo is available.</span>
+        
       </div>
 
       <div id="filterStrip" class="filter-strip">
         <span id="filterText"></span>
-        <button id="clearFilterBtn" class="btn">Clear view</button>
+        <button id="clearFilterBtn" class="btn quiet" type="button" title="Clear view" aria-label="Clear view"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg><span>Clear view</span></button>
       </div>
 
       <div id="undoStrip" class="undo-strip">
         <span id="undoText"><strong>Change saved.</strong> You can reverse the last table edit.</span>
-        <button id="quickUndoBtn" class="btn">Undo last change</button>
+        <button id="quickUndoBtn" class="btn quiet" type="button" title="Undo last change" aria-label="Undo last change"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"></path><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"></path></svg><span>Undo last change</span></button>
       </div>
 
       <section id="tableView" class="table-wrap">
@@ -876,9 +185,9 @@
           </table>
         </div>
         <div class="chart-card">
-          <h3>Plan guardrail</h3>
-          <div class="activity-item"><p>Solo includes 500 AI actions/month. Team unlocks collaboration when a second person edits.</p></div>
-          <div class="activity-item"><p>Current prototype session: <strong id="usageCount">0</strong> of 10 demo commands used.</p></div>
+          <h3>Session activity</h3>
+          
+          <div class="activity-item"><p>Messages in this session: <strong id="usageCount">0</strong></p></div>
         </div>
       </section>
 
@@ -893,8 +202,8 @@
     <aside class="pane right-pane trust-pane">
       <header class="pane-header">
         <div class="pane-title">
-          <h2>Preview</h2>
-          <span>What PipeChat understood before anything changes.</span>
+          <h2><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5h8"></path><path d="M13 12h8"></path><path d="M13 19h8"></path><path d="m3 17 2 2 4-4"></path><path d="m3 7 2 2 4-4"></path></svg> Action preview</h2>
+          <span>Review & confirm</span>
         </div>
       </header>
       <section id="trustBody" class="trust-body"></section>
