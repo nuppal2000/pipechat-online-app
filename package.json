@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js && node --check lib/xano-backend.js && node --check scripts/check-xano.js && node --check public/pipechat.js && node --check public/pipeline-core.js",
+    "xano:check": "node scripts/check-xano.js",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"
