@@ -1,5 +1,10 @@
 # PipeChat Online App
 
+> Deployment update: see [DEPLOYMENT.md](DEPLOYMENT.md) for the current runtime,
+> environment settings and staged Xano rollout. The older instructions below
+> describe the original JSON prototype; the Supabase schema is not connected.
+> For this repository, Render's Root Directory is blank, not `pipechat-online-app`.
+
 This folder is the deployable app version of the PipeChat prototype. It packages the CRM UI, backend API, OpenAI chatbot bridge, saved CRM data, and the 1000-message usage cap behind one server.
 
 ## What is included
