@@ -130,7 +130,7 @@ async function runChecks({ baseUrl, serverKey, fetchImpl = fetch, wait = sleep, 
 
     for (const [label, body] of [
       ['Missing version', { deals: [] }],
-      ['Invalid second row', { deals: [deal('Should not save'), deal('', 2)], expectedUpdatedAt: state.updatedAt }],
+      ['Invalid second row', { deals: [deal('Should not save'), { ...deal('Invalid stage', 2), stage: 'Unsupported stage' }], expectedUpdatedAt: state.updatedAt }],
       ['Invalid calendar date', { deals: [{ ...deal('Invalid date'), close: '2026-02-30' }], expectedUpdatedAt: state.updatedAt }],
       ['Duplicate IDs', { deals: [deal('Duplicate one'), deal('Duplicate two')], expectedUpdatedAt: state.updatedAt }]
     ]) {
