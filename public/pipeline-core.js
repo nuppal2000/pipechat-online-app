@@ -72,7 +72,12 @@
       return record => date(record.close)?.getUTCMonth() + 1 === Number(value);
     }
     if (field !== 'value' || !Number.isFinite(Number(value))) throw new Error('Numeric comparisons require the value field.');
-    return record => ({ gt: Number(record.value) > Number(value), gte: Number(record.value) >= Number(value), lt: Number(record.value) < Number(value), lte: Number(record.value) <= Number(value) })[filter.operator];
+    return record => record.value !== null && record.value !== '' && record.value !== undefined && ({ gt: Number(record.value) > Number(value), gte: Number(record.value) >= Number(value), lt: Number(record.value) < Number(value), lte: Number(record.value) <= Number(value) })[filter.operator];
+  }
+  function validateStoredValue(field, value) {
+    if (field === 'value' && (value === null || value === '')) return null;
+    if (['account','stage'].includes(field) && value === '') return '';
+    return validateValue(field,value);
   }
   function candidates(records, reference) {
     const query = normalize(reference);
@@ -110,12 +115,12 @@
       const selection = targets(records, change, action.action === 'bulk_update' || Boolean(change.filter));
       if (selection.candidates) return { clarification:{action:clone(action), changeIndex:action.action === 'update_records' ? index : null, candidates:selection.candidates.map(record => ({id:record.id,account:record.account,owner:record.owner,stage:record.stage}))} };
       if (!selection.records.length) throw new Error('No records match this request.');
-      const value = validateValue(field, change.value);
+      const value = validateStoredValue(field, change.value);
       if (change.operation && !['set','append'].includes(change.operation)) throw new Error('Unsupported change operation.');
       if (change.operation === 'append' && field !== 'notes') throw new Error('Only notes support append.');
       for (const record of selection.records) {
         const patch = patches.get(record.id) || { id:record.id, account:record.account, before:{}, after:{} };
-        if (!Object.hasOwn(patch.before, field)) patch.before[field] = record[field] ?? '';
+        if (!Object.hasOwn(patch.before, field)) patch.before[field] = record[field] === undefined ? '' : record[field];
         const previous = patch.after[field] ?? record[field];
         patch.after[field] = change.operation === 'append' ? [previous, value].filter(Boolean).join('\n') : value;
         patches.set(record.id, patch);
@@ -132,7 +137,7 @@
     if (now.getTime() - proposal.createdAt > 30 * 60 * 1000) throw new Error('This preview has expired. Ask PipeChat to prepare it again.');
     for (const patch of proposal.patches) {
       const record = records.find(item => item.id === patch.id);
-      if (!record || Object.entries(patch.before).some(([field, value]) => (record[field] ?? '') !== value)) throw new Error('A record changed after this preview. Prepare a new preview before confirming.');
+      if (!record || Object.entries(patch.before).some(([field, value]) => (record[field] === undefined ? '' : record[field]) !== value)) throw new Error('A record changed after this preview. Prepare a new preview before confirming.');
     }
     const result = clone(records);
     for (const patch of proposal.patches) {
@@ -157,10 +162,12 @@
       const d = date(record.close);
       if (spec.groupBy === 'close_month' && !d) { undated++; continue; }
       const label = spec.groupBy === 'none' ? 'All deals' : spec.groupBy === 'close_month' ? d.toISOString().slice(0,7) : String(record[spec.groupBy] || 'Unassigned');
-      const group = groups.get(label) || {label,count:0,cents:0};
-      group.count++; group.cents += Math.round((Number(record.value) || 0) * 100); groups.set(label,group);
+      const group = groups.get(label) || {label,count:0,cents:0,known:0};
+      group.count++;
+      if (record.value !== null && record.value !== '' && record.value !== undefined) { group.known++; group.cents += Math.round((Number(record.value) || 0) * 100); }
+      groups.set(label,group);
     }
-    let data = [...groups.values()].map(group=>({label:group.label,value:spec.metric==='count'?group.count:Math.round(group.cents/(spec.metric==='average'?group.count:1))/100,count:group.count}));
+    let data = [...groups.values()].map(group=>({label:group.label,value:spec.metric==='count'?group.count:!group.known?null:Math.round(group.cents/(spec.metric==='average'?group.known:1))/100,count:group.count}));
     data.sort((a,b)=>spec.groupBy==='close_month'?a.label.localeCompare(b.label):b.value-a.value||a.label.localeCompare(b.label));
     // Missing months are zero-filled so the line's spacing represents calendar time.
     if (spec.groupBy === 'close_month' && data.length) {
@@ -177,5 +184,5 @@
     if (!Array.isArray(selectedFields) || selectedFields.some(field=>!allowed.includes(field))) throw new Error('Only public preview fields may be shared.');
     return records.map(record=>Object.fromEntries(selectedFields.map(field=>[field,record[field]])));
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,predicate,candidates,targets,plan,apply,report,share,clone};
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,predicate,candidates,targets,plan,apply,report,share,clone};
 });
