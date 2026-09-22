@@ -38,7 +38,16 @@ test('server isolation, validation, persistence, schema/context, and usage lock'
     assert.equal((await request('/api/chat-usage','GET',null,b.cookie)).body.remaining,1);
     const edit=await request('/api/crm-data','PUT',{deals:[{...deal,owner:'Manual edit after chat limit'}],expectedUpdatedAt:saved.body.updatedAt},a.cookie);
     assert.equal(edit.status,200);assert.equal(edit.body.deals[0].owner,'Manual edit after chat limit');
-    const empty=await request('/api/crm-data','PUT',{deals:[],expectedUpdatedAt:edit.body.updatedAt},a.cookie);
+    const partial={...deal,id:2,account:'',stage:'',value:null,close:'',owner:'Known owner'};
+    const imported=await request('/api/crm-data','PUT',{deals:[...edit.body.deals,partial],expectedUpdatedAt:edit.body.updatedAt},a.cookie);
+    assert.equal(imported.status,200);const readBack=await request('/api/crm-data','GET',null,a.cookie);
+    assert.equal(readBack.body.deals[1].account,'');assert.equal(readBack.body.deals[1].stage,'');assert.equal(readBack.body.deals[1].value,null);
+    assert.equal((await request('/api/pipechat-ai','POST',{csvImport:{headers:['Business'],totalRows:0}},b.cookie)).status,400);
+    assert.equal((await request('/api/chat-usage','GET',null,b.cookie)).body.used,0);
+    const mapped=await request('/api/pipechat-ai','POST',{csvImport:require('../public/csv-import.js').describe(['Business'],[{Business:'Acme'}])},b.cookie);
+    assert.equal(mapped.status,200);assert.equal(mapped.body.crmAction.columnMap.account,'Business');assert.equal(mapped.body.usage.used,1);
+    assert.equal((await request('/api/crm-data','GET',null,b.cookie)).body.deals.length,0);
+    const empty=await request('/api/crm-data','PUT',{deals:[],expectedUpdatedAt:imported.body.updatedAt},a.cookie);
     assert.equal(empty.status,200);assert.deepEqual((await request('/api/crm-data','GET',null,a.cookie)).body.deals,[]);
     await request('/api/auth/logout','POST',{},a.cookie);
     assert.equal((await request('/api/crm-data','GET',null,a.cookie)).status,401);
