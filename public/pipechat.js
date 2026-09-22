@@ -9,6 +9,62 @@
   const defaultReport = () => ({metric:'sum',field:'value',groupBy:'owner',chart:'bar',filter:null,from:null,to:null});
   const S = {user:null,records:[],updatedAt:null,usage:null,health:null,history:[],pending:null,clarification:null,sourceAction:null,tab:'table',scope:'all',search:'',filter:null,report:defaultReport(),expanded:null,undo:null,saving:false,busy:false,generation:0,revision:0,signup:false,loaded:false};
   let chart=null, toastTimer;
+  const failedEditKey='pipechat.failed-edit.v1';
+  S.failedEdit=null;
+  function keepFailedEdit() {
+    S.failedEditStored=false;
+    try {
+      if(!S.failedEdit){sessionStorage.removeItem(failedEditKey);return;}
+      const {id,account,field,raw,before}=S.failedEdit;
+      if(raw.length>12000)return;
+      sessionStorage.setItem(failedEditKey,JSON.stringify({userId:String(S.user.id),email:S.user.email,provider:S.health?.storageProvider,id,account,field,raw,before}));
+      S.failedEditStored=true;
+    } catch { /* Memory retention still works when browser storage is unavailable. */ }
+  }
+  function restoreFailedEdit() {
+    try {
+      const draft=JSON.parse(sessionStorage.getItem(failedEditKey)||'null');
+      if(!draft)return;
+      if(draft.userId!==String(S.user.id)||draft.email!==S.user.email){sessionStorage.removeItem(failedEditKey);return;}
+      if(!S.health?.storageProvider)return;
+      if(draft.provider!==S.health.storageProvider){sessionStorage.removeItem(failedEditKey);return;}
+      if(!Number.isSafeInteger(draft.id)||draft.id<1||!Object.hasOwn(C.fields,draft.field)||typeof draft.raw!=='string'||draft.raw.length>12000||typeof draft.account!=='string'||draft.account.length>12000)throw new Error('Invalid draft');
+      S.failedEdit={id:draft.id,account:draft.account,field:draft.field,raw:draft.raw,before:draft.before,reviewed:false};
+      S.failedEditStored=true;
+    }catch {try{sessionStorage.removeItem(failedEditKey);}catch{}}
+  }
+  function renderFailedEdit() {
+    const d=S.failedEdit, current=S.records.find(row=>row.id===d.id);
+    $('trustTitle').textContent='Recover unsaved edit';$('trustStatus').textContent='Draft kept in this tab. Not automatically retried.';
+    $('trustBody').innerHTML=`<form id="failedEditForm" class="editor-form"><h3>${esc(d.account)} / #${d.id}</h3><p class="error">${esc(d.message||'The last save was not confirmed. Reload the latest data before retrying.')}</p><div class="field-diff"><span>${d.reviewed?'Latest saved value':'Previously loaded value'}</span><div class="diff-values">${esc(display(d.field,current?.[d.field]))}</div></div><label>Your ${esc(C.fields[d.field])} edit<textarea id="failedEditValue" rows="3" maxlength="12000" ${S.saving?'disabled':''}>${esc(d.raw)}</textarea></label>${d.reviewed&&!current?'<p class="error">This record no longer exists. It will not be recreated.</p>':''}${d.reviewed&&current?.account!==d.account&&current?`<p class="error">This record is now named ${esc(current.account)}. Check that it is the intended deal.</p>`:''}<button type="button" class="secondary" data-review-failed ${S.saving?'disabled':''}>${icon('RotateCcw')}Reload latest and review</button><button type="submit" class="primary" ${!d.reviewed||!current||S.saving?'disabled':''}>Confirm retry</button><button type="button" class="secondary" data-discard-failed ${S.saving?'disabled':''}>Discard unsaved edit</button></form>`;
+  }
+  async function reviewFailedEdit() {
+    const draft=S.failedEdit;if(!draft||S.saving)return;
+    S.saving=true;const generation=S.generation;render();
+    try {
+      const saved=await api('/api/crm-data');
+      if(generation!==S.generation||draft!==S.failedEdit)return;
+      S.records=saved.deals;S.updatedAt=saved.updatedAt;S.revision++;S.undo=null;
+      S.pending=null;S.clarification=null;S.sourceAction=null;
+      draft.reviewed=true;draft.message='Latest data loaded. Review your edit before confirming.';
+      $('saveStatus').textContent='Unsaved edit retained';
+    }catch(error){if(generation===S.generation){draft.reviewed=false;draft.message=`Could not refresh: ${error.message}`;}}
+    finally{if(generation===S.generation){S.saving=false;render();}}
+  }
+  function discardFailedEdit() {
+    if(S.saving)return;S.failedEdit=null;keepFailedEdit();
+    $('saveStatus').textContent='Unsaved edit discarded';$('saveStatus').classList.remove('failed');render();
+  }
+  async function retryFailedEdit() {
+    const d=S.failedEdit;if(!d?.reviewed||S.saving)return;
+    const record=S.records.find(row=>row.id===d.id);if(!record)return;
+    try {
+      const value=C.validateValue(d.field,d.field==='value'?d.raw.replace(/[$,]/g,'').trim():d.raw);
+      if(record[d.field]===value){discardFailedEdit();$('saveStatus').textContent='Edit already saved';return;}
+      const proposal=C.plan(S.records,{action:'update_record',ids:[d.id],field:d.field,value});
+      await persist(C.apply(S.records,proposal,S.user.name||S.user.email),`${C.fields[d.field]} updated`,{failedEdit:d});
+    }catch(error){d.message=error.message;renderTrust();}
+  }
   const icons = (node=document) => node.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));
   const stageClass = value => `stage-${C.normalize(value).replace(/[^a-z0-9]+/g,'-')}`;
   const display = (field,value) => field==='value'?currency(value):field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
@@ -54,6 +110,7 @@
       <td><div class="row-actions"><button class="icon-btn" data-detail="${record.id}" title="Deal details" aria-label="Details for ${esc(record.account)}" aria-expanded="${S.expanded===record.id}">${icon(S.expanded===record.id?'ChevronUp':'ChevronDown')}</button><button class="icon-btn delete-btn" data-delete="${record.id}" title="Delete deal" aria-label="Delete ${esc(record.account)}">${icon('Trash2')}</button></div></td></tr>
       ${S.expanded===record.id?`<tr class="detail-row" data-id="${record.id}"><td colspan="6"><div class="detail-content"><label>Next step<input data-field="next" value="${esc(record.next)}" aria-label="Next step for ${esc(record.account)}"></label><label>Follow-up<input data-field="follow" value="${esc(record.follow)}" placeholder="Today, tomorrow or date" aria-label="Follow-up for ${esc(record.account)}"></label><label class="full">Notes<textarea data-field="notes" rows="3" aria-label="Notes for ${esc(record.account)}">${esc(record.notes)}</textarea></label><p class="full">${esc(record.history?.[0]||'No changes recorded yet.')}</p></div></td></tr>`:''}`).join(''):'<tr><td colspan="6" class="empty-table">No deals in this view.</td></tr>';
     $('dealRows').classList.toggle('loading',S.saving);
+    $('dealRows').querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=S.saving||Boolean(S.failedEdit));
   }
   function render() {
     if(!S.loaded)return;
@@ -63,13 +120,13 @@
     $('clearSearchBtn').hidden=!S.filter&&!S.search&&S.scope==='all';
     $('filterStrip').hidden=!S.filter;$('filterText').textContent=S.filter?`${C.fields[S.filter.field]||S.filter.field} ${S.filter.operator.replaceAll('_',' ')} ${S.filter.value??''}`:'';
     $('undoStrip').hidden=!S.undo;$('undoText').textContent=S.undo?.label||'';
-    $('quickUndoBtn').disabled=S.saving;$('undoBtn').disabled=S.saving;
+    $('quickUndoBtn').disabled=S.saving||Boolean(S.failedEdit);$('undoBtn').disabled=S.saving||Boolean(S.failedEdit);
     document.querySelectorAll('[data-scope]').forEach(button=>button.classList.toggle('active',button.dataset.scope===S.scope));
     document.querySelectorAll('[data-tab]').forEach(button=>{button.classList.toggle('active',button.dataset.tab===S.tab);button.setAttribute('aria-current',button.dataset.tab===S.tab?'page':'false');});
     ['table','dashboard','activity','share'].forEach(tab=>$(tab+'View').hidden=S.tab!==tab);
     $('centerTitle').textContent=({table:'Deals',dashboard:'Dashboard',activity:'Activity',share:'Shared views'})[S.tab];
     $('viewFilters').hidden=['activity','share'].includes(S.tab);
-    $('addAccountBtn').disabled=S.saving;$('importCsvBtn').disabled=S.saving||S.busy;
+    $('addAccountBtn').disabled=S.saving||Boolean(S.failedEdit);$('importCsvBtn').disabled=S.saving||S.busy||Boolean(S.failedEdit);
     if(S.tab==='dashboard')renderReport(rows);
     if(S.tab==='activity')renderActivity();
     renderTrust();updateUsage();
@@ -106,6 +163,7 @@
   function renderTrust() {
     const panel=$('trustBody');$('changeCount').hidden=true;$('trustTitle').textContent='Proposed changes';
     $('trustStatus').textContent='No changes pending.';
+    if(S.failedEdit){renderFailedEdit();return;}
     if(S.clarification?.candidates){
       $('trustTitle').textContent='Choose a company';
       panel.innerHTML=`<p class="proposal-intro">${esc(S.clarification.question||'More than one company matches. Which one did you mean?')}</p>${S.clarification.candidates.map(record=>`<button class="candidate" data-candidate="${record.id}"><strong>${esc(record.account)}</strong><small>${esc(record.owner||'Unassigned')} / ${esc(record.stage)} / #${record.id}</small></button>`).join('')}<button class="secondary" data-cancel>Cancel request</button>`;
@@ -161,8 +219,8 @@
     for(const field of Object.keys(defaults))record[field]=C.validateValue(field,input[field]??defaults[field]);
     return record;
   }
-  async function persist(next,label,{undo=true}={}) {
-    if(S.saving||!S.loaded)return false;
+  async function persist(next,label,{undo=true,failedEdit=null}={}) {
+    if(S.saving||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
     S.saving=true;const before=C.clone(S.records), generation=S.generation;
     $('saveStatus').textContent='Saving...';$('saveStatus').classList.remove('failed');render();
     try{
@@ -170,12 +228,18 @@
       if(generation!==S.generation)return false;
       S.records=saved.deals;S.updatedAt=saved.updatedAt;S.revision++;
       S.undo=undo?{records:before,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;
+      S.failedEdit=null;keepFailedEdit();
       $('saveStatus').textContent='All changes saved';toast(label,undo);return true;
-    }catch(error){$('saveStatus').textContent='Not saved';$('saveStatus').classList.add('failed');toast(error.message);say(`The save failed: ${error.message} Your previous saved data has been kept.`,'assistant',true);return false;}
-    finally{S.saving=false;render();}
+    }catch(error){
+      if(generation!==S.generation)return false;
+      if(failedEdit){S.failedEdit={...failedEdit,reviewed:false,message:error.message};keepFailedEdit();}
+      $('saveStatus').textContent=failedEdit?'Unsaved edit retained':'Save not confirmed';$('saveStatus').classList.add('failed');toast(error.message);
+      say(`The save was not confirmed: ${error.message}${failedEdit?' Your edit is retained in the recovery panel.':' Reload the latest data before trying again.'}`,'assistant',true);return false;
+    }
+    finally{if(generation===S.generation){S.saving=false;render();}}
   }
   async function confirmDraft() {
-    const p=S.pending;if(!p||S.saving||p.kind==='editor')return;
+    const p=S.pending;if(!p||S.saving||S.failedEdit||p.kind==='editor')return;
     try{
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
       let next;
@@ -194,15 +258,16 @@
   }
   async function undo() {if(S.undo&&!S.saving)await persist(C.clone(S.undo.records),'Last change undone',{undo:false});}
   async function manualEdit(el) {
-    const record=S.records.find(r=>r.id===Number(el.closest('[data-id]')?.dataset.id));if(!record||S.saving)return;
+    const record=S.records.find(r=>r.id===Number(el.closest('[data-id]')?.dataset.id));if(!record||S.saving||S.failedEdit)return;
+    const failedEdit={id:record.id,account:record.account,field:el.dataset.field,raw:el.value,before:record[el.dataset.field],reviewed:false};
     try{
       const field=el.dataset.field,raw=field==='value'?el.value.replace(/[$,]/g,'').trim():el.value;
       const value=C.validateValue(field,raw);if(value===(record[field]??'')){renderTable(visible());return;}
       const proposal=C.plan(S.records,{action:'update_record',ids:[record.id],field,value});
       const next=C.apply(S.records,proposal,S.user.name||S.user.email);
       const hadDraft=Boolean(S.pending||S.clarification);
-      if(await persist(next,`${C.fields[field]} updated`)&&hadDraft)say('The manual edit was saved. I cleared the earlier draft so it cannot overwrite your new value.');
-    }catch(error){toast(error.message);renderTable(visible());}
+      if(await persist(next,`${C.fields[field]} updated`,{failedEdit})&&hadDraft)say('The manual edit was saved. I cleared the earlier draft so it cannot overwrite your new value.');
+    }catch(error){S.failedEdit={...failedEdit,message:error.message};keepFailedEdit();$('saveStatus').textContent='Unsaved edit retained';$('saveStatus').classList.add('failed');toast(error.message);render();}
   }
   function renderEditor() {
     $('trustTitle').textContent='New deal';$('trustStatus').textContent='Nothing is added until you save.';
@@ -254,6 +319,7 @@
   }
   async function send(command) {
     command=String(command||'').trim();if(!command||S.busy||S.saving||!S.loaded||S.usage?.paymentRequired||S.usage?.remaining===0)return;
+    if(S.failedEdit){toast('Review or discard the unsaved edit first.');focusTrust();return;}
     $('chatInput').value='';say(command,'user');const answer=C.normalize(command).replace(/[.!?]+$/,'');
     if((S.pending||S.clarification)&&['cancel','no','no thanks','never mind','nevermind'].includes(answer)){cancelDraft();return;}
     if(S.clarification?.candidates){
@@ -270,7 +336,7 @@
     finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving;}}
   }
   async function importCsv(file) {
-    if(!file||S.busy||S.saving)return;
+    if(!file||S.busy||S.saving||S.failedEdit)return;
     if(file.size>700000){toast('Choose a CSV smaller than 700 KB.');return;}
     if(S.pending||S.clarification){toast('Confirm or cancel the current draft before importing.');return;}
     const importGeneration=S.generation, importRevision=S.revision;
@@ -329,6 +395,7 @@
     S.generation++;S.user=user;S.history=[];S.pending=null;S.clarification=null;S.undo=null;S.sourceAction=null;S.loaded=false;S.scope='all';S.search='';S.filter=null;S.tab='table';S.report=defaultReport();S.busy=false;S.expanded=null;
     const generation=S.generation;
     S.records=[];S.updatedAt=null;S.usage=null;S.health=null;
+    S.failedEdit=null;S.saving=false;$('authRetryBtn').hidden=true;
     document.body.classList.add('auth-locked');$('authScreen').hidden=false;
     $('chatFeed').innerHTML='';$('trustBody').innerHTML='';$('dealSearch').value='';$('authMessage').textContent='';
     $('shareRecipient').value='';$('shareMessage').value='';$('shareAccess').value='viewer';$('inviteStatus').textContent='';
@@ -346,8 +413,9 @@
       S.loaded=true;document.body.classList.remove('auth-locked');$('authScreen').hidden=true;
       $('accountPill').textContent=user.name||user.email;$('userAvatar').textContent=(user.name||user.email).split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
       $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');
+      restoreFailedEdit();if(S.failedEdit){$('saveStatus').textContent='Unsaved edit retained';$('saveStatus').classList.add('failed');}
       say('What would you like to work on in your pipeline?');render();
-    }catch(error){if(generation===S.generation)$('authMessage').textContent=`Could not load the workspace: ${error.message}`;}
+    }catch(error){if(generation===S.generation){$('authMessage').textContent=`Could not load the workspace: ${error.message}`;$('authRetryBtn').hidden=false;}}
   }
   async function authSubmit(event) {
     event.preventDefault();
@@ -359,14 +427,16 @@
   async function restoreSession() {
     const generation=S.generation;
     try{const result=await api('/api/auth/me');if(generation===S.generation&&result.user)await loadWorkspace(result.user);}
-    catch(error){if(generation===S.generation)$('authMessage').textContent=`Server unavailable: ${error.message}`;}
+    catch(error){if(generation===S.generation){$('authMessage').textContent=`Server unavailable: ${error.message}`;$('authRetryBtn').hidden=false;}}
   }
   async function logout() {
     if(S.saving){toast('Wait for the current save to finish.');return;}
-    try{await api('/api/auth/logout',{method:'POST'});S.generation++;S.user=null;S.loaded=false;S.records=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
+    if(S.failedEdit&&!window.confirm('Sign out and discard the unsaved edit in this tab?'))return;
+    try{await api('/api/auth/logout',{method:'POST'});S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
   }
   function wire() {
     icons();$('authForm').addEventListener('submit',authSubmit);
+    $('authRetryBtn').onclick=async()=>{if($('authRetryBtn').disabled)return;$('authRetryBtn').disabled=true;$('authRetryBtn').hidden=true;$('authMessage').textContent='Connecting...';try{await restoreSession();if(!$('authScreen').hidden&&$('authRetryBtn').hidden)$('authMessage').textContent='Please sign in to continue.';}finally{$('authRetryBtn').disabled=false;}};
     $('authToggleBtn').onclick=()=>{S.signup=!S.signup;$('nameField').hidden=!S.signup;$('authTitle').textContent=S.signup?'Create your workspace':'Welcome back';$('authSubtitle').textContent=S.signup?'Your CRM data stays in your account.':'Sign in to your sales workspace.';$('authSubmitBtn').textContent=S.signup?'Create account':'Sign in';$('authToggleBtn').textContent=S.signup?'Already have an account? Sign in':'Create an account';$('authPassword').autocomplete=S.signup?'new-password':'current-password';};
     $('logoutBtn').onclick=logout;
     document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));
@@ -378,9 +448,10 @@
     $('chatInput').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();send(event.target.value);}};
     document.querySelectorAll('[data-prompt]').forEach(button=>button.onclick=()=>send(button.dataset.prompt));
     $('dealRows').addEventListener('change',event=>{if(event.target.dataset.field)manualEdit(event.target);});
-    $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
-    $('trustBody').onclick=event=>{const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
-    $('trustBody').addEventListener('submit',event=>{if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
+    $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
+    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
+    $('trustBody').addEventListener('input',event=>{if(event.target.id==='failedEditValue'&&S.failedEdit){S.failedEdit.raw=event.target.value;S.failedEdit.reviewed=false;keepFailedEdit();$('failedEditForm').querySelector('[type="submit"]').disabled=true;}});
+    $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
     $('addAccountBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}S.pending={kind:'editor'};renderTrust();focusTrust();$('dealEditor').elements.account.focus();};
     $('undoBtn').onclick=undo;$('quickUndoBtn').onclick=undo;$('dismissToast').onclick=()=>$('toast').hidden=true;
     $('importCsvBtn').onclick=()=>$('csvFileInput').click();$('csvFileInput').onchange=()=>importCsv($('csvFileInput').files[0]);
@@ -391,7 +462,7 @@
     $('exportPreviewBtn').onclick=exportShare;
     ['reportMetric','reportGroup','reportChart'].forEach(id=>$(id).onchange=()=>{S.report.metric=$('reportMetric').value;S.report.groupBy=$('reportGroup').value;S.report.chart=$('reportChart').value;if(id==='reportChart'&&S.report.chart==='line')S.report.groupBy='close_month';if(id==='reportChart'&&S.report.chart==='stage')S.report.groupBy='stage';renderReport(visible());});
     $('resetReportBtn').onclick=()=>{S.report=defaultReport();renderReport(visible());};
-    window.addEventListener('beforeunload',event=>{if(S.saving){event.preventDefault();event.returnValue='';}});
+    window.addEventListener('beforeunload',event=>{if(S.saving||(S.failedEdit&&!S.failedEditStored)){event.preventDefault();event.returnValue='';}});
   }
   wire();
   restoreSession();
