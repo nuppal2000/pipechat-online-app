@@ -1,27 +1,44 @@
 // Generates a pure Xano helper from the same validators used by the app.
 const fs=require('node:fs');
 const path=require('node:path');
+const schemaSource=fs.readFileSync(path.join(__dirname,'../public/table-schema.js'),'utf8');
 const core=require('../public/pipeline-core.js');
-const declarations=[`const fields=${JSON.stringify(core.fields)},stages=${JSON.stringify(core.stages)};`,`const normalize=${core.normalize.toString()};`,...['fieldName','validateCustomFields','fieldsFor','date','validateValue','validateStoredValue','customValues'].map(name=>core[name].toString())].join('\n');
+// Serialize only pure validators, keeping their implementations identical to the app.
+const names=['fieldName','validateCustomFields','fieldsFor','date','validateValue','validateStoredValue','customValues','tableValues'];
+const declarations=`const shared={schema:(function(){const module=undefined,globalThis={};\n${schemaSource}\nreturn globalThis.PipeChatSchema;})(),core:{create(input){
+const schema=input?.status==='ready'?input:null;
+const fields=schema?Object.fromEntries(schema.fields.map(f=>[f.id,f.name])):${JSON.stringify(core.fields)};
+const role=name=>schema?schema.fields.find(f=>f.role===name)?.id:({primary:'account',owner:'owner',status:'stage',followup:'follow'})[name];
+const stages=schema?schema.fields.find(f=>f.role==='status')?.options||[]:${JSON.stringify(core.stages)};
+const normalize=${core.normalize.toString()};
+const definitions=${core.definitions.toString()};
+${names.map(name=>core[name].toString()).join('\n')}
+return {${names.join(',')}};
+}}};`;
 const operation=`
 try {
   const payload=$input.payload;
+  if($input.mode==='transition'){
+    try{shared.schema.transition(payload.current?.tableSchema,payload.next?.tableSchema,payload.deals);return {ok:true,data:{valid:true}};}
+    catch{return {ok:true,data:{valid:false}};}
+  }
   if($input.mode==='write'){
-    const fields=validateCustomFields(payload.customFields);
+    const tableSchema=shared.schema.validate(payload.tableSchema),core=shared.core.create(tableSchema),fields=core.validateCustomFields(payload.customFields);
     if(!Array.isArray(payload.deals)||payload.deals.length>2000)throw new Error('Invalid rows');
     const cells={};
     for(const row of payload.deals){
       if(!Number.isSafeInteger(row.id)||row.id<1||Object.hasOwn(cells,String(row.id)))throw new Error('Invalid row ID');
-      cells[String(row.id)]=customValues(row,fields);
+      cells[String(row.id)]=tableSchema?.status==='ready'?core.tableValues(row,fields):core.customValues(row,fields);
     }
-    return {ok:true,data:{fields,cells}};
+    if(tableSchema?.status==='pending'&&payload.deals.length)throw new Error('Pending setup cannot contain rows');
+    return {ok:true,data:{fields,cells,...(tableSchema?{tableSchema}:{})}};
   }
   if($input.mode==='read'){
-    const data=payload.customData??{fields:[],cells:{}};
-    const fields=validateCustomFields(data.fields);
+    const data={fields:[],cells:{},...(payload.customData??{})};
+    const tableSchema=shared.schema.validate(data.tableSchema),core=shared.core.create(tableSchema),fields=core.validateCustomFields(data.fields);
     if(!data.cells||typeof data.cells!=='object'||Array.isArray(data.cells))throw new Error('Invalid custom cells');
-    const deals=payload.deals.map(row=>({...row,...customValues(data.cells[String(row.id)]??{},fields)}));
-    return {ok:true,data:{deals,customFields:fields,updatedAt:payload.updatedAt}};
+    const deals=payload.deals.map(row=>tableSchema?.status==='ready'?{id:row.id,history:row.history||[],activity:row.activity||'',health:row.health||'',...core.tableValues(data.cells[String(row.id)]??{},fields)}:({...row,...core.customValues(data.cells[String(row.id)]??{},fields)}));
+    return {ok:true,data:{deals,customFields:fields,updatedAt:payload.updatedAt,tableSchema}};
   }
   return {ok:false};
 } catch { return {ok:false}; }
@@ -35,9 +52,9 @@ function "pipechat/custom_fields" {
   }
   stack {
     api.lambda {
-      code = \`\`\`
+      code = """
 ${code.split('\n').map(line=>'        '+line).join('\n')}
-        \`\`\`
+        """
       timeout = 5
     } as $result
     precondition ($result.ok) {
