@@ -5,6 +5,8 @@ const crypto = require("node:crypto");
 const pipelineCore = require("./public/pipeline-core.js");
 const { createXanoBackend, BackendError } = require("./lib/xano-backend.js");
 const { monitorRequest } = require("./lib/request-monitor.js");
+const { createReadiness } = require("./lib/readiness.js");
+const { createOperationalAlerts } = require("./lib/operational-alerts.js");
 
 const PORT = Number(process.env.PORT || process.env.PIPECHAT_AI_PORT || 8787);
 const HOST = process.env.PIPECHAT_HOST || "0.0.0.0";
@@ -618,8 +620,20 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
   return JSON.parse(outputText);
 }
 
+const readiness = createReadiness({ probe: async signal => {
+  if (xano) { await xano.check({ requireDatabase: true, signal }); return; }
+  const directory = await fs.stat(DATA_DIR);
+  if (!directory.isDirectory()) throw new Error('Storage unavailable');
+  await fs.access(DATA_DIR, fs.constants.R_OK | fs.constants.W_OK);
+  let text;
+  try { text = await fs.readFile(AUTH_FILE, { encoding: 'utf8', signal }); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  const store = JSON.parse(text);
+  if (!Array.isArray(store.users) || !store.sessions || typeof store.sessions !== 'object') throw new Error('Storage invalid');
+} });
+const operationalAlerts = createOperationalAlerts();
 const server = http.createServer(async (req, res) => {
-  monitorRequest(req, res);
+  monitorRequest(req, res, undefined, operationalAlerts.observe);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
@@ -653,6 +667,12 @@ const server = http.createServer(async (req, res) => {
         freeChatLimit: xano ? null : FREE_CHAT_LIMIT,
         storageProvider: STORAGE_PROVIDER
       });
+    }
+    if (req.method === "GET" && ['/api/ready', '/api/monitor-status'].includes(url.pathname)) {
+      const backend = await readiness.check();
+      const traffic = url.pathname === '/api/monitor-status' ? operationalAlerts.check() : { ok: true };
+      const ok = backend.ok && traffic.ok;
+      return sendJson(res, ok ? 200 : 503, { ok });
     }
 
     if (req.method === "GET" && url.pathname === "/api/auth/me") {
@@ -824,6 +844,7 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   if (xano) await xano.check();
+  else await fs.mkdir(DATA_DIR, { recursive: true });
   server.listen(PORT, HOST, () => {
     console.log(`PipeChat app running at http://127.0.0.1:${PORT}/`);
     console.log(`PipeChat AI server running at http://127.0.0.1:${PORT}/api/pipechat-ai`);
