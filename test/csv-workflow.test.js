@@ -11,7 +11,7 @@ const original={id:8,account:'Existing',stage:'Warm',value:500,owner:'A',close:'
 function harness(handler) {
   const nodes=new Map(),calls=[],messages=[];
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',classList:{add(){},remove(){}},insertAdjacentHTML(){}});return nodes.get(id);};
-  const context={window:{PipelineCore:C,PipeChatCsv:I,PipeChatIcons:{}},document:{getElementById:node},Papa,AbortSignal,
+  const context={window:{PipelineCore:C,PipeChatCsv:I,PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},Papa,AbortSignal,
     sessionStorage:{removeItem(){}},fetch:async(url,options)=>{calls.push({url,options});return handler(url,options);}};
   const ctx={...context,window:{...context.window,messages}};
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};renderTrust=()=>{};focusTrust=()=>{};updateUsage=()=>{};toast=()=>{};say=(text)=>window.messages.push(text);window.test={S,importCsv,analyzeCsvImport,basicCsvImport,confirmDraft,cancelDraft,undo,display};`),ctx);
@@ -28,7 +28,7 @@ test('AI import previews blanks, appends only after confirmation and supports un
   assert.equal(h.S.pending.records[0].id,9); assert.equal(h.S.pending.records[0].stage,'Proposal Sent');
   assert.equal(h.S.pending.records[1].stage,''); assert.equal(h.S.pending.records[1].value,null);
   assert.equal(h.S.pending.importReview.issues.length,1); assert.equal(h.display('value',null),'Not set'); assert.equal(h.display('value',0),'$0');
-  const request=JSON.parse(h.calls[0].options.body);assert(!request.pipeline);assert.equal(request.csvImport.totalRows,2);
+  const request=JSON.parse(h.calls[0].options.body);assert(!request.pipeline.records);assert.equal(request.pipeline.tableSchema,null);assert.equal(request.csvImport.totalRows,2);
   await h.confirmDraft();assert.equal(h.S.records.length,3);assert.deepEqual(h.S.records[0],original);
   assert.equal(h.S.records[2].value,null);assert.equal(h.S.usage.used,1);
   await h.undo();assert.deepEqual(h.S.records,[original]);assert.equal(h.S.usage.used,1);

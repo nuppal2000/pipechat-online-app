@@ -13,6 +13,7 @@ test('generated Xano helper matches shared validation and round-trips custom met
   const {code,script}=require('../scripts/build-xano-custom-fields.js');
   assert.equal(fs.readFileSync(path.join(__dirname,'../xano/custom-fields.xs'),'utf8').replace(/\r\n/g,'\n'),script);
   const run=new Function('$input',code);
+  assert.deepEqual(run({mode:'read',payload:{deals:[row],customData:{},updatedAt:'old'}}).data.deals,[row]);
   const saved=run({mode:'write',payload:{customFields:[field],deals:[{...row,cf_contact:'Taylor'},{...row,id:2}]}});
   assert(saved.ok);assert.equal(saved.data.cells['2'].cf_contact,'');
   const read=run({mode:'read',payload:{deals:[row],customData:saved.data,updatedAt:'v2'}});
@@ -30,7 +31,7 @@ function harness(){
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',style:{},innerHTML:'',textContent:'',hidden:false,classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[]});return nodes.get(id);};
   let snapshot={deals:[structuredClone(row)],customFields:[],updatedAt:'v1'},failure=false;
   const context={crypto,AbortSignal,innerWidth:1400,
-    window:{PipelineCore:C,PipeChatIcons:{}},document:{getElementById:node,querySelectorAll:()=>[]},
+    window:{PipelineCore:C,PipeChatIcons:{}},document:{getElementById:node,querySelectorAll:()=>[],querySelector:()=>null},
     sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
     fetch:async(url,options)=>{
       const body=options.body?JSON.parse(options.body):null;calls.push({url,body});

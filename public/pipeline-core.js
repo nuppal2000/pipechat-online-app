@@ -1,11 +1,15 @@
 (function (root, factory) {
-  const api = factory();
+  const schemaApi = typeof module === 'object' && module.exports ? require('./table-schema.js') : root.PipeChatSchema;
+  const api = factory(null,schemaApi);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.PipelineCore = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function factory(schema,schemaApi) {
   'use strict';
-  const fields = { account: 'Company', stage: 'Stage', value: 'Value', close: 'Close date', owner: 'Owner', next: 'Next step', follow: 'Follow-up', notes: 'Notes' };
-  const stages = ['Discovery', 'Warm', 'Proposal Sent', 'Negotiation', 'At Risk', 'Won', 'Lost'];
+  const fields = schema ? Object.fromEntries(schema.fields.map(f=>[f.id,f.name])) : { account: 'Company', stage: 'Stage', value: 'Value', close: 'Close date', owner: 'Owner', next: 'Next step', follow: 'Follow-up', notes: 'Notes' };
+  const role = name => schema ? schema.fields.find(f=>f.role===name)?.id : ({primary:'account',owner:'owner',status:'stage',followup:'follow'})[name];
+  const primary=role('primary');
+  const stages = schema ? schema.fields.find(f=>f.role==='status')?.options||[] : ['Discovery', 'Warm', 'Proposal Sent', 'Negotiation', 'At Risk', 'Won', 'Lost'];
+  const definitions = customFields => schema ? [...schema.fields,...validateCustomFields(customFields)] : [...Object.entries(fields).map(([id,name])=>({id,name,type:id==='value'?'currency':id==='close'?'date':'text',role:Object.entries({primary:'account',owner:'owner',status:'stage',followup:'follow'}).find(([,key])=>key===id)?.[0]||'none',options:id==='stage'?stages:[]})),...validateCustomFields(customFields)];
   const operators = ['equals', 'contains', 'is_blank', 'gt', 'gte', 'lt', 'lte', 'month_equals'];
   const normalize = value => String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/\s+/g, ' ');
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -31,6 +35,7 @@
     return Object.fromEntries(definitions.map(field=>[field.id,validateStoredValue(field.id,record[field.id]??'',definitions)]));
   }
   function fieldName(value, customFields = []) {
+    if(schema){const found=definitions(customFields).find(f=>f.id===value||normalize(f.name)===normalize(value));return found?.id||String(value);}
     const custom = customFields.find(field=>field.id===value || normalize(field.name)===normalize(value));
     if (custom) return custom.id;
     const key = normalize(value).replace(/[\s-]+/g, '_');
@@ -53,6 +58,19 @@
   function validateValue(field, value, customFields = []) {
     const labels=fieldsFor(customFields);
     if (!Object.hasOwn(labels, field)) throw new Error('This table does not contain that field.');
+    if(schema){
+      const def=definitions(customFields).find(f=>f.id===field);
+      if(value==null||value==='')return ['number','currency'].includes(def.type)?null:'';
+      if(['number','currency'].includes(def.type)){
+        if(!['number','string'].includes(typeof value)||String(value).trim()===''||!Number.isFinite(Number(value))||Math.abs(Number(value))>1e12)throw new Error('Enter a valid number between -1 trillion and 1 trillion.');
+        return def.type==='currency'?Math.round(Number(value)*100)/100:Number(value);
+      }
+      if(typeof value!=='string'||value.length>12000)throw new Error('Enter text of at most 12,000 characters.');
+      const text=value.trim();
+      if(def.type==='date'){const parsed=date(text);if(!parsed)throw new Error('Enter a complete, valid date.');return parsed.toISOString().slice(0,10);}
+      if(def.type==='choice'){const option=def.options.find(v=>normalize(v)===normalize(text));if(!option)throw new Error('Choose one of this field\'s options.');return option;}
+      return text;
+    }
     if (value === null || value === undefined) throw new Error(`Specify a value for ${labels[field]}.`);
     if (field.startsWith('cf_') && typeof value !== 'string') throw new Error('Custom text fields require text.');
     if (field === 'value') {
@@ -81,6 +99,18 @@
     const field = fieldName(filter.field,customFields);
     if (![...Object.keys(fieldsFor(customFields)), 'health', 'activity'].includes(field) || !operators.includes(filter.operator)) throw new Error('That filter is not supported.');
     const value = filter.value;
+    if(schema){
+      const def=definitions(customFields).find(f=>f.id===field);
+      if(!def)throw new Error('Unknown filter field.');
+      if(filter.operator==='is_blank')return row=>row[field]==null||row[field]==='';
+      let expected=value;
+      if(def.type==='date'&&normalize(value)==='today'){const d=new Date();expected=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+      if(filter.operator==='equals'){expected=validateStoredValue(field,expected,customFields);return row=>normalize(row[field])===normalize(expected);}
+      if(filter.operator==='contains'&&normalize(value))return row=>normalize(row[field]).includes(normalize(value));
+      if(filter.operator==='month_equals'&&def.type==='date'&&Number.isInteger(Number(value))&&Number(value)>=1&&Number(value)<=12)return row=>date(row[field])?.getUTCMonth()+1===Number(value);
+      if(['number','currency'].includes(def.type)&&['gt','gte','lt','lte'].includes(filter.operator)&&value!=null&&value!==''&&Number.isFinite(Number(value)))return row=>row[field]!=null&&row[field]!==''&&({gt:row[field]>Number(value),gte:row[field]>=Number(value),lt:row[field]<Number(value),lte:row[field]<=Number(value)})[filter.operator];
+      throw new Error('Unsupported filter for this field type.');
+    }
     if (filter.operator === 'is_blank') return record => record[field] === '' || record[field] == null;
     if (value === null || value === undefined || (filter.operator === 'contains' && !normalize(value))) throw new Error('Specify the filter value.');
     if (filter.operator === 'equals') {
@@ -108,8 +138,8 @@
   function candidates(records, reference) {
     const query = normalize(reference);
     if (!query) return [];
-    const exact = records.filter(record => normalize(record.account) === query);
-    return exact.length ? exact : records.filter(record => normalize(record.account).includes(query));
+    const exact = records.filter(record => normalize(record[primary]) === query);
+    return exact.length ? exact : records.filter(record => normalize(record[primary]).includes(query));
   }
   function targets(records, action, allowMany, customFields = []) {
     // Names take precedence over model-supplied IDs so an ambiguous name cannot silently select an arbitrary record.
@@ -139,13 +169,13 @@
     for (const [index, change] of changes.entries()) {
       const field = fieldName(change.field,customFields);
       const selection = targets(records, change, action.action === 'bulk_update' || Boolean(change.filter),customFields);
-      if (selection.candidates) return { clarification:{action:clone(action), changeIndex:action.action === 'update_records' ? index : null, candidates:selection.candidates.map(record => ({id:record.id,account:record.account,owner:record.owner,stage:record.stage}))} };
+      if (selection.candidates) return { clarification:{action:clone(action), changeIndex:action.action === 'update_records' ? index : null, candidates:selection.candidates.map(record => ({id:record.id,account:record[primary],owner:record[role('owner')],stage:record[role('status')]}))} };
       if (!selection.records.length) throw new Error('No records match this request.');
       const value = validateStoredValue(field, change.value,customFields);
       if (change.operation && !['set','append'].includes(change.operation)) throw new Error('Unsupported change operation.');
-      if (change.operation === 'append' && field !== 'notes') throw new Error('Only notes support append.');
+      if (change.operation === 'append' && (schema?definitions(customFields).find(f=>f.id===field)?.type!=='text':field!=='notes')) throw new Error('Only text notes support append.');
       for (const record of selection.records) {
-        const patch = patches.get(record.id) || { id:record.id, account:record.account, before:{}, after:{} };
+        const patch = patches.get(record.id) || { id:record.id, account:record[primary], before:{}, after:{} };
         if (!Object.hasOwn(patch.before, field)) patch.before[field] = record[field] === undefined ? '' : record[field];
         const previous = patch.after[field] ?? record[field];
         patch.after[field] = change.operation === 'append' ? [previous, value].filter(Boolean).join('\n') : value;
@@ -176,6 +206,7 @@
     return result;
   }
   function report(records, spec, customFields = []) {
+    if(schema||customFields.some(f=>f.id===spec?.groupBy))return contextualReport(records,spec,customFields);
     if (!spec || !['sum','count','average'].includes(spec.metric) || !['owner','account','stage','close_month','none'].includes(spec.groupBy) || !['bar','line','stage','kpi'].includes(spec.chart)) throw new Error('Choose a supported metric, grouping, and chart.');
     if (spec.metric !== 'count' && spec.field !== 'value') throw new Error('Sum and average reports use the value field.');
     const selections = [['owners','owner'],['accounts','account']].map(([key,field]) => {
@@ -219,9 +250,54 @@
     return result;
   }
   function share(records, selectedFields) {
-    const allowed = ['account','stage','value','close','owner'];
+    const allowed = schema ? Object.keys(fields) : ['account','stage','value','close','owner'];
     if (!Array.isArray(selectedFields) || selectedFields.some(field=>!allowed.includes(field))) throw new Error('Only public preview fields may be shared.');
     return records.map(record=>Object.fromEntries(selectedFields.map(field=>[field,record[field]])));
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,plan,apply,report,share,clone};
+  function tableValues(record,customFields=[]){
+    const allowed=new Set(Object.keys(fieldsFor(customFields)));
+    if(Object.keys(record).some(key=>key.startsWith('f_')&&!allowed.has(key)))throw new Error('Unknown table field. Reload before saving.');
+    return Object.fromEntries([...allowed].map(key=>[key,validateStoredValue(key,record[key]??(['number','currency'].includes(definitions(customFields).find(f=>f.id===key)?.type)?null:''),customFields)]));
+  }
+  function reportOptions(customFields=[]){
+    const defs=definitions(customFields);
+    return {metrics:defs.filter(f=>['number','currency'].includes(f.type)),groups:defs.map(f=>({id:f.id,name:f.name})).concat(defs.filter(f=>f.type==='date').map(f=>({id:f.id+'_month',name:f.name+' month'})))};
+  }
+  function reconcileReport(spec,customFields=[]){
+    const options=reportOptions(customFields),next={...spec};
+    if(!['sum','average','count'].includes(next.metric))next.metric='count';
+    if(!options.metrics.some(f=>f.id===next.field)){next.field=options.metrics[0]?.id||null;if(!next.field)next.metric='count';}
+    if(!options.groups.some(f=>f.id===next.groupBy)&&next.groupBy!=='none')next.groupBy=role('status')||role('owner')||'none';
+    if(!['bar','line','stage','kpi'].includes(next.chart))next.chart='bar';
+    if(next.filter&&!Object.hasOwn(fieldsFor(customFields),fieldName(next.filter.field,customFields)))next.filter=null;
+    if(!role('owner'))next.owners=null;
+    if(schema&&(!next.dateField||!definitions(customFields).some(f=>f.id===next.dateField&&f.type==='date'))){next.dateField=null;next.from=null;next.to=null;}
+    return next;
+  }
+  function contextualReport(records,spec,customFields=[]){
+    const options=reportOptions(customFields),defs=definitions(customFields);
+    if(!spec||!['sum','average','count'].includes(spec.metric)||!['bar','line','stage','kpi'].includes(spec.chart)||spec.groupBy!=='none'&&!options.groups.some(f=>f.id===spec.groupBy))throw new Error('Choose a metric and grouping from this table.');
+    const metric=options.metrics.find(f=>f.id===spec.field);
+    if(spec.metric!=='count'&&!metric)throw new Error('Sum and average require a numeric field.');
+    const dateField=schema?spec.dateField:'close',start=spec.from?date(spec.from):null,end=spec.to?date(spec.to):null;
+    if((spec.from||spec.to)&&(!defs.some(f=>f.id===dateField&&f.type==='date')||spec.from&&!start||spec.to&&!end||start&&end&&start>end))throw new Error('Choose a valid date field and range.');
+    const selections=[['owners',role('owner')],['accounts',primary]].map(([key,field])=>{
+      const list=spec[key];if(list!=null&&(!field||!Array.isArray(list)||list.length>2000||list.some(v=>typeof v!=='string'||v.length>12000)))throw new Error('Invalid comparison selection.');
+      return {key,field,names:list==null?null:new Map(list.map(v=>[normalize(v),v]))};
+    });
+    const rows=records.filter(predicate(spec.filter,customFields)).filter(row=>selections.every(s=>s.names===null||s.names.has(normalize(row[s.field])))).filter(row=>!start&&!end||date(row[dateField])&&(!start||date(row[dateField])>=start)&&(!end||date(row[dateField])<=end));
+    const monthly=defs.some(f=>f.type==='date'&&f.id+'_month'===spec.groupBy),groupField=monthly?spec.groupBy.slice(0,-6):spec.groupBy,groups=new Map();let undated=0;
+    for(const row of rows){
+      if(monthly&&!date(row[groupField])){undated++;continue;}
+      const label=spec.groupBy==='none'?'All records':monthly?date(row[groupField]).toISOString().slice(0,7):String(row[groupField]??'').trim()||'Not set',key=normalize(label);
+      const group=groups.get(key)||{label,count:0,total:0,known:0};group.count++;
+      if(row[spec.field]!=null&&row[spec.field]!==''&&Number.isFinite(Number(row[spec.field]))){group.known++;group.total+=metric?.type==='currency'?Math.round(Number(row[spec.field])*100):Number(row[spec.field]);}
+      groups.set(key,group);
+    }
+    const data=[...groups.values()].map(g=>({label:g.label,count:g.count,value:spec.metric==='count'?g.count:!g.known?null:g.total/(spec.metric==='average'?g.known:1)/(metric?.type==='currency'?100:1)})).sort((a,b)=>monthly?a.label.localeCompare(b.label):b.value-a.value||a.label.localeCompare(b.label));
+    const result={data,count:rows.length,undated};
+    for(const s of selections)if(s.names)result[s.key==='owners'?'missingOwners':'missingAccounts']=[...s.names].filter(([key])=>!rows.some(row=>normalize(row[s.field])===key)).map(([,name])=>name);
+    return result;
+  }
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
 });

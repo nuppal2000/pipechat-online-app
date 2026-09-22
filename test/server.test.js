@@ -23,6 +23,10 @@ test('server isolation, validation, persistence, schema/context, and usage lock'
     const a=await request('/api/auth/signup','POST',{name:'Test A',email:'a@example.test',password:'testing-only-123'});
     const b=await request('/api/auth/signup','POST',{name:'Test B',email:'b@example.test',password:'testing-only-123'});
     assert.equal(a.status,200);assert.equal(b.status,200);
+    // These regression fixtures represent accounts created before onboarding existed.
+    const authPath=path.join(dataDir,'pipechat-auth.json'),auth=JSON.parse(await fs.readFile(authPath,'utf8'));
+    for(const user of auth.users)delete user.tableSetup;
+    await fs.writeFile(authPath,JSON.stringify(auth));
     const deal={id:1,account:'Private account A',stage:'Proposal',value:100,close:'Nov 30, 2026',owner:'A',notes:'Secret A',next:'',follow:''};
     const saved=await request('/api/crm-data','PUT',{deals:[deal],expectedUpdatedAt:null},a.cookie);
     assert.equal(saved.status,200);assert.equal(saved.body.deals[0].stage,'Proposal Sent');assert.equal(saved.body.deals[0].close,'2026-11-30');assert.equal(saved.body.deals[0].follow,'');

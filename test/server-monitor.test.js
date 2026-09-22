@@ -60,6 +60,10 @@ test('HTTP monitoring and errors omit secrets; API no-store and origin protectio
     const signup = await request('/api/auth/signup', { method: 'POST',
       body: { name: 'PRIVATE_NAME_CANARY', email: 'private-email-canary@example.invalid', password: 'PRIVATE_PASSWORD_CANARY' } });
     assert.equal(signup.status, 200);
+    // Keep this security regression focused on an existing legacy CRM.
+    const authPath=path.join(temp,'pipechat-auth.json'),auth=JSON.parse(await fs.readFile(authPath,'utf8'));
+    for(const user of auth.users)delete user.tableSetup;
+    await fs.writeFile(authPath,JSON.stringify(auth));
     const cookie = signup.headers.get('set-cookie').split(';')[0];
     const saved = await request('/api/crm-data', { method: 'PUT', cookie,
       body: { deals: [{ id: 1, account: 'PRIVATE_CRM_CANARY', notes: 'PRIVATE_NOTES_CANARY' }], expectedUpdatedAt: null } });

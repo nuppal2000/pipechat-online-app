@@ -18,7 +18,7 @@ function harness(handler) {
     return nodes.get(id);
   };
   const context = { window: { PipelineCore: require('../public/pipeline-core.js'), PipeChatIcons: {} },
-    document: { getElementById: node, querySelectorAll: () => [],
+    document: { getElementById: node, querySelectorAll: () => [], querySelector:()=>null,
       body: { classList: { add: key => classes.add(key), remove: key => classes.delete(key) } } },
     fetch: async (url, options) => ({ ok: true, json: async () => handler(url, options) }) };
   // Test real controller functions with tiny DOM stubs; no production debug hooks.
