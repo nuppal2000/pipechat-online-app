@@ -53,6 +53,15 @@ test('a custom field can become primary without duplicating or losing its values
   assert.throws(()=>Core.create(change.tableSchema).validateCustomFields([custom]));
 });
 
+test('a new primary does not consume a custom-column slot at the twenty-column limit',()=>{
+  const fields=Array.from({length:20},(_,i)=>({id:i===0?'cf_primary_candidate':'cf_extra_'+i,name:'Extra '+i,type:'text'}));
+  const input={...row,...Object.fromEntries(fields.map(f=>[f.id,'Keep '+f.name]))};
+  const changed=core.deleteColumn([input],'f_name',fields,{name:'Client',id:'f_client'});
+  assert.equal(changed.customFields.length,20);assert.equal(changed.records[0].f_client,'');
+  for(const f of fields)assert.equal(changed.records[0][f.id],input[f.id]);
+  assert.throws(()=>core.deleteColumn([input],'f_name',fields,{name:'Extra 1',id:'f_client'}));
+});
+
 test('legacy field deletion is explicit and preserves the remaining columns and follow-up semantics',()=>{
   for(const id of ['stage','value','close','owner','next','follow','notes']){
     const change=Core.deleteColumn([legacy],id),next=Core.create(change.tableSchema);
