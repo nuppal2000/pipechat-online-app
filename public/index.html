@@ -7,6 +7,7 @@
   <script>if(location.protocol==='file:')location.replace('http://127.0.0.1:8787/');</script>
   <link rel="stylesheet" href="/pipechat.css?v=2">
   <script defer src="/icons.js"></script>
+  <script defer src="/table-schema.js"></script>
   <script defer src="/pipeline-core.js"></script>
   <script defer src="/csv-import.js"></script>
   <script defer src="/vendor/chart.umd.min.js"></script>
@@ -35,6 +36,18 @@
       </nav>
       <div class="account-actions"><span id="accountPill"></span><span id="userAvatar" class="avatar"></span><button id="logoutBtn" class="icon-btn" title="Sign out" aria-label="Sign out"><i data-icon="LogOut"></i></button></div>
     </header>
+    <section id="setupView" class="setup-view" hidden aria-labelledby="setupQuestion">
+      <p class="eyebrow">YOUR WORKSPACE</p><h1 id="setupQuestion">What will you use pipechat for?</h1>
+      <div class="setup-choices" id="useCaseChoices"><button class="secondary" data-use-case="Sales">Sales</button><button class="secondary" data-use-case="Recruiting">Recruiting</button><button class="secondary" data-use-case="Real Estate">Real Estate</button><button class="secondary" data-use-case="Other">Other</button></div>
+      <label id="workflowLabel" hidden>Describe your business or workflow and what you want to track<textarea id="workflowDescription" rows="4" maxlength="2000"></textarea></label>
+      <section id="buildChoices" hidden><h2>How would you like to build your table?</h2><div class="setup-methods">
+        <button id="buildAiBtn" class="primary">Build Pipechat Table using AI</button>
+        <button class="secondary" disabled title="Coming later">Build Pipechat Table from Scratch <small>Coming later</small></button>
+        <button class="secondary" disabled title="Coming later">Use Default Pipechat Table <small>Coming later</small></button>
+        <button class="secondary" disabled title="Coming later">Build Pipechat Table using existing Microsoft Excel or Google Sheets Doc <small>Coming later</small></button>
+      </div></section>
+      <p id="setupStatus" role="status"></p><section id="schemaPreview" hidden></section>
+    </section>
     <div class="workspace-heading"><div><p class="eyebrow">PIPECHAT WORKSPACE</p><h1 id="workspaceTitle">Sales pipeline</h1></div><span id="saveStatus" class="save-status" role="status">Connecting...</span></div>
     <div class="workspace">
       <aside class="chat-pane pane" aria-label="PipeChat conversation">
@@ -52,6 +65,7 @@
         <section id="dashboardView" class="dashboard-view" hidden>
           <div class="metrics"><div><span>Open pipeline value</span><strong id="valueMetric"></strong></div><div><span>Open deals</span><strong id="openMetric"></strong></div><div><span>Follow-ups today</span><strong id="followupsMetric"></strong></div><div><span>Missing owners</span><strong id="missingOwnerMetric"></strong></div></div>
           <div class="chart-heading"><h3 id="reportTitle">Pipeline by owner</h3><button id="resetReportBtn" class="icon-btn" aria-label="Reset report" title="Reset report"><i data-icon="RotateCcw"></i></button></div>
+          <label id="reportFieldLabel" hidden>Measure<select id="reportField"></select></label>
           <div class="report-controls"><label>Metric<select id="reportMetric"><option value="sum">Total value</option><option value="count">Deal count</option><option value="average">Average value</option></select></label><label>Group by<select id="reportGroup"><option value="owner">Owner</option><option value="account">Account</option><option value="stage">Stage</option><option value="close_month">Close month</option><option value="none">All deals</option></select></label><label>Chart<select id="reportChart"><option value="bar">Bar</option><option value="line">Line</option><option value="stage">Stage</option><option value="kpi">KPI</option></select></label></div>
           <div id="reportSelections" class="report-selections">
             <details data-report-selection="owners"><summary id="reportOwnersSummary">Owners: All</summary><div class="report-selection-menu"><input type="search" aria-label="Find owners" placeholder="Find owners" data-report-search="owners"><label><input id="reportOwnersAll" type="checkbox" data-report-all="owners">All owners</label><div id="reportOwnersOptions" class="report-selection-options" role="group" aria-label="Selected owners"></div></div></details>
