@@ -171,6 +171,13 @@
       $('trustStatus').textContent='Your request is kept while you choose.';return;
     }
     if(S.pending?.kind==='editor'){renderEditor();return;}
+    if(S.pending?.kind==='csv-import'){
+      const p=S.pending;
+      $('trustTitle').textContent=S.busy?'Analyzing CSV':'CSV mapping paused';
+      $('trustStatus').textContent='No import preview confirmed. Existing deals are unchanged.';
+      panel.innerHTML=`<h3>${esc(p.name)}</h3><p class="proposal-intro">${p.rows.length} rows / ${p.headers.length} columns</p><p class="${p.error?'error':'subtle'}" role="status">${esc(S.busy?'AI is matching columns by meaning...':p.error||'Ready for AI analysis.')}</p><div class="proposal-actions"><button class="primary" data-retry-import ${S.busy||S.saving?'disabled':''}>${icon('RotateCcw')}Retry AI mapping</button><button class="secondary" data-basic-import ${S.busy||S.saving?'disabled':''}>Review basic mapping (not AI)</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel import</button></div>`;
+      return;
+    }
     if(S.pending){
       const p=S.pending;$('trustTitle').textContent=p.kind==='delete'?'Confirm deletion':p.kind==='add'?'Review new deals':'Proposed changes';
       $('changeCount').hidden=false;$('changeCount').textContent=`${p.count} ${p.count===1?'deal':'deals'}`;
@@ -246,7 +253,7 @@
     finally{if(generation===S.generation){S.saving=false;render();}}
   }
   async function confirmDraft() {
-    const p=S.pending;if(!p||S.saving||S.failedEdit||p.kind==='editor')return;
+    const p=S.pending;if(!p||S.saving||S.failedEdit||['editor','csv-import'].includes(p.kind))return;
     try{
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
       let next;
@@ -329,6 +336,7 @@
     if(S.failedEdit){toast('Review or discard the unsaved edit first.');focusTrust();return;}
     $('chatInput').value='';say(command,'user');const answer=C.normalize(command).replace(/[.!?]+$/,'');
     if((S.pending||S.clarification)&&['cancel','no','no thanks','never mind','nevermind'].includes(answer)){cancelDraft();return;}
+    if(S.pending?.kind==='csv-import'){say('The CSV is waiting for mapping. Use Retry AI mapping, Review basic mapping, or Cancel import in the review panel.');focusTrust();return;}
     if(S.clarification?.candidates){
       const found=S.clarification.candidates.filter(r=>C.normalize(r.account)===answer||String(r.id)===answer);
       if(found.length===1){chooseCandidate(found[0].id);return;}
@@ -343,10 +351,12 @@
     finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving;}}
   }
   async function importCsv(file) {
-    if(!file||S.busy||S.saving||S.failedEdit)return;
+    if(!file||!S.loaded||S.busy||S.saving||S.failedEdit)return;
     if(file.size>700000){toast('Choose a CSV smaller than 700 KB.');return;}
     if(S.pending||S.clarification){toast('Confirm or cancel the current draft before importing.');return;}
     const importGeneration=S.generation, importRevision=S.revision;
+    let draft;
+    S.busy=true;updateUsage();
     try{
       const parsed=Papa.parse(await file.text(),{header:true,skipEmptyLines:'greedy',transformHeader:header=>header.trim()});
       if(importGeneration!==S.generation)return;
@@ -356,31 +366,53 @@
       if(!parsed.data.length||parsed.data.length>2000)throw new Error('Import between 1 and 2,000 rows.');
       const headers=parsed.meta.fields;
       const description=window.PipeChatCsv.describe(headers,parsed.data);
-      let analysis=window.PipeChatCsv.localMapping(headers);
-      const generation=S.generation;
-      let mappingSource='CSV headers matched locally.';
-      if(S.health?.aiConfigured&&S.usage&&S.usage.remaining>0){
-        S.busy=true;updateUsage();
-        try{
-          const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify({csvImport:description}),signal:AbortSignal.timeout(90000)});
-          if(generation!==S.generation)return;
-          S.usage=response.usage||S.usage;
-          if(response.crmAction?.action!=='import_mapping')throw new Error('The model did not return a column mapping.');
-          analysis=response.crmAction;mappingSource='AI-assisted mapping.';
-        }catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;say(`AI mapping was unavailable: ${error.message} Using recognized CSV headers instead.`,'assistant',true);}
-        finally{if(generation===S.generation){S.busy=false;updateUsage();}}
-      }
-      if(importGeneration!==S.generation)return;
       if(importRevision!==S.revision||S.pending||S.clarification)throw new Error('The table or draft changed during import. Choose the file again to prepare a fresh preview.');
-      const review=window.PipeChatCsv.build(headers,parsed.data,analysis),{records,mapping}=review;
-      if(!records.length){say('No CRM fields could be confidently interpreted. No rows were added; the original CSV is unchanged.','assistant',true);return;}
-      prepare({action:'import_records',records},`Import ${file.name}`);
-      const duplicates=records.filter(r=>r.account&&S.records.some(existing=>C.normalize(existing.account)===C.normalize(r.account))).length;
-      S.pending.importReview=review;
-      S.pending.note=`${mappingSource} ${Object.entries(mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${C.fields[f]}`).join('; ')}. Missing or uncertain values stay blank, including amounts. ${review.skipped?`${review.skipped} rows with no usable CRM fields skipped. `:''}${duplicates?`${duplicates} rows share existing company names and will be added separately.`:''}`;
-      renderTrust();
-    }catch(error){toast(error.message);say(`Import stopped: ${error.message} Existing deals are unchanged.`,'assistant',true);}
-    finally{$('csvFileInput').value='';}
+      draft={kind:'csv-import',name:file.name,headers,rows:parsed.data,description,generation:importGeneration,revision:importRevision,error:null};
+      S.pending=draft;
+    }catch(error){if(importGeneration===S.generation){toast(error.message);say(`Import stopped: ${error.message} Existing deals are unchanged.`,'assistant',true);}}
+    finally{if(importGeneration===S.generation){S.busy=false;updateUsage();$('csvFileInput').value='';}}
+    if(draft&&S.pending===draft)await analyzeCsvImport(draft);
+  }
+  function currentCsvImport(draft) {
+    if(!draft||draft.kind!=='csv-import'||draft.generation!==S.generation||S.pending!==draft)return false;
+    if(draft.revision!==S.revision||S.failedEdit||S.clarification){clearDraft();say('The table or draft changed during import. Choose the file again to prepare a fresh preview.','assistant',true);return false;}
+    return true;
+  }
+  function previewCsvImport(draft,analysis,mappingSource) {
+    if(!currentCsvImport(draft))return;
+    const review=window.PipeChatCsv.build(draft.headers,draft.rows,analysis),{records,mapping}=review;
+    if(!records.length){draft.error='No CRM fields could be confidently interpreted. No rows were added; the original CSV is unchanged.';say(draft.error,'assistant',true);renderTrust();return;}
+    prepare({action:'import_records',records},`Import ${draft.name}`);
+    const duplicates=records.filter(r=>r.account&&S.records.some(existing=>C.normalize(existing.account)===C.normalize(r.account))).length;
+    S.pending.importReview=review;
+    S.pending.note=`${mappingSource} ${Object.entries(mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${C.fields[f]}`).join('; ')}. Missing or uncertain values stay blank, including amounts. ${review.skipped?`${review.skipped} rows with no usable CRM fields skipped. `:''}${duplicates?`${duplicates} rows share existing company names and will be added separately.`:''}`;
+    renderTrust();
+  }
+  async function analyzeCsvImport(draft=S.pending) {
+    if(S.busy||S.saving||!currentCsvImport(draft))return;
+    S.busy=true;draft.error=null;updateUsage();renderTrust();focusTrust();
+    try{
+      if(S.usage?.paymentRequired||S.usage?.remaining===0)throw new Error('Chat allowance exhausted. Basic mapping and manual editing remain available.');
+      if(S.health?.aiConfigured===false)throw new Error('The AI API key is not configured on the server.');
+      // Unknown client-side usage/health must not silently bypass AI; the server enforces quota.
+      const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify({csvImport:draft.description}),signal:AbortSignal.timeout(90000)});
+      if(draft.generation!==S.generation)return;
+      S.usage=response.usage||S.usage;
+      if(!currentCsvImport(draft))return;
+      if(response.crmAction?.action!=='import_mapping')throw new Error('The model did not return a column mapping.');
+      previewCsvImport(draft,response.crmAction,'AI-assisted mapping.');
+    }catch(error){
+      if(draft.generation!==S.generation)return;
+      if(error.usage)S.usage=error.usage;
+      if(!currentCsvImport(draft))return;
+      draft.error=`AI mapping unavailable: ${error.message} No basic mapping was applied. Retry AI mapping or explicitly choose basic mapping.`;
+      say(draft.error,'assistant',true);
+    }finally{if(draft.generation===S.generation){S.busy=false;updateUsage();renderTrust();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);}}
+  }
+  function basicCsvImport() {
+    const draft=S.pending;if(S.busy||S.saving||!currentCsvImport(draft))return;
+    try{previewCsvImport(draft,window.PipeChatCsv.localMapping(draft.headers),'Basic mapping (not AI): only recognized headers were matched.');}
+    catch(error){draft.error=error.message;say(`Import stopped: ${error.message}`,'assistant',true);renderTrust();}
   }
   function samples() {
     const year=new Date().getFullYear(), owner=S.user.name||'Jordan';
@@ -453,7 +485,7 @@
     document.querySelectorAll('[data-prompt]').forEach(button=>button.onclick=()=>send(button.dataset.prompt));
     $('dealRows').addEventListener('change',event=>{if(event.target.dataset.field)manualEdit(event.target);});
     $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
-    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
+    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
     $('trustBody').addEventListener('input',event=>{if(event.target.id==='failedEditValue'&&S.failedEdit){S.failedEdit.raw=event.target.value;S.failedEdit.reviewed=false;keepFailedEdit();$('failedEditForm').querySelector('[type="submit"]').disabled=true;}});
     $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
     $('addAccountBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}S.pending={kind:'editor'};renderTrust();focusTrust();$('dealEditor').elements.account.focus();};

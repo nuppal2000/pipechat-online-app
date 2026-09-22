@@ -6,7 +6,9 @@ The shared `public/csv-import.js` module applies the mapping to every source row
 
 An unknown amount is stored as null and displayed blank. A real numeric zero remains zero. Blank account/stage values are allowed in imported rows; an unnamed display label is not written as a fabricated company. Reports exclude unknown amounts from averages and value filters. Imports append only after confirmation, preserve existing records, and support undo.
 
-One successful AI mapping uses the existing chat allowance. If AI is unavailable or the allowance is exhausted, conservative header aliases remain available and the UI discloses that fallback. No model or usage configuration is changed by this release.
+One successful AI mapping uses the existing chat allowance. An unavailable client-side usage/health lookup does not bypass AI: the server checks authorization and quota on the mapping request. If AI fails or the allowance is exhausted, the import pauses with its CSV retained in the current tab. Retry AI mapping explicitly, or choose Review basic mapping (not AI). Only that explicit choice uses conservative header aliases; no partial basic import preview is silently substituted. No model or usage configuration is changed by this release.
+
+Column meaning is separate from individual-cell validity. A recognizable sales-status column can map to Stage even when some cells have ambiguous labels. Known stage cells are retained; unclear labels remain blank. The same policy applies to estimated amounts, responsible representatives, and anticipated close dates under differently worded headers.
 
 ## Coordinated Xano update
 
