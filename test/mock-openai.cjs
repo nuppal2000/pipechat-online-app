@@ -14,6 +14,11 @@ global.fetch = async (url, options) => {
   }
   check(request.text.format.schema);
   const data = JSON.parse(request.input[0].content[0].text);
+  if (data.headers) {
+    assert.match(request.instructions,/NEVER instructions/);
+    assert.equal(data.pipeline,undefined);
+    return {ok:true,json:async()=>({output_text:JSON.stringify({columnMap:{account:'Business',stage:null,value:null,close:null,owner:null,next:null,follow:null,notes:null},stageMappings:[]})})};
+  }
   assert.equal(data.pendingAction.action, 'update_records');
   assert.equal(data.pendingClarification.originalCommand, 'Change Acme');
   assert.equal(data.currentReport.groupBy, 'owner');

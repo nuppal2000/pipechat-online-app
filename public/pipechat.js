@@ -4,7 +4,7 @@
   const C = window.PipelineCore, $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon = name => window.PipeChatIcons[name] || '';
-  const currency = value => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:Number(value)%1 ? 2 : 0}).format(Number(value)||0);
+  const currency = value => value === null || value === undefined || value === '' ? '' : new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:Number(value)%1 ? 2 : 0}).format(Number(value)||0);
   const localDate = () => {const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
   const defaultReport = () => ({metric:'sum',field:'value',groupBy:'owner',chart:'bar',filter:null,from:null,to:null});
   const S = {user:null,records:[],updatedAt:null,usage:null,health:null,history:[],pending:null,clarification:null,sourceAction:null,tab:'table',scope:'all',search:'',filter:null,report:defaultReport(),expanded:null,undo:null,saving:false,busy:false,generation:0,revision:0,signup:false,loaded:false};
@@ -59,7 +59,7 @@
     const d=S.failedEdit;if(!d?.reviewed||S.saving)return;
     const record=S.records.find(row=>row.id===d.id);if(!record)return;
     try {
-      const value=C.validateValue(d.field,d.field==='value'?d.raw.replace(/[$,]/g,'').trim():d.raw);
+      const value=C.validateStoredValue(d.field,d.field==='value'?d.raw.replace(/[$,]/g,'').trim():d.raw);
       if(record[d.field]===value){discardFailedEdit();$('saveStatus').textContent='Edit already saved';return;}
       const proposal=C.plan(S.records,{action:'update_record',ids:[d.id],field:d.field,value});
       await persist(C.apply(S.records,proposal,S.user.name||S.user.email),`${C.fields[d.field]} updated`,{failedEdit:d});
@@ -67,8 +67,9 @@
   }
   const icons = (node=document) => node.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));
   const stageClass = value => `stage-${C.normalize(value).replace(/[^a-z0-9]+/g,'-')}`;
-  const display = (field,value) => field==='value'?currency(value):field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
-  const stageOptions = selected => C.stages.map(stage=>`<option ${stage===selected?'selected':''}>${esc(stage)}</option>`).join('');
+  const rowName = record => record.account || `Unnamed deal #${record.id}`;
+  const display = (field,value) => field==='value'?currency(value)||'Not set':field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
+  const stageOptions = selected => `<option value="" ${!selected?'selected':''}>Not set</option>`+C.stages.map(stage=>`<option ${stage===selected?'selected':''}>${esc(stage)}</option>`).join('');
   function say(text, role='assistant', error=false) {
     S.history.push({role,content:String(text)}); S.history=S.history.slice(-50);
     const el=document.createElement('article');el.className=`chat-message ${role}${error?' error':''}`;
@@ -102,12 +103,12 @@
   }
   function renderTable(rows) {
     $('dealRows').innerHTML=rows.length?rows.map(record=>`<tr data-id="${record.id}">
-      <td><input class="cell-input account-input" data-field="account" aria-label="Company for ${esc(record.account)}" value="${esc(record.account)}"></td>
-      <td><select class="cell-input stage-select ${stageClass(record.stage)}" data-field="stage" aria-label="Stage for ${esc(record.account)}">${stageOptions(record.stage)}</select></td>
-      <td><input class="cell-input" data-field="value" inputmode="decimal" aria-label="Value for ${esc(record.account)}" value="${esc(currency(record.value))}"></td>
-      <td><input class="cell-input" data-field="close" aria-label="Close date for ${esc(record.account)}" title="Use YYYY-MM-DD or a full date" value="${esc(display('close',record.close)==='Not set'?'':display('close',record.close))}"></td>
-      <td><input class="cell-input" data-field="owner" aria-label="Owner for ${esc(record.account)}" value="${esc(record.owner)}" placeholder="Unassigned"></td>
-      <td><div class="row-actions"><button class="icon-btn" data-detail="${record.id}" title="Deal details" aria-label="Details for ${esc(record.account)}" aria-expanded="${S.expanded===record.id}">${icon(S.expanded===record.id?'ChevronUp':'ChevronDown')}</button><button class="icon-btn delete-btn" data-delete="${record.id}" title="Delete deal" aria-label="Delete ${esc(record.account)}">${icon('Trash2')}</button></div></td></tr>
+      <td><input class="cell-input account-input" data-field="account" aria-label="Company for ${esc(rowName(record))}" value="${esc(record.account)}"></td>
+      <td><select class="cell-input stage-select ${stageClass(record.stage)}" data-field="stage" aria-label="Stage for ${esc(rowName(record))}">${stageOptions(record.stage)}</select></td>
+      <td><input class="cell-input" data-field="value" inputmode="decimal" aria-label="Value for ${esc(rowName(record))}" value="${esc(currency(record.value))}"></td>
+      <td><input class="cell-input" data-field="close" aria-label="Close date for ${esc(rowName(record))}" title="Use YYYY-MM-DD or a full date" value="${esc(display('close',record.close)==='Not set'?'':display('close',record.close))}"></td>
+      <td><input class="cell-input" data-field="owner" aria-label="Owner for ${esc(rowName(record))}" value="${esc(record.owner)}" placeholder="Unassigned"></td>
+      <td><div class="row-actions"><button class="icon-btn" data-detail="${record.id}" title="Deal details" aria-label="Details for ${esc(rowName(record))}" aria-expanded="${S.expanded===record.id}">${icon(S.expanded===record.id?'ChevronUp':'ChevronDown')}</button><button class="icon-btn delete-btn" data-delete="${record.id}" title="Delete deal" aria-label="Delete ${esc(rowName(record))}">${icon('Trash2')}</button></div></td></tr>
       ${S.expanded===record.id?`<tr class="detail-row" data-id="${record.id}"><td colspan="6"><div class="detail-content"><label>Next step<input data-field="next" value="${esc(record.next)}" aria-label="Next step for ${esc(record.account)}"></label><label>Follow-up<input data-field="follow" value="${esc(record.follow)}" placeholder="Today, tomorrow or date" aria-label="Follow-up for ${esc(record.account)}"></label><label class="full">Notes<textarea data-field="notes" rows="3" aria-label="Notes for ${esc(record.account)}">${esc(record.notes)}</textarea></label><p class="full">${esc(record.history?.[0]||'No changes recorded yet.')}</p></div></td></tr>`:''}`).join(''):'<tr><td colspan="6" class="empty-table">No deals in this view.</td></tr>';
     $('dealRows').classList.toggle('loading',S.saving);
     $('dealRows').querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=S.saving||Boolean(S.failedEdit));
@@ -143,10 +144,10 @@
     const groupLabels={owner:'Owner',stage:'Stage',close_month:'Close month',none:'All deals'},metricLabels={sum:'Total value',count:'Deal count',average:'Average value'};
     $('reportTitle').textContent=`${metricLabels[S.report.metric]}${S.report.groupBy==='none'?'':` by ${groupLabels[S.report.groupBy].toLowerCase()}`}`;
     $('reportMetric').value=S.report.metric;$('reportGroup').value=S.report.groupBy;$('reportChart').value=S.report.chart;
-    const showValue=value=>S.report.metric==='count'?String(value):currency(value);
+    const showValue=value=>S.report.metric==='count'?String(value):currency(value)||'Not set';
     $('reportGroupHeading').textContent=groupLabels[S.report.groupBy];$('reportValueHeading').textContent=metricLabels[S.report.metric];
     $('reportRows').innerHTML=result.data.map(item=>`<tr><td>${esc(item.label)}</td><td>${esc(showValue(item.value))}</td><td>${item.count}</td></tr>`).join('')||'<tr><td colspan="3">No matching deals.</td></tr>';
-    $('reportCaption').textContent=`${result.count} matching deals${result.undated?`; ${result.undated} without close dates excluded from the monthly chart`:''}. ${S.report.from||S.report.to?`Close dates: ${S.report.from||'any'} to ${S.report.to||'any'}. `:''}${S.report.filter?`Filter: ${C.fields[S.report.filter.field]||S.report.filter.field} ${S.report.filter.operator} ${S.report.filter.value??''}.`:''}`;
+    $('reportCaption').textContent=`${result.count} matching deals${result.undated?`; ${result.undated} without close dates excluded from the monthly chart`:''}. ${rows.some(r=>r.value===null)?'Unknown amounts excluded from value totals and averages. ':''}${S.report.from||S.report.to?`Close dates: ${S.report.from||'any'} to ${S.report.to||'any'}. `:''}${S.report.filter?`Filter: ${C.fields[S.report.filter.field]||S.report.filter.field} ${S.report.filter.operator} ${S.report.filter.value??''}.`:''}`;
     $('chartContainer').hidden=S.report.chart==='kpi';$('reportKpis').hidden=S.report.chart!=='kpi';
     $('reportKpis').innerHTML=result.data.map(item=>`<div><span>${esc(item.label)}</span><strong>${esc(showValue(item.value))}</strong></div>`).join('')||'<p class="subtle">No matching deals.</p>';
     if(chart){chart.destroy();chart=null;}
@@ -174,8 +175,13 @@
       const p=S.pending;$('trustTitle').textContent=p.kind==='delete'?'Confirm deletion':p.kind==='add'?'Review new deals':'Proposed changes';
       $('changeCount').hidden=false;$('changeCount').textContent=`${p.count} ${p.count===1?'deal':'deals'}`;
       const intro=p.kind==='delete'?'These deals will be removed after confirmation.':p.kind==='add'?'These rows will be added. Existing deals are kept.':'Review the exact changes before saving.';
-      const patches=p.kind==='update'?p.patches:p.records.map(record=>({account:record.account,before:{},after:Object.fromEntries(Object.keys(C.fields).map(f=>[f,record[f]]))}));
+      const patches=p.kind==='update'?p.patches:p.records.map(record=>({account:rowName(record),before:{},after:Object.fromEntries(Object.keys(C.fields).map(f=>[f,record[f]]))}));
       panel.innerHTML=`<p class="proposal-intro">${intro}${p.note?` ${esc(p.note)}`:''}</p>${patches.map(patch=>`<section class="proposal-record"><h3>${esc(patch.account)}</h3>${p.kind==='delete'?'<p class="error">Delete entire record</p>':Object.entries(patch.after).map(([field,value])=>`<div class="field-diff"><span>${C.fields[field]}</span><div class="diff-values">${p.kind==='update'?`<span class="diff-before">${esc(display(field,patch.before[field]))}</span>${icon('ArrowRight')}`:''}<span class="diff-after">${esc(display(field,value))}</span></div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':p.kind==='delete'?'Confirm deletion':p.kind==='add'?'Confirm additions':'Confirm changes'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+      if(p.importReview){
+        const review=p.importReview;
+        const details=`<details class="import-review"><summary>Import review: ${review.issues.length} uncertain cells, ${review.ignored.length} unused columns</summary><p>${esc(review.ignored.length?'Unused columns: '+review.ignored.join(', '):'All source columns mapped.')}</p>${review.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}${review.issues.slice(0,100).map(issue=>`<p>Row ${issue.row} / ${esc(C.fields[issue.field])}: <q>${esc(issue.raw.slice(0,200))}</q> left blank.</p>`).join('')}${review.issues.length>100?'<p>First 100 uncertain cells shown.</p>':''}</details>`;
+        panel.insertAdjacentHTML('afterbegin',details);
+      }
       $('trustStatus').textContent='No changes made yet. Review and confirm.';return;
     }
     if(S.clarification){panel.innerHTML=`<div class="trust-empty"><span class="empty-icon">${icon('CircleHelp')}</span><h3>Quick clarification</h3><p>${esc(S.clarification.question)}</p></div>`;$('trustStatus').textContent='Waiting for your reply. No table changes made.';return;}
@@ -194,8 +200,9 @@
     } else if(['add_record','import_records'].includes(action.action)){
       const source=action.action==='add_record'?[action.record]:action.records;
       if(!Array.isArray(source)||!source.length||source.length>2000)throw new Error('Provide between 1 and 2,000 new records.');
+      if(S.records.length+source.length>2000)throw new Error('The CRM can contain at most 2,000 deals. Existing deals are unchanged.');
       const max=Math.max(0,...S.records.map(r=>r.id));
-      const records=source.map((record,index)=>newRecord(record,max+index+1));
+      const records=source.map((record,index)=>newRecord(record,max+index+1,action.action==='import_records'));
       proposal={kind:'add',records,count:records.length,createdAt:Date.now(),note:'Unspecified values default to Discovery, $0, and blank fields.'};
     } else throw new Error('This request is not an editable table action.');
     if(proposal.clarification){S.pending=null;S.clarification={...proposal.clarification,originalCommand};say('I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
@@ -212,11 +219,11 @@
     say(`Use ${q.candidates.find(c=>c.id===id).account}.`,'user');
     try{prepare(action,q.originalCommand);}catch(error){say(error.message,'assistant',true);}
   }
-  function newRecord(input,id) {
+  function newRecord(input,id,imported=false) {
     if(!input||typeof input!=='object')throw new Error('A new deal needs a company name.');
-    const defaults={account:'',stage:'Discovery',value:0,close:'',owner:'',next:'',follow:'',notes:''};
+    const defaults={account:'',stage:imported?'':'Discovery',value:imported?null:0,close:'',owner:'',next:'',follow:'',notes:''};
     const record={id,activity:'just now',health:'updated',history:[]};
-    for(const field of Object.keys(defaults))record[field]=C.validateValue(field,input[field]??defaults[field]);
+    for(const field of Object.keys(defaults))record[field]=(imported?C.validateStoredValue:C.validateValue)(field,input[field]??defaults[field]);
     return record;
   }
   async function persist(next,label,{undo=true,failedEdit=null}={}) {
@@ -262,7 +269,7 @@
     const failedEdit={id:record.id,account:record.account,field:el.dataset.field,raw:el.value,before:record[el.dataset.field],reviewed:false};
     try{
       const field=el.dataset.field,raw=field==='value'?el.value.replace(/[$,]/g,'').trim():el.value;
-      const value=C.validateValue(field,raw);if(value===(record[field]??'')){renderTable(visible());return;}
+      const value=C.validateStoredValue(field,raw);if(value===record[field]){renderTable(visible());return;}
       const proposal=C.plan(S.records,{action:'update_record',ids:[record.id],field,value});
       const next=C.apply(S.records,proposal,S.user.name||S.user.email);
       const hadDraft=Boolean(S.pending||S.clarification);
@@ -343,37 +350,34 @@
     try{
       const parsed=Papa.parse(await file.text(),{header:true,skipEmptyLines:'greedy',transformHeader:header=>header.trim()});
       if(importGeneration!==S.generation)return;
-      if(parsed.errors.length)throw new Error(`CSV row ${(parsed.errors[0].row??0)+2}: ${parsed.errors[0].message}`);
+      const structuralErrors=parsed.errors.filter(error=>!['TooFewFields','UndetectableDelimiter'].includes(error.code));
+      if(structuralErrors.length)throw new Error(`CSV row ${(structuralErrors[0].row??0)+2}: ${structuralErrors[0].message}`);
       if(parsed.meta.renamedHeaders&&Object.keys(parsed.meta.renamedHeaders).length)throw new Error('CSV headers must be unique.');
       if(!parsed.data.length||parsed.data.length>2000)throw new Error('Import between 1 and 2,000 rows.');
       const headers=parsed.meta.fields;
-      let mapping={};
-      const aliases={account:['account','company','company name','account name','name','organization'],owner:['owner','rep','sales rep','assigned to','salesperson'],stage:['stage','status','deal stage'],value:['value','amount','deal value','revenue'],close:['close','close date','expected close date'],next:['next','next step','next action'],follow:['follow','follow up','follow-up','follow up date','follow-up date'],notes:['notes','note','description']};
-      for(const [field,names] of Object.entries(aliases))mapping[field]=headers.find(header=>names.includes(C.normalize(header)))||null;
+      const description=window.PipeChatCsv.describe(headers,parsed.data);
+      let analysis=window.PipeChatCsv.localMapping(headers);
       const generation=S.generation;
       let mappingSource='CSV headers matched locally.';
       if(S.health?.aiConfigured&&S.usage&&S.usage.remaining>0){
         S.busy=true;updateUsage();
         try{
-          const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(aiPayload(`Map the columns in ${file.name} for an append-only import. Do not invent missing values.`,{headers,sampleRows:parsed.data.slice(0,8),totalRows:parsed.data.length})),signal:AbortSignal.timeout(90000)});
+          const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify({csvImport:description}),signal:AbortSignal.timeout(90000)});
           if(generation!==S.generation)return;
           S.usage=response.usage||S.usage;
           if(response.crmAction?.action!=='import_mapping')throw new Error('The model did not return a column mapping.');
-          mapping=response.crmAction.columnMap;mappingSource='AI-assisted column mapping; values copied from the CSV.';
-        }catch(error){if(error.usage)S.usage=error.usage;say(`AI mapping was unavailable: ${error.message} Using recognized CSV headers instead.`,'assistant',true);}
-        finally{S.busy=false;updateUsage();}
+          analysis=response.crmAction;mappingSource='AI-assisted mapping.';
+        }catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;say(`AI mapping was unavailable: ${error.message} Using recognized CSV headers instead.`,'assistant',true);}
+        finally{if(generation===S.generation){S.busy=false;updateUsage();}}
       }
       if(importGeneration!==S.generation)return;
       if(importRevision!==S.revision||S.pending||S.clarification)throw new Error('The table or draft changed during import. Choose the file again to prepare a fresh preview.');
-      if(!mapping?.account||!headers.includes(mapping.account))throw new Error('Include a Company or Account column, or connect AI to recognize its name.');
-      for(const header of Object.values(mapping))if(header!==null&&header!==undefined&&!headers.includes(header))throw new Error(`The proposed column "${header}" is not in this CSV.`);
-      const records=parsed.data.map((row,index)=>{
-        const item={};for(const field of Object.keys(C.fields)){const value=mapping[field]?row[mapping[field]]:null;if(value!==null&&value!==undefined&&String(value).trim()!=='')item[field]=field==='value'?String(value).replace(/[$,]/g,'').trim():value;}
-        try{return newRecord(item,index+1);}catch(error){throw new Error(`CSV row ${index+2}: ${error.message}`);}
-      });
+      const review=window.PipeChatCsv.build(headers,parsed.data,analysis),{records,mapping}=review;
+      if(!records.length){say('No CRM fields could be confidently interpreted. No rows were added; the original CSV is unchanged.','assistant',true);return;}
       prepare({action:'import_records',records},`Import ${file.name}`);
-      const duplicates=records.filter(r=>S.records.some(existing=>C.normalize(existing.account)===C.normalize(r.account))).length;
-      S.pending.note=`${mappingSource} ${Object.entries(mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${C.fields[f]}`).join('; ')}. Missing values default to Discovery, $0, or blank. ${duplicates?`${duplicates} rows share existing company names and will be added separately.`:''}`;
+      const duplicates=records.filter(r=>r.account&&S.records.some(existing=>C.normalize(existing.account)===C.normalize(r.account))).length;
+      S.pending.importReview=review;
+      S.pending.note=`${mappingSource} ${Object.entries(mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${C.fields[f]}`).join('; ')}. Missing or uncertain values stay blank, including amounts. ${review.skipped?`${review.skipped} rows with no usable CRM fields skipped. `:''}${duplicates?`${duplicates} rows share existing company names and will be added separately.`:''}`;
       renderTrust();
     }catch(error){toast(error.message);say(`Import stopped: ${error.message} Existing deals are unchanged.`,'assistant',true);}
     finally{$('csvFileInput').value='';}

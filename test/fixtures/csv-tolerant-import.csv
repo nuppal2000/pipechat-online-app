@@ -1,0 +1,5 @@
+Business,Journey,Size,Owner,Close date,Notes,Unrelated
+Acme Import QA,Quotation delivered,"$1,000",Sarah,2026-11-30,Known fields,red
+Beta Import QA,Active,TBD,Daniel,11/12/26,Ambiguous fields,blue
+,Unknown,50%,Sarah,2026-02-30,Company missing,green
+Zero Import QA,Warm,0,Alex,2026/12/15,Zero is known,yellow

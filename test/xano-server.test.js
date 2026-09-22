@@ -49,7 +49,11 @@ test('Xano proxy: isolation, cookies, CAS saves, reservations, quota, outages, n
     assert.deepEqual(chats.map(r=>r.status).sort(),[200,402]);
     const meter=await request('/api/chat-usage',{cookie:cookieA});assert.equal(meter.body.used,1);assert.equal(meter.body.reserved,0);assert.equal(meter.body.remaining,0);
     const current=await request('/api/crm-data',{cookie:cookieA});
-    const empty=await request('/api/crm-data',{method:'PUT',cookie:cookieA,body:{deals:[],expectedUpdatedAt:current.body.updatedAt}});assert.equal(empty.status,200);
+    const partial={...row,id:2,account:'',stage:'',value:null,close:''};
+    const imported=await request('/api/crm-data',{method:'PUT',cookie:cookieA,body:{deals:[...current.body.deals,partial],expectedUpdatedAt:current.body.updatedAt}});assert.equal(imported.status,200);
+    const readBack=await request('/api/crm-data',{cookie:cookieA});assert.equal(readBack.body.deals[1].account,'');assert.equal(readBack.body.deals[1].stage,'');assert.equal(readBack.body.deals[1].value,null);
+    assert.deepEqual((await request('/api/crm-data',{cookie:cookieB})).body.deals,[]);
+    const empty=await request('/api/crm-data',{method:'PUT',cookie:cookieA,body:{deals:[],expectedUpdatedAt:readBack.body.updatedAt}});assert.equal(empty.status,200);
     assert.deepEqual((await request('/api/crm-data',{cookie:cookieA})).body.deals,[]);
     const outage=await signup('outage@example.test');const failedRead=await request('/api/crm-data',{cookie:outage.cookie.split(';')[0]});assert.equal(failedRead.status,503);assert.equal(failedRead.body.deals,undefined);assert(!failedRead.body.error.includes('secret backend'));
     const logout=await request('/api/auth/logout',{method:'POST',cookie:cookieA,body:{}});assert.match(logout.cookie,/Max-Age=0/);
