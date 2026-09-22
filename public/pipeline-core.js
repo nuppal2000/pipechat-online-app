@@ -291,9 +291,12 @@
         selected=defs.find(f=>f.id===fieldName(replacement.field,customFields));
         if(!selected||selected.id===field.id||selected.type!=='text')throw new Error('Choose a different existing text field.');
       }else{
-        const candidate={id:'cf_primary_candidate',name:replacement.name,type:'text'};
-        validateCustomFields([...customFields,candidate]);
         if(!/^f_[a-z0-9_]{1,60}$/.test(replacement.id||'')||defs.some(f=>f.id===replacement.id))throw new Error('Invalid replacement field ID.');
+        let validationId='cf_primary_candidate';
+        while(defs.some(f=>f.id===validationId))validationId+='x';
+        const candidate={id:validationId,name:replacement.name,type:'text'};
+        validateCustomFields([candidate]);
+        if(customFields.some(f=>normalize(f.name)===normalize(candidate.name)))throw new Error('A field with that name already exists.');
         selected={id:replacement.id,name:candidate.name.trim(),type:'text',role:'primary',options:[]};
         next=next.map(record=>({...record,[selected.id]:''}));
       }
