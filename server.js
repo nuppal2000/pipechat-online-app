@@ -233,13 +233,15 @@ actionSchema.properties.report = {
     properties: {
       metric: { type: "string", enum: ["sum", "count", "average"] },
       field: { type: "string", enum: ["value"] },
-      groupBy: { type: "string", enum: ["owner", "stage", "close_month", "none"] },
+      groupBy: { type: "string", enum: ["owner", "account", "stage", "close_month", "none"] },
       chart: { type: "string", enum: ["bar", "line", "stage", "kpi"] },
       filter: actionSchema.properties.filter,
+      owners: { type: ["array", "null"], items: { type: "string" } },
+      accounts: { type: ["array", "null"], items: { type: "string" } },
       from: { type: ["string", "null"] },
       to: { type: ["string", "null"] }
     },
-    required: ["metric", "field", "groupBy", "chart", "filter", "from", "to"]
+    required: ["metric", "field", "groupBy", "chart", "filter", "owners", "accounts", "from", "to"]
   } ]
 };
 actionSchema.required.push("changes", "report");
@@ -559,9 +561,11 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
         "Use update_records with changes for multi-field or multi-company requests. Repeat the original recordMatch for each field. Use append for adding notes; preserve existing notes.",
         "Keep the user's original company reference in recordMatch even if you supply IDs. Ask for clarification if identity is ambiguous; never guess a company or missing business value.",
         "For bulk updates use filters, not a guessed list of IDs. month_equals on close uses a month number from 1 to 12 and works across years. Ask for the year if a target date is unclear.",
-        "Use show_report with report specifying metric, field, groupBy, chart, filter, from and to. Pipeline by rep means sum value grouped by owner. Deals by stage means count grouped by stage. Monthly trends use close_month. Dates use YYYY-MM-DD. Never supply calculated totals; the app calculates them.",
+        "Use show_report with report specifying metric, field, groupBy, chart, filter, owners, accounts, from and to. Pipeline by rep means sum value grouped by owner. Deals by stage means count grouped by stage. Monthly trends use close_month. Dates use YYYY-MM-DD. Never supply calculated totals; the app calculates them.",
+        "For selected-owner comparisons, set owners to the exact owner names from pipeline.records, groupBy owner and chart bar. Example: compare total value under Ravi and Sarah means metric sum, field value, owners [Ravi, Sarah], accounts null, filter null. Include any requested subset, not just one owner; never use contains with a comma-separated name string. For selected-company comparisons, set accounts to the exact company names, groupBy account and chart bar. Example: compare values for X, Y and Z means accounts [X, Y, Z]. The app sums multiple deals with the same normalized account name and shows their deal count. Ask for clarification for partial or ambiguous names; never silently omit a requested name. Do not substitute owner selection for account grouping.",
+        "owners and accounts are read-only report selections: null means all, [] means none, and an empty string selects an unassigned owner or unnamed account. Names within each list are OR; owners, accounts, filter and date range intersect (AND). Sum and average use known values only; unknown values are not zero. If selected entities have no matching records, explain that; never broaden to all entities or invent values.",
         "Questions asking for totals, averages or counts must use show_report (kpi is available), not an unverified numerical answer in conversation. A single filter supports equals, contains, is_blank, gt, gte, lt, lte, month_equals; do not silently drop additional requested conditions that this prototype cannot represent.",
-        "Use currentReport for refinements such as now only Q3. Do not silently drop previous chart filters unless the user requests a reset.",
+        "Use currentReport for refinements such as now only Q3 or now compare averages. Preserve owners, accounts, filter and date bounds unless the user explicitly changes that selection, starts a different report or requests a reset. Return the full report, including the retained selections. An explicit new comparison replaces the previous entity selection; do not retain a contradictory old single-owner filter.",
         "Use pendingAction to revise a draft, retaining its other changes. Return the complete revised action. No draft has been applied yet.",
         "Use share_view for sharing requests. This is a local read-only preview only; no invite or external share is actually sent. Put a requested recipient in value.",
         "Dynamic schema, recruiting/other domains, production permissions, billing and integrations are future work. Do not claim these features exist. Normal conversation returns crmAction null."

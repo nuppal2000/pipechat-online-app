@@ -62,6 +62,52 @@ test('monthly lines sort chronologically and zero-fill missing months',()=>{
   assert.deepEqual(result.data.map(d=>[d.label,d.value]),[['2026-01',1],['2026-02',0],['2026-03',1]]);assert.equal(result.undated,1);
 });
 test('empty charts have no fabricated values',()=>assert.deepEqual(C.report([],{metric:'sum',field:'value',groupBy:'owner',chart:'bar'}),{data:[],count:0,undated:0}));
+const comparisonRows=[
+  {id:1,account:'Alpha',owner:'Ravi',value:100.25,stage:'Warm',close:'2026-10-01'},
+  {id:2,account:'Beta',owner:'Sarah',value:200.50,stage:'Won',close:'2026-11-01'},
+  {id:3,account:'Gamma',owner:'Ravi',value:50.25,stage:'Warm',close:'2026-12-01'},
+  {id:4,account:'Delta',owner:'Daniel',value:900,stage:'Warm',close:'2026-12-02'},
+  {id:5,account:' alpha ',owner:' ravi ',value:0,stage:'Warm',close:'2026-12-02'},
+  {id:6,account:'Unknown',owner:'Sarah',value:null,stage:'Warm',close:''}
+];
+const comparisonSpec={metric:'sum',field:'value',groupBy:'owner',chart:'bar',owners:['Ravi','Sarah'],accounts:null};
+test('owner subsets use exact OR matching, normalize names and never include other owners',()=>{
+  const before=C.clone(comparisonRows),result=C.report(comparisonRows,{...comparisonSpec,owners:[' ravi ','Sarah','RAVI']});
+  assert.deepEqual(result.data,[{label:'Sarah',value:200.5,count:2},{label:'Ravi',value:150.5,count:3}]);
+  assert.equal(result.count,5);assert.deepEqual(result.missingOwners,[]);assert.deepEqual(comparisonRows,before);
+  assert.equal(C.report(comparisonRows,{...comparisonSpec,owners:['Ra']}).count,0);
+});
+test('account comparisons aggregate duplicate account names and support independent owner selection',()=>{
+  const spec={...comparisonSpec,groupBy:'account',owners:null,accounts:['Alpha','Beta','Gamma']};
+  assert.deepEqual(C.report(comparisonRows,spec).data,[{label:'Beta',value:200.5,count:1},{label:'Alpha',value:100.25,count:2},{label:'Gamma',value:50.25,count:1}]);
+  assert.deepEqual(C.report(comparisonRows,{...spec,owners:['Ravi']}).data.map(d=>d.label),['Alpha','Gamma']);
+});
+test('selection lists intersect existing filters and inclusive close date bounds',()=>{
+  const result=C.report(comparisonRows,{...comparisonSpec,accounts:['Alpha','Gamma','Delta'],filter:{field:'stage',operator:'equals',value:'Warm'},from:'2026-12-01',to:'2026-12-02'});
+  assert.deepEqual(result.data,[{label:'Ravi',value:50.25,count:2}]);assert.deepEqual(result.missingOwners,['Sarah']);assert.deepEqual(result.missingAccounts,['Delta']);
+});
+test('subset counts and averages exclude unknown values without dropping their deal counts',()=>{
+  assert.deepEqual(C.report(comparisonRows,{...comparisonSpec,metric:'count'}).data.map(d=>[d.label,d.value]),[['Ravi',3],['Sarah',2]]);
+  assert.deepEqual(C.report(comparisonRows,{...comparisonSpec,metric:'average'}).data.map(d=>[d.label,d.value]),[['Sarah',200.5],['Ravi',50.17]]);
+  assert.equal(C.report(comparisonRows,{...comparisonSpec,groupBy:'account',accounts:['Unknown']}).data[0].value,null);
+});
+test('empty and unmatched selections never broaden a report or invent zero-valued records',()=>{
+  for(const owners of [[],['Nobody']]){const result=C.report(comparisonRows,{...comparisonSpec,owners});assert.equal(result.count,0);assert.deepEqual(result.data,[]);}
+  const result=C.report(comparisonRows,{...comparisonSpec,owners:['Ravi','Nobody']});assert.deepEqual(result.missingOwners,['Nobody']);assert.equal(result.data.length,1);
+  assert.equal(C.report(comparisonRows,{...comparisonSpec,owners:null}).count,6);
+  assert.equal(C.report(comparisonRows,{...comparisonSpec,accounts:[]}).count,0);
+});
+test('malformed selection lists fail closed without changing shared write predicates',()=>{
+  for(const owners of ['Ravi, Sarah',{},[1],[null],Array(2001).fill('Ravi')])assert.throws(()=>C.report(comparisonRows,{...comparisonSpec,owners}),/valid list/);
+  assert.throws(()=>C.report(comparisonRows,{...comparisonSpec,accounts:[{}]}),/valid list/);
+  assert.throws(()=>C.predicate({field:'owner',operator:'in',value:['Ravi','Sarah']}),/not supported/);
+});
+test('unassigned selections and HTML-like names are treated as literal data',()=>{
+  const fixture=[{id:1,account:'',owner:'',value:7},{id:2,account:'<img onerror=alert(1)>',owner:'Ravi',value:8}];
+  assert.equal(C.report(fixture,{...comparisonSpec,owners:['']}).data[0].label,'Unassigned');
+  assert.equal(C.report(fixture,{...comparisonSpec,groupBy:'account',owners:null,accounts:['']}).data[0].label,'Unnamed account');
+  assert.equal(C.report(fixture,{...comparisonSpec,groupBy:'account',owners:null,accounts:['<img onerror=alert(1)>']}).data[0].value,8);
+});
 test('share export projects only the explicit public field allowlist',()=>{
   const data=C.share(rows,['account','stage','value']);
   assert.deepEqual(Object.keys(data[0]),['account','stage','value']);assert.equal(JSON.stringify(data).includes('Private'),false);
