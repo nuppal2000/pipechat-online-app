@@ -12,7 +12,7 @@ const row = (id, account, owner) => ({ id, account, owner, stage: 'Discovery', v
   notes: 'QA private note', history: [], activity: '', health: '' });
 function addUser(email, name, limit, deals) {
   const user = { id: users.size + 1, email, name, password };
-  users.set(user.id, user); snapshots.set(user.id, { deals, updatedAt: null });
+  users.set(user.id, user); snapshots.set(user.id, { deals, customFields:[], updatedAt: null });
   meters.set(user.id, { used: 0, reserved: 0, limit }); return user;
 }
 addUser('qa-one@example.invalid', 'QA One', 30, [row(1, 'Acme QA', 'QA One'), row(2, 'Beta QA', 'Sarah')]);
@@ -38,6 +38,8 @@ global.fetch = async (url, options = {}) => {
       return response(200,{output_text:JSON.stringify(mapping)});
     }
     let action = null, message = 'Offline QA reply. No real model was called.';
+    if (command === 'Add field called Contact') action={action:'add_field',newFieldName:'Contact'};
+    if (command === 'Set Contact for Acme QA to Taylor') action={action:'update_record',recordMatch:'Acme QA',field:input.pipeline.customFields.find(field=>field.name==='Contact')?.id,value:'Taylor'};
     if (command === 'fail model') throw new Error('Synthetic model outage');
     if (command === 'Delay next workspace load') delayNextRead = true;
     if (command === 'Move Acme QA to Warm') action = { action: 'update_record', recordMatch: 'Acme QA', field: 'stage', value: 'Warm' };
@@ -85,7 +87,8 @@ global.fetch = async (url, options = {}) => {
     if (options.method === 'PUT') {
       if (body.deals.some(item => item.owner === 'QA reject save')) return response(503, {});
       if (body.expectedUpdatedAt !== snapshots.get(user.id).updatedAt) return response(409, {});
-      snapshots.set(user.id, { deals: body.deals, updatedAt: crypto.randomUUID() });
+      if(snapshots.get(user.id).customFields.length&&!Object.hasOwn(body,'customFields'))return response(409,{});
+      snapshots.set(user.id, { deals: body.deals, customFields:body.customFields||[], updatedAt: crypto.randomUUID() });
     } else if (delayNextRead && user.email === 'qa-one@example.invalid') {
       delayNextRead = false;
       await new Promise(resolve => setTimeout(resolve, 8000));

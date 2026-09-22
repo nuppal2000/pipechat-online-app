@@ -17,7 +17,7 @@ function harness(handler) {
       disabled: false, classList: { add() {}, remove() {} } });
     return nodes.get(id);
   };
-  const context = { window: { PipelineCore: {}, PipeChatIcons: {} },
+  const context = { window: { PipelineCore: require('../public/pipeline-core.js'), PipeChatIcons: {} },
     document: { getElementById: node, querySelectorAll: () => [],
       body: { classList: { add: key => classes.add(key), remove: key => classes.delete(key) } } },
     fetch: async (url, options) => ({ ok: true, json: async () => handler(url, options) }) };

@@ -53,6 +53,24 @@ test('server isolation, validation, persistence, schema/context, and usage lock'
     assert.equal((await request('/api/crm-data','GET',null,a.cookie)).status,401);
     const login=await request('/api/auth/login','POST',{email:'a@example.test',password:'testing-only-123'});
     assert.deepEqual((await request('/api/crm-data','GET',null,login.cookie)).body.deals,[]);
+    const fields=[{id:'cf_contact',name:'Contact',type:'text'}];
+    const fieldOnly=await request('/api/crm-data','PUT',{deals:[],customFields:fields,expectedUpdatedAt:empty.body.updatedAt},login.cookie);
+    assert.equal(fieldOnly.status,200);assert.deepEqual(fieldOnly.body.customFields,fields);
+    const custom=await request('/api/crm-data','PUT',{deals:[{...deal,cf_contact:'Taylor'}],customFields:fields,expectedUpdatedAt:fieldOnly.body.updatedAt},login.cookie);
+    assert.equal(custom.status,200);assert.equal(custom.body.deals[0].cf_contact,'Taylor');
+    assert.equal((await request('/api/crm-data','PUT',{deals:[deal],expectedUpdatedAt:custom.body.updatedAt},login.cookie)).status,409);
+    assert.equal((await request('/api/crm-data','PUT',{deals:[deal],customFields:fields,expectedUpdatedAt:fieldOnly.body.updatedAt},login.cookie)).status,409);
+    assert.equal((await request('/api/crm-data','PUT',{deals:[{...deal,cf_contact:{bad:true}}],customFields:fields,expectedUpdatedAt:custom.body.updatedAt},login.cookie)).status,400);
+    assert.deepEqual((await request('/api/crm-data','GET',null,b.cookie)).body.customFields,[]);
+    await request('/api/auth/logout','POST',{},login.cookie);
+    const relogin=await request('/api/auth/login','POST',{email:'a@example.test',password:'testing-only-123'});
+    const retained=await request('/api/crm-data','GET',null,relogin.cookie);
+    assert.deepEqual(retained.body.customFields,fields);assert.equal(retained.body.deals[0].cf_contact,'Taylor');
+    const c=await request('/api/auth/signup','POST',{name:'Test C',email:'c@example.test',password:'testing-only-123'});
+    const d=await request('/api/auth/signup','POST',{name:'Test D',email:'d@example.test',password:'testing-only-123'});
+    const customChat=await request('/api/pipechat-ai','POST',{userCommand:'Custom schema test',pipeline:{customFields:fields}},c.cookie);
+    assert.equal(customChat.status,200,JSON.stringify(customChat.body));assert.equal(customChat.body.crmAction.action,'add_field');
+    assert.equal((await request('/api/pipechat-ai','POST',{userCommand:'Clean schema test',pipeline:{customFields:[]}},d.cookie)).status,200);
     const css=await fetch(root+'/pipechat.css');assert.match(css.headers.get('content-type'),/text\/css/);
   } finally {
     child.kill();await once(child,'exit').catch(()=>{});
