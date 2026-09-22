@@ -19,6 +19,9 @@ addUser('qa-one@example.invalid', 'QA One', 30, [row(1, 'Acme QA', 'QA One'), ro
 addUser('qa-two@example.invalid', 'QA Two', 30, []);
 addUser('qa-cap@example.invalid', 'QA Cap', 1, [row(1, 'Cap QA', 'QA Cap')]);
 addUser('qa-outage@example.invalid', 'QA Outage', 30, []);
+addUser('qa-reports@example.invalid', 'QA Reports', 30, [
+  row(1,'Alpha QA','Ravi'),row(2,'Beta QA','Sarah'),row(3,'Gamma QA','Ravi'),row(4,'Delta QA','Daniel')
+]);
 const usage = user => { const m = meters.get(user.id); return { ...m, remaining: Math.max(0, m.limit - m.used - m.reserved) }; };
 const response = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => structuredClone(body) });
 let delayNextRead = false;
@@ -45,6 +48,9 @@ global.fetch = async (url, options = {}) => {
       action = { action: 'update_record', recordMatch: 'Acme QA', field: 'owner', value: 'Neelam' };
     }
     if (command === 'Show follow-ups today') action = { action: 'filter_view', field: 'follow', operator: 'equals', value: 'Today' };
+    if (command === 'Compare total value under Ravi and Sarah') action = {action:'show_report',report:{metric:'sum',field:'value',groupBy:'owner',chart:'bar',owners:['Ravi','Sarah'],accounts:null,filter:null,from:null,to:null}};
+    if (command === 'Compare values for Alpha QA, Beta QA and Gamma QA') action = {action:'show_report',report:{metric:'sum',field:'value',groupBy:'account',chart:'bar',owners:null,accounts:['Alpha QA','Beta QA','Gamma QA'],filter:null,from:null,to:null}};
+    if (command === 'Now compare averages') action = {action:'show_report',report:{...input.currentReport,metric:'average'}};
     if (command === 'Delete Gamma QA') action = { action: 'delete_record', recordMatch: 'Gamma QA' };
     if (command === 'Slow Acme update') {
       await new Promise(resolve => setTimeout(resolve, 8000));
