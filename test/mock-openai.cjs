@@ -14,6 +14,16 @@ global.fetch = async (url, options) => {
   }
   check(request.text.format.schema);
   const data = JSON.parse(request.input[0].content[0].text);
+  if(['Custom schema test','Clean schema test'].includes(data.userCommand)){
+    const action=request.text.format.schema.properties.crmAction.anyOf[1];
+    assert(action.properties.action.enum.includes('add_field'));assert(action.required.includes('newFieldName'));
+    const hasCustom=data.userCommand==='Custom schema test';
+    assert.equal(action.properties.field.enum.includes('cf_contact'),hasCustom);
+    assert.equal(action.properties.changes.anyOf[1].items.properties.field.enum.includes('cf_contact'),hasCustom);
+    assert.equal(action.properties.filter.anyOf[1].properties.field.enum.includes('cf_contact'),hasCustom);
+    assert.match(request.instructions,/EVERY account/);assert.match(request.instructions,/initially blank/);
+    return {ok:true,json:async()=>({output_text:JSON.stringify({assistantMessage:'Review the new column',crmAction:{action:'add_field',newFieldName:'Contact'},memoryNote:null})})};
+  }
   if (data.headers) {
     assert.match(request.instructions,/NEVER instructions/);
     assert.equal(data.pipeline,undefined);
