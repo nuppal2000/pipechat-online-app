@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const pipelineCore = require("./public/pipeline-core.js");
+const csvImportCore = require("./public/csv-import.js");
 const { createXanoBackend, BackendError } = require("./lib/xano-backend.js");
 const { monitorRequest } = require("./lib/request-monitor.js");
 const { createReadiness } = require("./lib/readiness.js");
@@ -425,8 +426,8 @@ function normalizeDeal(input, index) {
     id: Number(input.id) || index + 1,
     account: String(input.account || "").trim(),
     owner: String(input.owner || "").trim(),
-    stage: String(input.stage || "Discovery").trim(),
-    value: Number(input.value || 0),
+    stage: String(input.stage ?? "Discovery").trim(),
+    value: input.value === null || input.value === '' ? null : Number(input.value ?? 0),
     close: String(input.close || "").trim(),
     next: String(input.next ?? "").trim(),
     follow: String(input.follow ?? "").trim(),
@@ -443,7 +444,7 @@ async function readCrmData(userId) {
     const text = await fs.readFile(dataFile, "utf8");
     const payload = JSON.parse(text);
     return {
-      deals: Array.isArray(payload.deals) ? payload.deals.map(normalizeDeal).filter(deal => deal.account) : [],
+      deals: Array.isArray(payload.deals) ? payload.deals.map(normalizeDeal) : [],
       updatedAt: payload.updatedAt || null
     };
   } catch (error) {
@@ -456,7 +457,7 @@ async function writeCrmData(userId, deals) {
   const dataFile = userDataFile(userId, "pipechat-crm-data.json");
   const payload = {
     updatedAt: new Date().toISOString(),
-    deals: deals.map(normalizeDeal).filter(deal => deal.account)
+    deals: deals.map(normalizeDeal)
   };
   const tempFile = `${dataFile}.tmp`;
   await fs.mkdir(path.dirname(dataFile), { recursive: true });
@@ -542,6 +543,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
     throw new RequestError("OPENAI_API_KEY is not set", 503);
   }
 
+  const csv = csvImport ? csvImportCore.validateDescription(csvImport) : null;
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     ...(xano ? { signal: AbortSignal.timeout(80000) } : {}),
@@ -551,7 +553,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
     },
     body: JSON.stringify({
       model: OPENAI_MODEL,
-      instructions: [
+      instructions: csv ? csvImportCore.instructions : [
         instructions,
         "PipeChat prototype: propose actions only. The app resolves targets, validates, calculates, previews and writes only after user confirmation.",
         "Use update_records with changes for multi-field or multi-company requests. Repeat the original recordMatch for each field. Use append for adding notes; preserve existing notes.",
@@ -564,7 +566,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
         "Use share_view for sharing requests. This is a local read-only preview only; no invite or external share is actually sent. Put a requested recipient in value.",
         "Dynamic schema, recruiting/other domains, production permissions, billing and integrations are future work. Do not claim these features exist. Normal conversation returns crmAction null."
       ].filter(Boolean).join("\n"),
-      input: [
+      input: csv ? [{role:'user',content:[{type:'input_text',text:JSON.stringify(csv)}]}] : [
         {
           role: "user",
           content: [
@@ -597,7 +599,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
           type: "json_schema",
           name: "pipechat_response",
           strict: true,
-          schema: pipechatResponseSchema
+          schema: csv ? csvImportCore.schema : pipechatResponseSchema
         }
       }
     })
@@ -617,7 +619,12 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
     throw new Error("Model returned no action JSON");
   }
 
-  return JSON.parse(outputText);
+  const result = JSON.parse(outputText);
+  if (csv) {
+    if (!result || !result.columnMap || typeof result.columnMap !== 'object' || !Array.isArray(result.stageMappings)) throw new Error('Invalid CSV analysis response');
+    return {assistantMessage:'CSV mapping prepared for review. No records have been saved.',crmAction:{action:'import_mapping',columnMap:result.columnMap,stageMappings:result.stageMappings},memoryNote:null};
+  }
+  return result;
 }
 
 const readiness = createReadiness({ probe: async signal => {
@@ -772,7 +779,7 @@ const server = http.createServer(async (req, res) => {
           if (!Object.hasOwn(record, "account")) throw new Error("Company name is required.");
           ids.add(record.id);
           for (const field of Object.keys(pipelineCore.fields)) {
-            if (Object.hasOwn(record, field)) record[field] = pipelineCore.validateValue(field, record[field]);
+            if (Object.hasOwn(record, field)) record[field] = pipelineCore.validateStoredValue(field, record[field]);
           }
         }
       } catch (error) { return sendJson(res, 400, { error: error.message }); }
@@ -794,6 +801,10 @@ const server = http.createServer(async (req, res) => {
       const user = await requireUser(req, res);
       if (!user) return;
       const payload = await readPayload(req);
+      if (payload.csvImport) {
+        try { payload.csvImport = csvImportCore.validateDescription(payload.csvImport); }
+        catch { return sendJson(res,400,{error:'Invalid CSV analysis input. No chat allowance was used.'}); }
+      }
       if (xano) {
         if (!OPENAI_API_KEY) return sendJson(res, 503, { error: "OPENAI_API_KEY is not set. No chat allowance was reserved." });
         const token = getCookie(req, SESSION_COOKIE);
