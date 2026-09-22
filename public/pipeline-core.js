@@ -149,11 +149,17 @@
     return result;
   }
   function report(records, spec) {
-    if (!['sum','count','average'].includes(spec.metric) || !['owner','stage','close_month','none'].includes(spec.groupBy) || !['bar','line','stage','kpi'].includes(spec.chart)) throw new Error('Choose a supported metric, grouping, and chart.');
+    if (!spec || !['sum','count','average'].includes(spec.metric) || !['owner','account','stage','close_month','none'].includes(spec.groupBy) || !['bar','line','stage','kpi'].includes(spec.chart)) throw new Error('Choose a supported metric, grouping, and chart.');
     if (spec.metric !== 'count' && spec.field !== 'value') throw new Error('Sum and average reports use the value field.');
+    const selections = [['owners','owner'],['accounts','account']].map(([key,field]) => {
+      const values=spec[key];
+      if (values == null) return {key,field,names:null};
+      if (!Array.isArray(values) || values.length>2000 || values.some(value=>typeof value!=='string'||value.length>12000)) throw new Error(`Choose a valid list of ${key}.`);
+      return {key,field,names:new Map(values.map(value=>[normalize(value),value.trim()]))};
+    });
     const start = spec.from ? date(spec.from) : null, end = spec.to ? date(spec.to) : null;
     if ((spec.from && !start) || (spec.to && !end) || (start && end && start > end)) throw new Error('Choose a valid date range.');
-    const rows = records.filter(predicate(spec.filter)).filter(record => {
+    const rows = records.filter(predicate(spec.filter)).filter(record => selections.every(({field,names})=>names===null||names.has(normalize(record[field])))).filter(record => {
       if (!start && !end) return true;
       const d = date(record.close); return d && (!start || d >= start) && (!end || d <= end);
     });
@@ -161,11 +167,12 @@
     for (const record of rows) {
       const d = date(record.close);
       if (spec.groupBy === 'close_month' && !d) { undated++; continue; }
-      const label = spec.groupBy === 'none' ? 'All deals' : spec.groupBy === 'close_month' ? d.toISOString().slice(0,7) : String(record[spec.groupBy] || 'Unassigned');
-      const group = groups.get(label) || {label,count:0,cents:0,known:0};
+      const label = spec.groupBy === 'none' ? 'All deals' : spec.groupBy === 'close_month' ? d.toISOString().slice(0,7) : String(record[spec.groupBy] || '').trim() || (spec.groupBy==='account'?'Unnamed account':'Unassigned');
+      const key = ['owner','account'].includes(spec.groupBy) ? normalize(record[spec.groupBy]) : label;
+      const group = groups.get(key) || {label,count:0,cents:0,known:0};
       group.count++;
       if (record.value !== null && record.value !== '' && record.value !== undefined) { group.known++; group.cents += Math.round((Number(record.value) || 0) * 100); }
-      groups.set(label,group);
+      groups.set(key,group);
     }
     let data = [...groups.values()].map(group=>({label:group.label,value:spec.metric==='count'?group.count:!group.known?null:Math.round(group.cents/(spec.metric==='average'?group.known:1))/100,count:group.count}));
     data.sort((a,b)=>spec.groupBy==='close_month'?a.label.localeCompare(b.label):b.value-a.value||a.label.localeCompare(b.label));
@@ -177,7 +184,12 @@
       const byMonth = new Map(data.map(item=>[item.label,item])); data=[];
       for(let d=new Date(first);d<=last;d.setUTCMonth(d.getUTCMonth()+1)) { const label=d.toISOString().slice(0,7);data.push(byMonth.get(label)||{label,value:0,count:0}); }
     }
-    return {data,count:rows.length,undated};
+    const result={data,count:rows.length,undated};
+    for (const {key,field,names} of selections) if(names!==null) {
+      const present=new Set(rows.map(record=>normalize(record[field])));
+      result[key==='owners'?'missingOwners':'missingAccounts']=[...names].filter(([name])=>!present.has(name)).map(([,label])=>label);
+    }
+    return result;
   }
   function share(records, selectedFields) {
     const allowed = ['account','stage','value','close','owner'];

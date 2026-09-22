@@ -6,7 +6,7 @@
   const icon = name => window.PipeChatIcons[name] || '';
   const currency = value => value === null || value === undefined || value === '' ? '' : new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:Number(value)%1 ? 2 : 0}).format(Number(value)||0);
   const localDate = () => {const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
-  const defaultReport = () => ({metric:'sum',field:'value',groupBy:'owner',chart:'bar',filter:null,from:null,to:null});
+  const defaultReport = () => ({metric:'sum',field:'value',groupBy:'owner',chart:'bar',filter:null,owners:null,accounts:null,from:null,to:null});
   const S = {user:null,records:[],updatedAt:null,usage:null,health:null,history:[],pending:null,clarification:null,sourceAction:null,tab:'table',scope:'all',search:'',filter:null,report:defaultReport(),expanded:null,undo:null,saving:false,busy:false,generation:0,revision:0,signup:false,loaded:false};
   let chart=null, toastTimer;
   const failedEditKey='pipechat.failed-edit.v1';
@@ -133,6 +133,38 @@
     renderTrust();updateUsage();
   }
   function setTab(tab) {S.tab=tab;render();}
+  function renderReportSelections() {
+    for(const [key,field,title] of [['owners','owner','Owners'],['accounts','account','Accounts']]) {
+      const selected=S.report[key],names=new Map();
+      for(const row of S.records) {const name=String(row[field]||'').trim();if(!names.has(C.normalize(name)))names.set(C.normalize(name),name);}
+      for(const name of selected||[])if(!names.has(C.normalize(name)))names.set(C.normalize(name),name);
+      const values=[...names.values()].sort((a,b)=>a.localeCompare(b)),options=$(`report${title}Options`),signature=JSON.stringify(values);
+      if(options.dataset.names!==signature){
+        options.dataset.names=signature;
+        options.innerHTML=values.map(name=>`<label><input type="checkbox" data-report-name="${esc(key)}" value="${esc(name)}"><span>${esc(name||(key==='owners'?'Unassigned':'Unnamed account'))}</span></label>`).join('')||'<p class="subtle">No options</p>';
+      }
+      const selectedNames=selected==null?null:new Set(selected.map(C.normalize));
+      options.querySelectorAll('input').forEach(input=>input.checked=selectedNames===null||selectedNames.has(C.normalize(input.value)));
+      const all=$(`report${title}All`);all.checked=selected==null;all.indeterminate=selected!=null&&selected.length>0;
+      $(`report${title}Summary`).textContent=`${title}: ${selected==null?'All':selectedNames.size+' selected'}`;
+      filterReportOptions(key);
+    }
+  }
+  function filterReportOptions(key) {
+    const query=C.normalize(document.querySelector(`[data-report-search="${key}"]`).value);
+    const title=key==='owners'?'Owners':'Accounts';
+    $(`report${title}Options`).querySelectorAll('label').forEach(label=>label.hidden=!C.normalize(label.textContent).includes(query));
+  }
+  function changeReportSelection(input) {
+    const key=input.dataset.reportAll||input.dataset.reportName;
+    if(!['owners','accounts'].includes(key))return;
+    if(input.dataset.reportAll)S.report[key]=input.checked?null:[];
+    else {
+      const title=key==='owners'?'Owners':'Accounts';
+      S.report[key]=[...$(`report${title}Options`).querySelectorAll('input:checked')].map(option=>option.value);
+    }
+    renderReport(visible());
+  }
   function renderReport(rows) {
     let result;
     try{result=C.report(rows,S.report);}catch(error){toast(error.message);return;}
@@ -141,18 +173,21 @@
     $('openMetric').textContent=open.length;
     $('followupsMetric').textContent=rows.filter(r=>C.normalize(r.follow)==='today'||r.follow===localDate()).length;
     $('missingOwnerMetric').textContent=rows.filter(r=>!String(r.owner||'').trim()).length;
-    const groupLabels={owner:'Owner',stage:'Stage',close_month:'Close month',none:'All deals'},metricLabels={sum:'Total value',count:'Deal count',average:'Average value'};
+    const groupLabels={owner:'Owner',account:'Account',stage:'Stage',close_month:'Close month',none:'All deals'},metricLabels={sum:'Total value',count:'Deal count',average:'Average value'};
     $('reportTitle').textContent=`${metricLabels[S.report.metric]}${S.report.groupBy==='none'?'':` by ${groupLabels[S.report.groupBy].toLowerCase()}`}`;
     $('reportMetric').value=S.report.metric;$('reportGroup').value=S.report.groupBy;$('reportChart').value=S.report.chart;
+    renderReportSelections();
     const showValue=value=>S.report.metric==='count'?String(value):currency(value)||'Not set';
     $('reportGroupHeading').textContent=groupLabels[S.report.groupBy];$('reportValueHeading').textContent=metricLabels[S.report.metric];
     $('reportRows').innerHTML=result.data.map(item=>`<tr><td>${esc(item.label)}</td><td>${esc(showValue(item.value))}</td><td>${item.count}</td></tr>`).join('')||'<tr><td colspan="3">No matching deals.</td></tr>';
-    $('reportCaption').textContent=`${result.count} matching deals${result.undated?`; ${result.undated} without close dates excluded from the monthly chart`:''}. ${rows.some(r=>r.value===null)?'Unknown amounts excluded from value totals and averages. ':''}${S.report.from||S.report.to?`Close dates: ${S.report.from||'any'} to ${S.report.to||'any'}. `:''}${S.report.filter?`Filter: ${C.fields[S.report.filter.field]||S.report.filter.field} ${S.report.filter.operator} ${S.report.filter.value??''}.`:''}`;
+    const selectionCaption=[['owners','Owners','missingOwners'],['accounts','Accounts','missingAccounts']].map(([key,title,missing])=>S.report[key]==null?'':`${title}: ${S.report[key].map(name=>name||(key==='owners'?'Unassigned':'Unnamed account')).join(', ')||'none'}. ${result[missing]?.length?`No matching deals in this view for ${result[missing].map(name=>name||'(blank)').join(', ')}. `:''}`).join('');
+    $('reportCaption').textContent=`${result.count} matching deals${result.undated?`; ${result.undated} without close dates excluded from the monthly chart`:''}. ${rows.some(r=>r.value===null)?'Unknown amounts excluded from value totals and averages. ':''}${selectionCaption}${S.report.from||S.report.to?`Close dates: ${S.report.from||'any'} to ${S.report.to||'any'}. `:''}${S.report.filter?`Filter: ${C.fields[S.report.filter.field]||S.report.filter.field} ${S.report.filter.operator} ${S.report.filter.value??''}.`:''}${S.report.groupBy==='account'?' Deals with the same account name are combined.':''}`;
     $('chartContainer').hidden=S.report.chart==='kpi';$('reportKpis').hidden=S.report.chart!=='kpi';
     $('reportKpis').innerHTML=result.data.map(item=>`<div><span>${esc(item.label)}</span><strong>${esc(showValue(item.value))}</strong></div>`).join('')||'<p class="subtle">No matching deals.</p>';
     if(chart){chart.destroy();chart=null;}
     if(S.report.chart==='kpi'||!window.Chart)return;
     const colors=['#8b7bea','#58b5a0','#ecb460','#e78ba0','#7caaea','#a2bd6c','#b797ce'];
+    $('chartContainer').style.height=`${S.report.chart==='bar'?Math.min(2400,Math.max(260,result.data.length*36+45)):260}px`;
     chart=new Chart($('reportCanvas'),{type:S.report.chart==='stage'?'doughnut':S.report.chart==='line'?'line':'bar',data:{labels:result.data.map(d=>d.label),datasets:[{label:metricLabels[S.report.metric],data:result.data.map(d=>d.value),backgroundColor:S.report.chart==='line'?'#8b7bea22':colors,borderColor:S.report.chart==='line'?'#8471e8':'#fff',borderWidth:S.report.chart==='stage'?3:0,borderRadius:S.report.chart==='bar'?4:0,maxBarThickness:35,tension:0,pointRadius:4,fill:S.report.chart==='line'}]},options:{responsive:true,maintainAspectRatio:false,animation:false,indexAxis:S.report.chart==='bar'?'y':'x',plugins:{legend:{display:S.report.chart==='stage',position:'bottom',labels:{boxWidth:10,padding:15,font:{size:10}}},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${showValue(ctx.raw)}`}}},...(S.report.chart==='stage'?{cutout:'66%'}:{scales:{x:{grid:{color:'#f0f1f7'},ticks:{font:{size:10}},beginAtZero:true},y:{grid:{display:S.report.chart==='line'},ticks:{font:{size:10},precision:0},beginAtZero:true}}})}});
     $('reportCanvas').setAttribute('aria-label',`${$('reportTitle').textContent}. ${result.data.map(d=>`${d.label}: ${showValue(d.value)}`).join('; ')||'No data'}`);
   }
@@ -497,6 +532,9 @@
     $('previewInviteBtn').onclick=()=>{if(!$('shareRecipient').value.trim()){toast('Enter a recipient for the preview.');$('shareRecipient').focus();return;}$('inviteStatus').textContent=`Invitation preview prepared for ${$('shareRecipient').value}. No invitation was sent.`;renderTrust();focusTrust();};
     $('exportPreviewBtn').onclick=exportShare;
     ['reportMetric','reportGroup','reportChart'].forEach(id=>$(id).onchange=()=>{S.report.metric=$('reportMetric').value;S.report.groupBy=$('reportGroup').value;S.report.chart=$('reportChart').value;if(id==='reportChart'&&S.report.chart==='line')S.report.groupBy='close_month';if(id==='reportChart'&&S.report.chart==='stage')S.report.groupBy='stage';renderReport(visible());});
+    $('reportSelections').addEventListener('change',event=>changeReportSelection(event.target));
+    $('reportSelections').addEventListener('input',event=>{if(event.target.dataset.reportSearch)filterReportOptions(event.target.dataset.reportSearch);});
+    $('reportSelections').addEventListener('keydown',event=>{if(event.key==='Escape'){const detail=event.target.closest('details');if(detail){detail.open=false;detail.querySelector('summary').focus();}}});
     $('resetReportBtn').onclick=()=>{S.report=defaultReport();renderReport(visible());};
     window.addEventListener('beforeunload',event=>{if(S.saving||(S.failedEdit&&!S.failedEditStored)){event.preventDefault();event.returnValue='';}});
   }
