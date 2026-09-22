@@ -9,9 +9,33 @@
   const operators = ['equals', 'contains', 'is_blank', 'gt', 'gte', 'lt', 'lte', 'month_equals'];
   const normalize = value => String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/\s+/g, ' ');
   const clone = value => JSON.parse(JSON.stringify(value));
-  function fieldName(value) {
+  function validateCustomFields(input = []) {
+    if (!Array.isArray(input) || input.length > 20) throw new Error('A CRM supports up to 20 custom text fields.');
+    const ids = new Set(), names = new Set(Object.values(fields).map(normalize));
+    return input.map(field => {
+      if (!field || typeof field.id !== 'string' || !/^cf_[a-z0-9_]{1,60}$/.test(field.id) || ids.has(field.id) || field.type !== 'text') throw new Error('Invalid custom field definition.');
+      if (typeof field.name !== 'string') throw new Error('Enter a field name.');
+      const name = field.name.trim(), key = normalize(name);
+      if (!name || name.length > 60 || /[\x00-\x1f\x7f]/.test(name)) throw new Error('Field names must contain 1 to 60 readable characters.');
+      if (names.has(key) || [...Object.keys(fields),'id','activity','health','history','__proto__','prototype','constructor'].includes(fieldName(name))) throw new Error('A field with that name already exists or is reserved.');
+      ids.add(field.id); names.add(key);
+      return {id:field.id,name,type:'text'};
+    });
+  }
+  function fieldsFor(customFields = []) {
+    return {...fields,...Object.fromEntries(validateCustomFields(customFields).map(field=>[field.id,field.name]))};
+  }
+  function customValues(record, customFields = []) {
+    const definitions=validateCustomFields(customFields), allowed=new Set(definitions.map(field=>field.id));
+    if (Object.keys(record).some(key=>key.startsWith('cf_')&&!allowed.has(key))) throw new Error('Unknown custom field. Refresh before saving.');
+    return Object.fromEntries(definitions.map(field=>[field.id,validateStoredValue(field.id,record[field.id]??'',definitions)]));
+  }
+  function fieldName(value, customFields = []) {
+    const custom = customFields.find(field=>field.id===value || normalize(field.name)===normalize(value));
+    if (custom) return custom.id;
     const key = normalize(value).replace(/[\s-]+/g, '_');
-    return ({ company:'account', name:'account', status:'stage', amount:'value', close_date:'close', next_step:'next', follow_up:'follow', note:'notes', rep:'owner', salesperson:'owner' })[key] || key;
+    const aliases={ company:'account', name:'account', status:'stage', amount:'value', close_date:'close', next_step:'next', follow_up:'follow', note:'notes', rep:'owner', salesperson:'owner' };
+    return Object.hasOwn(aliases,key)?aliases[key]:key;
   }
   function date(value) {
     const text = String(value || '').trim();
@@ -26,9 +50,11 @@
     const d = new Date(Date.UTC(+parts[3], month, +parts[2]));
     return d.getUTCMonth() === month && d.getUTCDate() === +parts[2] ? d : null;
   }
-  function validateValue(field, value) {
-    if (!Object.hasOwn(fields, field)) throw new Error('This prototype does not support that field.');
-    if (value === null || value === undefined) throw new Error(`Specify a value for ${fields[field]}.`);
+  function validateValue(field, value, customFields = []) {
+    const labels=fieldsFor(customFields);
+    if (!Object.hasOwn(labels, field)) throw new Error('This table does not contain that field.');
+    if (value === null || value === undefined) throw new Error(`Specify a value for ${labels[field]}.`);
+    if (field.startsWith('cf_') && typeof value !== 'string') throw new Error('Custom text fields require text.');
     if (field === 'value') {
       if (String(value).trim() === '' || typeof value === 'boolean' || typeof value === 'object') throw new Error('Enter a valid deal value.');
       const amount = Number(value);
@@ -50,10 +76,10 @@
     }
     return text;
   }
-  function predicate(filter) {
+  function predicate(filter, customFields = []) {
     if (!filter) return () => true;
-    const field = fieldName(filter.field);
-    if (![...Object.keys(fields), 'health', 'activity'].includes(field) || !operators.includes(filter.operator)) throw new Error('That filter is not supported.');
+    const field = fieldName(filter.field,customFields);
+    if (![...Object.keys(fieldsFor(customFields)), 'health', 'activity'].includes(field) || !operators.includes(filter.operator)) throw new Error('That filter is not supported.');
     const value = filter.value;
     if (filter.operator === 'is_blank') return record => record[field] === '' || record[field] == null;
     if (value === null || value === undefined || (filter.operator === 'contains' && !normalize(value))) throw new Error('Specify the filter value.');
@@ -74,10 +100,10 @@
     if (field !== 'value' || !Number.isFinite(Number(value))) throw new Error('Numeric comparisons require the value field.');
     return record => record.value !== null && record.value !== '' && record.value !== undefined && ({ gt: Number(record.value) > Number(value), gte: Number(record.value) >= Number(value), lt: Number(record.value) < Number(value), lte: Number(record.value) <= Number(value) })[filter.operator];
   }
-  function validateStoredValue(field, value) {
+  function validateStoredValue(field, value, customFields = []) {
     if (field === 'value' && (value === null || value === '')) return null;
     if (['account','stage'].includes(field) && value === '') return '';
-    return validateValue(field,value);
+    return validateValue(field,value,customFields);
   }
   function candidates(records, reference) {
     const query = normalize(reference);
@@ -85,7 +111,7 @@
     const exact = records.filter(record => normalize(record.account) === query);
     return exact.length ? exact : records.filter(record => normalize(record.account).includes(query));
   }
-  function targets(records, action, allowMany) {
+  function targets(records, action, allowMany, customFields = []) {
     // Names take precedence over model-supplied IDs so an ambiguous name cannot silently select an arbitrary record.
     if (action.recordMatch) {
       const found = candidates(records, action.recordMatch);
@@ -95,7 +121,7 @@
     }
     if (action.filter) {
       if (!allowMany) throw new Error('A single-record change needs a specific company.');
-      return { records:records.filter(predicate(action.filter)) };
+      return { records:records.filter(predicate(action.filter,customFields)) };
     }
     if (Array.isArray(action.ids) && action.ids.length) {
       const ids = [...new Set(action.ids.map(Number))];
@@ -106,16 +132,16 @@
     }
     throw new Error('Which company should I update?');
   }
-  function plan(records, action) {
+  function plan(records, action, customFields = []) {
     const changes = action.action === 'update_records' ? action.changes : [{ ...action, operation:action.operation || 'set' }];
     if (!Array.isArray(changes) || !changes.length || changes.length > 200) throw new Error('No valid changes were provided.');
     const patches = new Map();
     for (const [index, change] of changes.entries()) {
-      const field = fieldName(change.field);
-      const selection = targets(records, change, action.action === 'bulk_update' || Boolean(change.filter));
+      const field = fieldName(change.field,customFields);
+      const selection = targets(records, change, action.action === 'bulk_update' || Boolean(change.filter),customFields);
       if (selection.candidates) return { clarification:{action:clone(action), changeIndex:action.action === 'update_records' ? index : null, candidates:selection.candidates.map(record => ({id:record.id,account:record.account,owner:record.owner,stage:record.stage}))} };
       if (!selection.records.length) throw new Error('No records match this request.');
-      const value = validateStoredValue(field, change.value);
+      const value = validateStoredValue(field, change.value,customFields);
       if (change.operation && !['set','append'].includes(change.operation)) throw new Error('Unsupported change operation.');
       if (change.operation === 'append' && field !== 'notes') throw new Error('Only notes support append.');
       for (const record of selection.records) {
@@ -133,7 +159,8 @@
     if (!result.length) throw new Error('Those records already have the requested values.');
     return { kind:'update', title:action.title || 'Proposed changes', patches:result, count:result.length, createdAt:Date.now() };
   }
-  function apply(records, proposal, actor, now = new Date()) {
+  function apply(records, proposal, actor, now = new Date(), customFields = []) {
+    const labels=fieldsFor(customFields);
     if (now.getTime() - proposal.createdAt > 30 * 60 * 1000) throw new Error('This preview has expired. Ask PipeChat to prepare it again.');
     for (const patch of proposal.patches) {
       const record = records.find(item => item.id === patch.id);
@@ -144,11 +171,11 @@
       const record = result.find(item => item.id === patch.id);
       Object.assign(record, patch.after, {activity:'just now',health:'updated'});
       record.history = record.history || [];
-      for (const [field, value] of Object.entries(patch.after)) record.history.unshift(`${now.toISOString()} | ${actor}: ${fields[field]} changed from "${patch.before[field]}" to "${value}".`);
+      for (const [field, value] of Object.entries(patch.after)) record.history.unshift(`${now.toISOString()} | ${actor}: ${labels[field]} changed from "${patch.before[field]}" to "${value}".`);
     }
     return result;
   }
-  function report(records, spec) {
+  function report(records, spec, customFields = []) {
     if (!spec || !['sum','count','average'].includes(spec.metric) || !['owner','account','stage','close_month','none'].includes(spec.groupBy) || !['bar','line','stage','kpi'].includes(spec.chart)) throw new Error('Choose a supported metric, grouping, and chart.');
     if (spec.metric !== 'count' && spec.field !== 'value') throw new Error('Sum and average reports use the value field.');
     const selections = [['owners','owner'],['accounts','account']].map(([key,field]) => {
@@ -159,7 +186,7 @@
     });
     const start = spec.from ? date(spec.from) : null, end = spec.to ? date(spec.to) : null;
     if ((spec.from && !start) || (spec.to && !end) || (start && end && start > end)) throw new Error('Choose a valid date range.');
-    const rows = records.filter(predicate(spec.filter)).filter(record => selections.every(({field,names})=>names===null||names.has(normalize(record[field])))).filter(record => {
+    const rows = records.filter(predicate(spec.filter,customFields)).filter(record => selections.every(({field,names})=>names===null||names.has(normalize(record[field])))).filter(record => {
       if (!start && !end) return true;
       const d = date(record.close); return d && (!start || d >= start) && (!end || d <= end);
     });
@@ -196,5 +223,5 @@
     if (!Array.isArray(selectedFields) || selectedFields.some(field=>!allowed.includes(field))) throw new Error('Only public preview fields may be shared.');
     return records.map(record=>Object.fromEntries(selectedFields.map(field=>[field,record[field]])));
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,predicate,candidates,targets,plan,apply,report,share,clone};
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,plan,apply,report,share,clone};
 });
