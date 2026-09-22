@@ -28,6 +28,12 @@ global.fetch = async (url, options = {}) => {
   if (address === 'https://api.openai.com/v1/responses') {
     const input = JSON.parse(JSON.parse(options.body).input[0].content[0].text);
     const command = input.userCommand;
+    if (input.headers && input.columns) {
+      const mapping = require('../../public/csv-import.js').localMapping(input.headers);
+      if (input.headers.includes('Business')) Object.assign(mapping.columnMap,{account:'Business',stage:'Journey',value:'Size'});
+      mapping.stageMappings=[{source:'Quotation delivered',stage:'Proposal Sent'}];
+      return response(200,{output_text:JSON.stringify(mapping)});
+    }
     let action = null, message = 'Offline QA reply. No real model was called.';
     if (command === 'fail model') throw new Error('Synthetic model outage');
     if (command === 'Delay next workspace load') delayNextRead = true;
