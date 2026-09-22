@@ -12,7 +12,7 @@ const row = (id, account, owner) => ({ id, account, owner, stage: 'Discovery', v
   notes: 'QA private note', history: [], activity: '', health: '' });
 function addUser(email, name, limit, deals) {
   const user = { id: users.size + 1, email, name, password };
-  users.set(user.id, user); snapshots.set(user.id, { deals, customFields:[], updatedAt: null });
+  users.set(user.id, user); snapshots.set(user.id, { deals, customFields:[], tableSchema:null, updatedAt: null });
   meters.set(user.id, { used: 0, reserved: 0, limit }); return user;
 }
 addUser('qa-one@example.invalid', 'QA One', 30, [row(1, 'Acme QA', 'QA One'), row(2, 'Beta QA', 'Sarah')]);
@@ -24,6 +24,16 @@ snapshots.get(setupUser.id).tableSchema={status:'pending'};
 addUser('qa-reports@example.invalid', 'QA Reports', 30, [
   row(1,'Alpha QA','Ravi'),row(2,'Beta QA','Sarah'),row(3,'Gamma QA','Ravi'),row(4,'Delta QA','Daniel')
 ]);
+const fieldUser=addUser('qa-fields@example.invalid','QA Fields',30,[
+  {id:1,f_name:'Zoe QA',f_contact:'Morgan QA',f_amount:100,f_date:'2027-01-01',history:[],activity:'',health:''},
+  {id:2,f_name:'Alex QA',f_contact:'Taylor QA',f_amount:2,f_date:'2026-12-31',history:[],activity:'',health:''},
+  {id:3,f_name:'Blair QA',f_contact:'Sam QA',f_amount:0,f_date:'2026-01-01',history:[],activity:'',health:''},
+  {id:4,f_name:'Casey QA',f_contact:'',f_amount:null,f_date:'',history:[],activity:'',health:''}
+]);
+snapshots.get(fieldUser.id).tableSchema={status:'ready',useCase:'Recruiting',description:'Offline QA',title:'Recruiting QA',recordLabel:'candidate',fields:[
+  {id:'f_name',name:'Candidate',type:'text',role:'primary',options:[]},{id:'f_contact',name:'Contact',type:'text',role:'none',options:[]},
+  {id:'f_amount',name:'Compensation',type:'currency',role:'none',options:[]},{id:'f_date',name:'Interview date',type:'date',role:'none',options:[]}
+]};
 const usage = user => { const m = meters.get(user.id); return { ...m, remaining: Math.max(0, m.limit - m.used - m.reserved) }; };
 const response = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => structuredClone(body) });
 let delayNextRead = false;
@@ -52,6 +62,8 @@ global.fetch = async (url, options = {}) => {
     }
     let action = null, message = 'Offline QA reply. No real model was called.';
     if (command === 'Add field called Contact') action={action:'add_field',newFieldName:'Contact'};
+    if (command === 'Delete field Candidate') action={action:'delete_field',field:'f_name'};
+    if (command === 'Delete column Interview date') action={action:'delete_field',field:'f_date'};
     if (command === 'Set Contact for Acme QA to Taylor') action={action:'update_record',recordMatch:'Acme QA',field:input.pipeline.customFields.find(field=>field.name==='Contact')?.id,value:'Taylor'};
     if (command === 'fail model') throw new Error('Synthetic model outage');
     if (command === 'Delay next workspace load') delayNextRead = true;
@@ -104,7 +116,7 @@ global.fetch = async (url, options = {}) => {
       if(snapshots.get(user.id).customFields.length&&!Object.hasOwn(body,'customFields'))return response(409,{});
       const schemaCore=require('../../public/table-schema.js');
       try{schemaCore.transition(snapshots.get(user.id).tableSchema,body.tableSchema,body.deals);}catch{return response(409,{});}
-      snapshots.set(user.id, { deals: body.deals, customFields:body.customFields||[], ...(body.tableSchema?{tableSchema:body.tableSchema}:{}),updatedAt: crypto.randomUUID() });
+      snapshots.set(user.id, { deals: body.deals, customFields:body.customFields||[], tableSchema:body.tableSchema||null,updatedAt: crypto.randomUUID() });
     } else if (delayNextRead && user.email === 'qa-one@example.invalid') {
       delayNextRead = false;
       await new Promise(resolve => setTimeout(resolve, 8000));

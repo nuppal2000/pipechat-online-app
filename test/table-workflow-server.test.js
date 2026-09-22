@@ -25,6 +25,12 @@ test('new-user setup, AI metering, empty confirmation, persistence, isolation, s
     const removed={...schema,fields:[name]},row={id:1,[name.id]:'Synthetic candidate',history:[]};
     const deletion=await req('/api/crm-data','PUT',{deals:[row],customFields:[],tableSchema:removed,expectedUpdatedAt:added.data.updatedAt},a.cookie);assert.equal(deletion.status,200);
     const undo=await req('/api/crm-data','PUT',{deals:added.data.deals,customFields:[],tableSchema:schema,expectedUpdatedAt:deletion.data.updatedAt},a.cookie);assert.equal(undo.status,200);assert.equal(undo.data.deals[0][amount.id],125);
+    const core=require('../public/pipeline-core.js').create(schema);
+    const replacement=core.deleteColumn(undo.data.deals,name.id,[],{name:'Client',id:'f_client'});
+    const replaced=await req('/api/crm-data','PUT',{deals:replacement.records,customFields:[],tableSchema:replacement.tableSchema,expectedUpdatedAt:undo.data.updatedAt},a.cookie);
+    assert.equal(replaced.status,200);assert.equal(replaced.data.deals[0].f_client,'');assert.equal(replaced.data.deals[0][name.id],undefined);assert.equal(replaced.data.deals[0][amount.id],125);
+    const readReplacement=await req('/api/crm-data','GET',null,a.cookie);assert.deepEqual(readReplacement.data.tableSchema,replacement.tableSchema);
+    const restorePrimary=await req('/api/crm-data','PUT',{deals:undo.data.deals,customFields:[],tableSchema:schema,expectedUpdatedAt:replaced.data.updatedAt},a.cookie);assert.equal(restorePrimary.status,200);
     assert.equal((await req('/api/chat-usage','GET',null,a.cookie)).data.used,1);
     await req('/api/auth/logout','POST',{},a.cookie);const login=await req('/api/auth/login','POST',{email:'setup-a@example.invalid',password:'local-only-123'});
     const loaded=await req('/api/crm-data','GET',null,login.cookie);assert.deepEqual(loaded.data.tableSchema,schema);assert.equal(loaded.data.deals[0][amount.id],125);
