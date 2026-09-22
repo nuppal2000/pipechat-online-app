@@ -19,6 +19,8 @@ addUser('qa-one@example.invalid', 'QA One', 30, [row(1, 'Acme QA', 'QA One'), ro
 addUser('qa-two@example.invalid', 'QA Two', 30, []);
 addUser('qa-cap@example.invalid', 'QA Cap', 1, [row(1, 'Cap QA', 'QA Cap')]);
 addUser('qa-outage@example.invalid', 'QA Outage', 30, []);
+const setupUser=addUser('qa-setup@example.invalid','QA Setup',30,[]);
+snapshots.get(setupUser.id).tableSchema={status:'pending'};
 addUser('qa-reports@example.invalid', 'QA Reports', 30, [
   row(1,'Alpha QA','Ravi'),row(2,'Beta QA','Sarah'),row(3,'Gamma QA','Ravi'),row(4,'Delta QA','Daniel')
 ]);
@@ -31,6 +33,17 @@ global.fetch = async (url, options = {}) => {
   if (address === 'https://api.openai.com/v1/responses') {
     const input = JSON.parse(JSON.parse(options.body).input[0].content[0].text);
     const command = input.userCommand;
+    if(input.useCase){
+      const recruiting=input.useCase==='Recruiting';
+      return response(200,{output_text:JSON.stringify({title:recruiting?'Recruiting pipeline':'Business tracker',recordLabel:recruiting?'candidate':'record',fields:[
+        {name:recruiting?'Candidate name':'Record name',type:'text',role:'primary',options:[]},
+        {name:recruiting?'Recruiter':'Owner',type:'text',role:'owner',options:[]},
+        {name:recruiting?'Recruiting stage':'Status',type:'choice',role:'status',options:recruiting?['Sourced','Interview','Offer','Hired']:['New','Active','Done']},
+        {name:recruiting?'Expected compensation':'Budget',type:'currency',role:'none',options:[]},
+        {name:'Follow-up date',type:'date',role:'followup',options:[]},
+        {name:'Notes',type:'text',role:'none',options:[]}
+      ]})});
+    }
     if (input.headers && input.columns) {
       const mapping = require('../../public/csv-import.js').localMapping(input.headers);
       if (input.headers.includes('Business')) Object.assign(mapping.columnMap,{account:'Business',stage:'Journey',value:'Size'});
@@ -73,6 +86,7 @@ global.fetch = async (url, options = {}) => {
       if (user) return response(409, {});
       if (!body.email.endsWith('@example.invalid')) return response(400, {});
       user = addUser(body.email, body.name, 30, []); user.password = body.password;
+      snapshots.get(user.id).tableSchema={status:'pending'};
     } else if (!user || user.password !== body.password) return response(401, {});
     const token = 'local-qa-' + crypto.randomUUID(); tokens.set(token, user.id);
     return response(200, { authToken: token });
@@ -88,7 +102,9 @@ global.fetch = async (url, options = {}) => {
       if (body.deals.some(item => item.owner === 'QA reject save')) return response(503, {});
       if (body.expectedUpdatedAt !== snapshots.get(user.id).updatedAt) return response(409, {});
       if(snapshots.get(user.id).customFields.length&&!Object.hasOwn(body,'customFields'))return response(409,{});
-      snapshots.set(user.id, { deals: body.deals, customFields:body.customFields||[], updatedAt: crypto.randomUUID() });
+      const schemaCore=require('../../public/table-schema.js');
+      try{schemaCore.transition(snapshots.get(user.id).tableSchema,body.tableSchema,body.deals);}catch{return response(409,{});}
+      snapshots.set(user.id, { deals: body.deals, customFields:body.customFields||[], ...(body.tableSchema?{tableSchema:body.tableSchema}:{}),updatedAt: crypto.randomUUID() });
     } else if (delayNextRead && user.email === 'qa-one@example.invalid') {
       delayNextRead = false;
       await new Promise(resolve => setTimeout(resolve, 8000));
