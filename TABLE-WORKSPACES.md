@@ -1,9 +1,9 @@
 # AI Table Workspaces
 
 New accounts start with an empty pending workspace. Sales, Recruiting, Real
-Estate and Other identify the workflow; Other requires a description. Only
-the AI build method is enabled in this release. The other three methods are
-visible but unavailable until implemented.
+Estate and Other identify the workflow; Other requires a description. Users can
+build with AI or attach an Excel/CSV file or accessible Google Sheets link.
+The from-scratch and default-table choices are no longer shown.
 
 AI proposes a validated schema, never sample records. The user reviews and
 confirms an empty table before adding rows. Generation uses the existing model,
@@ -26,13 +26,12 @@ the surviving columns, values and stable IDs are preserved.
 - User-created chat columns remain text fields; numeric, currency, choice and
   date types can be produced during AI setup.
 - Schemas and records save atomically with the existing version check.
-- Xano uses the existing private `crm_state.custom_data` JSON column for schema
-  and typed cells. No new public database exposure or security setting is needed.
-- The helper has write-validation, read-projection and transition modes; none
-  perform database writes themselves. The CRM PUT transaction applies the
-  transition guard while holding the existing per-user state lock.
+- Supabase stores schema metadata and JSONB record values in private tables.
+  The authenticated save RPC applies validation and the transition guard while
+  holding the workspace lock. Shared Node validators live in `lib/backend-contract.js`.
 - Old clients cannot discard a pending/ready schema. Existing table types cannot
-  be changed silently. A pending workspace must first save zero rows.
+  be changed silently. AI setup creates zero rows; confirmed spreadsheet setup
+  can atomically create a populated table matching the uploaded document.
 - Signup initializes pending metadata only for newly created users.
 
 ## Contextual Workflows
@@ -61,17 +60,11 @@ date type. Blanks stay last and ties remain stable. Sorting is view-only.
 
 ## Verification and Deployment
 
-Run `node --test test/*.test.js` (not unconstrained `node --test`). Use the
-offline QA runner for browser tests; it simulates Xano and AI locally.
+Run `npm test` (not unconstrained `node --test`). The suite covers shared field
+logic, browser flows, backend adapters and embedded PostgreSQL. The approved
+Supabase browser QA runner uses real disposable storage and simulated AI.
 
-Deploy the backward-compatible Xano helper and GET/PUT routes first. Deploy
-the app code next. Publish the signup initializer last, after the new app is
-live. Preserve auth guards, logging restrictions, model, quota and readiness
-settings. Live persistence tests must use approved disposable users only.
-
-For field controls on an already deployed table-workspaces release, only the
-backward-compatible `custom_fields` helper needs updating before the app. Keep
-the published signup and CRM route transaction/projection fixes unchanged.
-
-This feature does not complete the separately deferred full workspace restore
-or historical-log security work, and does not expand production readiness.
+Follow `SUPABASE-DEPLOYMENT.md` for matching SQL migration/application versions.
+Preserve authentication, model, quota, signup restrictions and readiness settings.
+Live persistence tests must use approved disposable users only. This cleanup
+does not enable public signup or change the existing rollout boundary.

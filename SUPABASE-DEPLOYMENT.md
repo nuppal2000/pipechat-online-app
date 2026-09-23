@@ -19,7 +19,7 @@ Existing Supabase email/password accounts can sign in. Xano accounts and data do
 - Preserve the existing OpenAI key, model, operational monitoring and health-check path `/api/ready`.
 - Per-user usage allowances are enforced in PostgreSQL, not reset from the environment on deployment.
 
-The reviewed schema is in `db/migrations/001-supabase.sql`. Apply it only during an approved new-project setup. Do not replay schema creation, backups or restoration into an already verified/populated project as part of deployment. Xano credentials and its disk may remain configured but are unused when Supabase is selected; there is no provider fallback.
+The reviewed schema starts at `db/migrations/001-supabase.sql`; apply subsequent migrations in order. Apply initial setup only during an approved new-project setup. Do not replay schema creation, backups or restoration into an already verified/populated project as part of deployment. Obsolete provider credentials, if still configured externally, are not read by the app. Their revocation and infrastructure deletion are separate operations; there is no provider fallback.
 
 ## Acceptance
 
@@ -39,7 +39,7 @@ The local test suite covers typed custom fields, primary replacement, onboarding
 
 ## Rollback
 
-Retain the previous release and existing Xano environment settings until live acceptance passes. Reverting to Xano does not carry Supabase writes back into Xano. Stop new writes and preserve Supabase data before any rollback; never alternate providers while users edit. Preserve the original Xano workspace/disk and private backups. Retiring credentials or deleting old infrastructure requires a separate decision.
+Retain a known-good Supabase-compatible release. Stop new writes and preserve current Supabase data before an incompatible rollback. Match application and schema contracts so saved fields/KPIs are not stripped. The retired Xano provider is no longer accepted; configuring it fails startup rather than silently switching to JSON. Git history retains old code, but using an old database would not carry current writes across. External workspaces, disks, credentials and private backups are not removed by this cleanup.
 # KPI Lifecycle Update
 
 Apply `db/migrations/005-kpi-lifecycle.sql` after migrations 001-004 and before deploying KPI add/delete controls. It preserves validated `hiddenKpis` metadata for removed default cards, without modifying account data or grants. Reverting the app to a version that strips this metadata can restore deleted default cards on a later save; keep the matching app/schema contract when rolling back.
