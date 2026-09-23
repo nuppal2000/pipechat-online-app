@@ -274,14 +274,26 @@
     const defs=definitions(customFields);
     return {metrics:defs.filter(f=>['number','currency'].includes(f.type)),groups:defs.map(f=>({id:f.id,name:f.name})).concat(defs.filter(f=>f.type==='date').map(f=>({id:f.id+'_month',name:f.name+' month'})))};
   }
-  function sortRecords(records,sort,customFields=[]){
+  function chronologicalChoice(value,today){
+    const text=normalize(value),day=86400000,now=today.getTime();
+    if(['none','not set','no follow up','no follow-up','unscheduled','not scheduled'].includes(text))return null;
+    const relative={overdue:-Infinity,yesterday:now-day,today:now,tomorrow:now+day,'this week':now,'this month':now,'next week':now+(7-(today.getUTCDay()+6)%7)*day,'next month':Date.UTC(today.getUTCFullYear(),today.getUTCMonth()+1,1)};
+    if(Object.hasOwn(relative,text))return relative[text];
+    const interval=/^in (\d{1,3}) (day|week|month)s?$/.exec(text);
+    if(interval)return interval[2]==='month'?Date.UTC(today.getUTCFullYear(),today.getUTCMonth()+Number(interval[1]),today.getUTCDate()):now+Number(interval[1])*(interval[2]==='week'?7:1)*day;
+    return date(value)?.getTime();
+  }
+  function sortRecords(records,sort,customFields=[],currentDate=new Date()){
     const def=definitions(customFields).find(f=>f.id===sort?.field);
     if(!def||!['asc','desc'].includes(sort.direction))return [...records];
     const collator=new Intl.Collator(undefined,{sensitivity:'base'}),direction=sort.direction==='asc'?1:-1;
-    const key=value=>value==null||value===''?null:['number','currency'].includes(def.type)?Number.isFinite(Number(value))?Number(value):null:def.type==='date'?date(value)?.getTime()??null:String(value);
+    const today=new Date(Date.UTC(currentDate.getFullYear(),currentDate.getMonth(),currentDate.getDate()));
+    const timing=def.type==='choice'?new Map(def.options.map(value=>[normalize(value),chronologicalChoice(value,today)])):null;
+    const chronological=timing&&[...timing.values()].every(value=>value!==undefined)&&[...timing.values()].some(value=>typeof value==='number');
+    const key=value=>value==null||value===''?null:chronological?timing.get(normalize(value))??null:['number','currency'].includes(def.type)?Number.isFinite(Number(value))?Number(value):null:def.type==='date'?date(value)?.getTime()??null:String(value);
     return records.map((record,index)=>({record,index,key:key(record[def.id])})).sort((a,b)=>{
       if(a.key===null||b.key===null)return a.key===b.key?a.index-b.index:a.key===null?1:-1;
-      const order=typeof a.key==='number'?a.key-b.key:collator.compare(a.key,b.key);
+      const order=a.key===b.key?0:typeof a.key==='number'?a.key-b.key:collator.compare(a.key,b.key);
       return direction*order||a.index-b.index;
     }).map(item=>item.record);
   }

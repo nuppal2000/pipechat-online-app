@@ -117,12 +117,12 @@
     header.innerHTML=['account','stage','value','close','owner',...S.customFields.map(f=>f.id)].map(field=>fieldHeader({id:field,name:labels()[field]})).join('')+'<th scope="col"><span class="sr-only">Actions</span></th>';
     $('pipelineTable').style.minWidth=`${660+S.customFields.length*170}px`;
     $('dealRows').innerHTML=rows.length?rows.map(record=>`<tr data-id="${record.id}">
-      <td><input class="cell-input account-input" data-field="account" aria-label="Company for ${esc(rowName(record))}" value="${esc(record.account)}"></td>
+      <td>${textCell('account',record.account,'Company for '+rowName(record),'account-input')}</td>
       <td><select class="cell-input stage-select ${stageClass(record.stage)}" data-field="stage" aria-label="Stage for ${esc(rowName(record))}">${stageOptions(record.stage)}</select></td>
       <td><input class="cell-input" data-field="value" inputmode="decimal" aria-label="Value for ${esc(rowName(record))}" value="${esc(currency(record.value))}"></td>
       <td><input class="cell-input" data-field="close" aria-label="Close date for ${esc(rowName(record))}" title="Use YYYY-MM-DD or a full date" value="${esc(display('close',record.close)==='Not set'?'':display('close',record.close))}"></td>
-      <td><input class="cell-input" data-field="owner" aria-label="Owner for ${esc(rowName(record))}" value="${esc(record.owner)}" placeholder="Unassigned"></td>
-      ${S.customFields.map(field=>`<td class="custom-column"><input class="cell-input" data-field="${field.id}" maxlength="12000" aria-label="${esc(field.name)} for ${esc(rowName(record))}" value="${esc(record[field.id]??'')}"></td>`).join('')}
+      <td>${textCell('owner',record.owner,'Owner for '+rowName(record))}</td>
+      ${S.customFields.map(field=>`<td class="custom-column">${fieldInput({...field,name:field.name+' for '+rowName(record)},record[field.id])}</td>`).join('')}
       <td><div class="row-actions"><button class="icon-btn" data-detail="${record.id}" title="Deal details" aria-label="Details for ${esc(rowName(record))}" aria-expanded="${S.expanded===record.id}">${icon(S.expanded===record.id?'ChevronUp':'ChevronDown')}</button><button class="icon-btn delete-btn" data-delete="${record.id}" title="Delete deal" aria-label="Delete ${esc(rowName(record))}">${icon('Trash2')}</button></div></td></tr>
       ${S.expanded===record.id?`<tr class="detail-row" data-id="${record.id}"><td colspan="${6+S.customFields.length}"><div class="detail-content"><label>Next step<input data-field="next" value="${esc(record.next)}" aria-label="Next step for ${esc(record.account)}"></label><label>Follow-up<input data-field="follow" value="${esc(record.follow)}" placeholder="Today, tomorrow or date" aria-label="Follow-up for ${esc(record.account)}"></label><label class="full">Notes<textarea data-field="notes" rows="3" aria-label="Notes for ${esc(record.account)}">${esc(record.notes)}</textarea></label><p class="full">${esc(record.history?.[0]||'No changes recorded yet.')}</p></div></td></tr>`:''}`).join(''):`<tr><td colspan="${6+S.customFields.length}" class="empty-table">No deals in this view.</td></tr>`;
     $('dealRows').classList.toggle('loading',S.saving);
@@ -163,6 +163,7 @@
     $('viewFilters').hidden=['activity','share'].includes(S.tab);
     $('addAccountBtn').disabled=S.saving||Boolean(S.failedEdit);$('importCsvBtn').disabled=S.saving||S.busy||Boolean(S.failedEdit);
     $('addFieldBtn').disabled=S.saving||S.busy||Boolean(S.failedEdit);
+    ['importCsvBtn','addFieldBtn','addAccountBtn'].forEach(id=>$(id).hidden=S.tab!=='table');
     if(S.tab==='dashboard')renderReport(rows);
     if(S.tab==='activity')renderActivity();
     renderTrust();updateUsage();
@@ -279,11 +280,11 @@
       $('trustStatus').textContent='Your request is kept while you choose.';return;
     }
     if(S.pending?.kind==='editor'){renderEditor();return;}
-    if(['rename-field','convert-field','configure-kpi'].includes(S.pending?.kind)){
-      const p=S.pending,kpi=p.kind==='configure-kpi',change=p.change;
-      $('trustTitle').textContent=kpi?'Update dashboard KPI':p.kind==='rename-field'?'Rename column':'Convert to dropdown';
+    if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(S.pending?.kind)){
+      const p=S.pending,kpi=p.kind.endsWith('-kpi'),change=p.change;
+      $('trustTitle').textContent=kpi?({ 'configure-kpi':'Update dashboard KPI','add-kpi':'Add dashboard KPI','delete-kpi':'Delete dashboard KPI'})[p.kind]:p.kind==='rename-field'?'Rename column':'Convert to dropdown';
       $('trustStatus').textContent='No changes made yet. Review and confirm.';
-      const describe=k=>`${k.title}: ${k.metric}${k.field?' '+(labels()[k.field]||k.field):''}${k.conditions.length?' / '+k.conditions.map(c=>`${labels()[c.field]||c.field} ${c.operator.replaceAll('_',' ')} ${c.value??''}`).join('; '):' / all records in the current view'}`;
+      const describe=k=>k?`${k.title}: ${k.metric}${k.field?' '+(labels()[k.field]||k.field):''}${k.conditions.length?' / '+k.conditions.map(c=>`${labels()[c.field]||c.field} ${c.operator.replaceAll('_',' ')} ${c.value??''}`).join('; '):' / all records in the current view'}`:p.kind==='add-kpi'?'New card; existing KPI cards will be kept.':'This KPI card will be removed. Other KPI cards will be kept.';
       panel.innerHTML=kpi?`<div class="field-diff"><span>Current</span><p>${esc(describe(change.before))}</p></div><div class="field-diff"><span>Proposed</span><p>${esc(describe(change.after))}</p></div><p>Row data stays unchanged.</p>`:`<h3>${esc(change.before.name)}</h3>${p.kind==='rename-field'?`<p>${esc(change.before.name)} ${icon('ArrowRight')} ${esc(change.after.name)}</p><p>Only the header changes. Column values and row data stay unchanged.</p>`:`<p>Dropdown options: ${change.after.options.map(esc).join(', ')}</p><p>${change.issues.length} unmatched ${change.issues.length===1?'value will':'values will'} be left blank.</p>${change.before.role==='followup'?'<p>This column will no longer be the follow-up date field.</p>':''}${change.dropped.length?`<p>Incompatible KPI overrides removed: ${change.dropped.map(esc).join(', ')}. Dashboard defaults will be recalculated.</p>`:''}<div class="conversion-issues">${change.issues.map(issue=>`<p>Row #${issue.id} (${esc(issue.record)}): <q>${esc(issue.value)}</q> is not one of the dropdown options and will be left blank.</p>`).join('')}</div>`}`;
       panel.innerHTML+=`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm changes</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;return;
     }
@@ -333,9 +334,10 @@
       }
       const change=window.PipeChatCustomize.editColumn(S.records,S.tableSchema,S.customFields,id,action.action==='rename_field'?{name:action.newFieldName}:{options:action.dropdownOptions});
       proposal={kind:action.action==='rename_field'?'rename-field':'convert-field',change,count:S.records.length,createdAt:Date.now(),revision:S.revision};
-    }else if(action.action==='configure_kpi'){
-      const change=window.PipeChatCustomize.configure(S.tableSchema,S.customFields,action.kpiId,action.kpi);
-      proposal={kind:'configure-kpi',change,count:0,createdAt:Date.now(),revision:S.revision};S.tab='dashboard';
+    }else if(['configure_kpi','add_kpi','delete_kpi'].includes(action.action)){
+      const customize=window.PipeChatCustomize;
+      const change=action.action==='add_kpi'?customize.addKpi(S.tableSchema,S.customFields,'kpi_user_'+crypto.randomUUID().replaceAll('-',''),action.kpi):action.action==='delete_kpi'?customize.deleteKpi(S.tableSchema,S.customFields,action.kpiId):customize.configure(S.tableSchema,S.customFields,action.kpiId,action.kpi);
+      proposal={kind:action.action.replace('_','-'),change,count:0,createdAt:Date.now(),revision:S.revision};S.tab='dashboard';
     }else if(action.action==='delete_field'){
       const id=C.fieldName(action.field||action.newFieldName,S.customFields),field=C.definitions(S.customFields).find(f=>f.id===id);
       if(!field)throw new Error('This column does not exist.');
@@ -363,8 +365,8 @@
       proposal={kind:'add',records,count:records.length,createdAt:Date.now(),note:tailored()||action.action==='import_records'?'Unspecified values stay blank.':'Unspecified values default to Discovery, $0, and blank fields.'};
     } else throw new Error('This request is not an editable table action.');
     if(proposal.clarification){S.pending=null;S.clarification={...proposal.clarification,originalCommand};say('I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
-    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(proposal.kind==='configure-kpi'?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the dropdown options and ${proposal.change.issues.length} unmatched values before confirming.`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
-    if(proposal?.kind==='configure-kpi')render();else renderTrust();focusTrust();
+    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the dropdown options and ${proposal.change.issues.length} unmatched values before confirming.`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
+    if(proposal?.kind.endsWith('-kpi'))render();else renderTrust();focusTrust();
   }
   function chooseCandidate(id) {
     const q=S.clarification;if(!q?.candidates?.some(c=>c.id===id))return;
@@ -419,10 +421,10 @@
     const p=S.pending;if(!p||S.saving||S.failedEdit||['editor','csv-import'].includes(p.kind))return;
     try{
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
-      if(['rename-field','convert-field','configure-kpi'].includes(p.kind)){
+      if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(p.kind)){
         if(p.revision!==S.revision)throw new Error('The table changed. Prepare this preview again.');
-        const change=p.change,kpi=p.kind==='configure-kpi';
-        const label=kpi?'Dashboard KPI updated':p.kind==='rename-field'?'Column renamed':'Column converted to dropdown';
+        const change=p.change,kpi=p.kind.endsWith('-kpi');
+        const label=kpi?({'configure-kpi':'Dashboard KPI updated','add-kpi':'Dashboard KPI added','delete-kpi':'Dashboard KPI deleted'})[p.kind]:p.kind==='rename-field'?'Column renamed':'Column converted to dropdown';
         if(await persist(kpi?S.records:change.records,label,{customFields:kpi?S.customFields:change.customFields,tableSchema:change.tableSchema})){
           say(label+'.'+(p.kind==='convert-field'&&change.issues.length?' '+change.issues.length+' unmatched values were left blank. '+change.issues.slice(0,20).map(i=>`Row #${i.id}: "${String(i.value).slice(0,200)}" was not one of the dropdown options.`).join(' ')+(change.issues.length>20?' First 20 listed here; the full list was shown before confirmation.':''):''));
         }
@@ -499,7 +501,7 @@
   function handleAction(response,command) {
     const action=response.crmAction;
     if(!action){say(response.assistantMessage||'What would you like to work on?');return;}
-    if(['rename_field','convert_field','configure_kpi','add_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','import_records'].includes(action.action)){prepare(action,command);return;}
+    if(['rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='clarify'){
       const originalCommand=S.clarification?.originalCommand||command;
       S.clarification={originalCommand,question:action.question||response.assistantMessage,previousAction:S.sourceAction};S.pending=null;
@@ -757,10 +759,18 @@
       prepare(action,d.kind==='add'?'Manual field creation':'Manual column deletion');closeFieldDialog();focusTrust();
     }catch(error){$('fieldDialogError').textContent=error.message;}
   }
+  function textCell(id,value,label,extraClass=''){
+    return `<textarea class="cell-input expandable-text ${extraClass}" data-field="${id}" data-expand-text rows="1" maxlength="12000" aria-label="${esc(label)}" ${S.saving||S.failedEdit?'disabled':''}>${esc(value??'')}</textarea>`;
+  }
+  function resizeTextCell(el,expanded){
+    if(!el?.hasAttribute('data-expand-text'))return;
+    el.style.height='34px';
+    if(expanded)el.style.height=`${Math.max(34,el.scrollHeight+2)}px`;
+  }
   function fieldInput(field,value,editor=false){
     const attributes=`${editor?`name="${field.id}"`:`data-field="${field.id}"`} aria-label="${esc(field.name)}" class="cell-input" ${S.saving||S.failedEdit?'disabled':''}`;
     if(field.type==='choice')return `<select ${attributes}><option value="">Not set</option>${field.options.map(option=>`<option ${option===value?'selected':''}>${esc(option)}</option>`).join('')}</select>`;
-    if(field.type==='text'&&/[\r\n]/.test(value||''))return `<textarea ${attributes} rows="3" maxlength="12000">${esc(value)}</textarea>`;
+    if(field.type==='text')return editor?`<textarea ${attributes} rows="3" maxlength="12000">${esc(value??'')}</textarea>`:textCell(field.id,value,field.name);
     return `<input ${attributes} type="${['number','currency'].includes(field.type)?'number':field.type==='date'?'date':'text'}" ${['number','currency'].includes(field.type)?'step="any" min="-1000000000000" max="1000000000000"':'maxlength="12000"'} value="${esc(value??'')}">`;
   }
   function renderTailoredTable(rows){
@@ -895,6 +905,9 @@
     $('chatInput').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();send(event.target.value);}};
     document.querySelectorAll('[data-prompt]').forEach(button=>button.onclick=()=>send(button.dataset.prompt));
     $('dealRows').addEventListener('change',event=>{if(event.target.dataset.field)manualEdit(event.target);});
+    $('dealRows').addEventListener('focusin',event=>{resizeTextCell(event.target,true);if(event.target.hasAttribute('data-expand-text'))event.target.scrollIntoView({block:'nearest',inline:'nearest'});});
+    $('dealRows').addEventListener('input',event=>resizeTextCell(event.target,true));
+    $('dealRows').addEventListener('focusout',event=>resizeTextCell(event.target,false));
     $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
     $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
     $('trustBody').addEventListener('input',event=>{if(event.target.id==='failedEditValue'&&S.failedEdit){S.failedEdit.raw=event.target.value;S.failedEdit.reviewed=false;keepFailedEdit();$('failedEditForm').querySelector('[type="submit"]').disabled=true;}});

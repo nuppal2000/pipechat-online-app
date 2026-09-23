@@ -33,7 +33,8 @@
   function kpis(schema,customFields=[]){
     const core=Core.create(schema),result=defaults(schema,customFields),overrides=Schema.validateKpis(schema?.kpis||[]);
     for(const k of overrides){validateReferences(k,core,customFields);const index=result.findIndex(d=>d.id===k.id);if(index<0)result.push(k);else result[index]=k;}
-    return result;
+    const hidden=new Set(Schema.validateHiddenKpis(schema?.hiddenKpis||[]));
+    return result.filter(k=>!hidden.has(k.id));
   }
   function calculate(kpi,records,schema,customFields=[],today=new Date().toISOString().slice(0,10)){
     const core=Core.create(schema);validateReferences(kpi,core,customFields);
@@ -60,6 +61,22 @@
     const next=copy(schema||Schema.legacySchema());next.kpis=[...(next.kpis||[]).filter(k=>k.id!==id),after];
     return {tableSchema:Schema.validate(next),before:existing,after};
   }
+  function addKpi(schema,customFields,id,input){
+    const cards=kpis(schema,customFields),next=copy(schema||Schema.legacySchema());
+    if(cards.length>=120)throw new Error('A dashboard supports up to 120 KPI cards.');
+    if(!/^kpi_user_[a-z0-9_]{1,91}$/.test(id)||defaults(schema,customFields).some(k=>k.id===id)||(next.kpis||[]).some(k=>k.id===id)||(next.hiddenKpis||[]).includes(id))throw new Error('This KPI identifier is already in use or invalid.');
+    const after=Schema.validateKpis([{...input,id}])[0];validateReferences(after,Core.create(schema),customFields);
+    if(cards.some(k=>Core.normalize(k.title)===Core.normalize(after.title)))throw new Error('A dashboard KPI already has that name. Choose a different name or ask to update it.');
+    next.kpis=[...(next.kpis||[]),after];
+    return {tableSchema:Schema.validate(next),before:null,after};
+  }
+  function deleteKpi(schema,customFields,id){
+    const before=kpis(schema,customFields).find(k=>k.id===id);if(!before)throw new Error('Which dashboard KPI should I delete?');
+    const next=copy(schema||Schema.legacySchema());next.kpis=(next.kpis||[]).filter(k=>k.id!==id);
+    // Default cards are regenerated from fields, so retain their explicit removal.
+    if(defaults(schema,customFields).some(k=>k.id===id))next.hiddenKpis=[...new Set([...(next.hiddenKpis||[]),id])];
+    return {tableSchema:Schema.validate(next),before,after:null};
+  }
   function editColumn(records,schema,customFields,id,{name,options}={}){
     const core=Core.create(schema),defs=core.definitions(customFields),old=defs.find(f=>f.id===id);
     if(!old)throw new Error('This column no longer exists.');
@@ -82,5 +99,5 @@
     kpis(nextSchema,nextFields);
     return {records:next,tableSchema:nextSchema,customFields:nextFields,before:old,after:field,issues,dropped};
   }
-  return {defaults,kpis,calculate,configure,editColumn,validateReferences};
+  return {defaults,kpis,calculate,configure,addKpi,deleteKpi,editColumn,validateReferences};
 });
