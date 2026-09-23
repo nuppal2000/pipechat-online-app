@@ -240,17 +240,12 @@
   }
   function renderReport(rows) {
     if(tailored()){renderContextualReport(rows);return;}
-    if(!$('valueMetric'))document.querySelector('.metrics').innerHTML='<div><span>Open pipeline value</span><strong id="valueMetric"></strong></div><div><span>Open deals</span><strong id="openMetric"></strong></div><div><span>Follow-ups today</span><strong id="followupsMetric"></strong></div><div><span>Missing owners</span><strong id="missingOwnerMetric"></strong></div>';
+    renderDashboardKpis(rows);
     $('reportMetric').innerHTML='<option value="sum">Total value</option><option value="count">Deal count</option><option value="average">Average value</option>';
     $('reportFieldLabel').hidden=true;
     $('reportGroup').innerHTML=['owner','account','stage','close_month','none'].map(id=>`<option value="${id}">${esc(({owner:'Owner',account:'Account',stage:'Stage',close_month:'Close month',none:'All deals'})[id])}</option>`).join('')+S.customFields.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('');
     let result;
     try{result=C.report(rows,S.report,S.customFields);}catch(error){toast(error.message);return;}
-    const open=rows.filter(r=>!['Won','Lost'].includes(r.stage));
-    $('valueMetric').textContent=currency(open.reduce((sum,r)=>sum+Math.round(Number(r.value)*100),0)/100);
-    $('openMetric').textContent=open.length;
-    $('followupsMetric').textContent=rows.filter(r=>C.normalize(r.follow)==='today'||r.follow===localDate()).length;
-    $('missingOwnerMetric').textContent=rows.filter(r=>!String(r.owner||'').trim()).length;
     const groupLabels={owner:'Owner',account:'Account',stage:'Stage',close_month:'Close month',none:'All deals',...Object.fromEntries(S.customFields.map(f=>[f.id,f.name]))},metricLabels={sum:'Total value',count:'Deal count',average:'Average value'};
     $('reportTitle').textContent=`${metricLabels[S.report.metric]}${S.report.groupBy==='none'?'':` by ${groupLabels[S.report.groupBy].toLowerCase()}`}`;
     $('reportMetric').value=S.report.metric;$('reportGroup').value=S.report.groupBy;$('reportChart').value=S.report.chart;
@@ -284,6 +279,14 @@
       $('trustStatus').textContent='Your request is kept while you choose.';return;
     }
     if(S.pending?.kind==='editor'){renderEditor();return;}
+    if(['rename-field','convert-field','configure-kpi'].includes(S.pending?.kind)){
+      const p=S.pending,kpi=p.kind==='configure-kpi',change=p.change;
+      $('trustTitle').textContent=kpi?'Update dashboard KPI':p.kind==='rename-field'?'Rename column':'Convert to dropdown';
+      $('trustStatus').textContent='No changes made yet. Review and confirm.';
+      const describe=k=>`${k.title}: ${k.metric}${k.field?' '+(labels()[k.field]||k.field):''}${k.conditions.length?' / '+k.conditions.map(c=>`${labels()[c.field]||c.field} ${c.operator.replaceAll('_',' ')} ${c.value??''}`).join('; '):' / all records in the current view'}`;
+      panel.innerHTML=kpi?`<div class="field-diff"><span>Current</span><p>${esc(describe(change.before))}</p></div><div class="field-diff"><span>Proposed</span><p>${esc(describe(change.after))}</p></div><p>Row data stays unchanged.</p>`:`<h3>${esc(change.before.name)}</h3>${p.kind==='rename-field'?`<p>${esc(change.before.name)} ${icon('ArrowRight')} ${esc(change.after.name)}</p><p>Only the header changes. Column values and row data stay unchanged.</p>`:`<p>Dropdown options: ${change.after.options.map(esc).join(', ')}</p><p>${change.issues.length} unmatched ${change.issues.length===1?'value will':'values will'} be left blank.</p>${change.before.role==='followup'?'<p>This column will no longer be the follow-up date field.</p>':''}${change.dropped.length?`<p>Incompatible KPI overrides removed: ${change.dropped.map(esc).join(', ')}. Dashboard defaults will be recalculated.</p>`:''}<div class="conversion-issues">${change.issues.map(issue=>`<p>Row #${issue.id} (${esc(issue.record)}): <q>${esc(issue.value)}</q> is not one of the dropdown options and will be left blank.</p>`).join('')}</div>`}`;
+      panel.innerHTML+=`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm changes</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;return;
+    }
     if(S.pending?.kind==='delete-field'){
       const p=S.pending,replacement=p.change.replacement;
       $('trustTitle').textContent=replacement?'Replace primary field':'Delete column';$('trustStatus').textContent='No column deleted yet. Review and confirm.';
@@ -322,7 +325,18 @@
   function cancelDraft() {if(S.saving)return;clearDraft();say('Cancelled. No changes were made to the table.');}
   function prepare(action, originalCommand) {
     let proposal;
-    if(action.action==='delete_field'){
+    if(['rename_field','convert_field'].includes(action.action)){
+      const id=C.fieldName(action.field,S.customFields);
+      if(action.action==='convert_field'&&(!Array.isArray(action.dropdownOptions)||!action.dropdownOptions.length)){
+        if(!C.definitions(S.customFields).some(f=>f.id===id))throw new Error('Which column should become a dropdown?');
+        S.clarification={originalCommand,question:'What options would you like the dropdown menu to have?',field:id,previousAction:action};S.sourceAction={...action,field:id};S.pending=null;say(S.clarification.question);renderTrust();return;
+      }
+      const change=window.PipeChatCustomize.editColumn(S.records,S.tableSchema,S.customFields,id,action.action==='rename_field'?{name:action.newFieldName}:{options:action.dropdownOptions});
+      proposal={kind:action.action==='rename_field'?'rename-field':'convert-field',change,count:S.records.length,createdAt:Date.now(),revision:S.revision};
+    }else if(action.action==='configure_kpi'){
+      const change=window.PipeChatCustomize.configure(S.tableSchema,S.customFields,action.kpiId,action.kpi);
+      proposal={kind:'configure-kpi',change,count:0,createdAt:Date.now(),revision:S.revision};S.tab='dashboard';
+    }else if(action.action==='delete_field'){
       const id=C.fieldName(action.field||action.newFieldName,S.customFields),field=C.definitions(S.customFields).find(f=>f.id===id);
       if(!field)throw new Error('This column does not exist.');
       if(id===C.role('primary')&&!action.replacementField&&!action.replacementName){openFieldDialog('delete',id,action);return;}
@@ -349,8 +363,8 @@
       proposal={kind:'add',records,count:records.length,createdAt:Date.now(),note:tailored()||action.action==='import_records'?'Unspecified values stay blank.':'Unspecified values default to Discovery, $0, and blank fields.'};
     } else throw new Error('This request is not an editable table action.');
     if(proposal.clarification){S.pending=null;S.clarification={...proposal.clarification,originalCommand};say('I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
-    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
-    renderTrust();focusTrust();
+    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(proposal.kind==='configure-kpi'?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the dropdown options and ${proposal.change.issues.length} unmatched values before confirming.`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
+    if(proposal?.kind==='configure-kpi')render();else renderTrust();focusTrust();
   }
   function chooseCandidate(id) {
     const q=S.clarification;if(!q?.candidates?.some(c=>c.id===id))return;
@@ -386,6 +400,7 @@
       if(S.sort&&!Object.hasOwn(labels(),S.sort.field))S.sort=null;
       const filterExists=filter=>!filter||[...Object.keys(labels()),'health','activity'].includes(C.fieldName(filter.field,S.customFields));
       if(!filterExists(S.filter))S.filter=null;
+      try{C.predicate(S.filter,S.customFields);}catch{S.filter=null;}
       if(!filterExists(S.report.filter))S.report.filter=null;
       S.report=C.reconcileReport(S.report,S.customFields);syncShareFields();
       S.undo=undo?{records:before,customFields:beforeFields,tableSchema:beforeSchema,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;
@@ -404,6 +419,15 @@
     const p=S.pending;if(!p||S.saving||S.failedEdit||['editor','csv-import'].includes(p.kind))return;
     try{
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
+      if(['rename-field','convert-field','configure-kpi'].includes(p.kind)){
+        if(p.revision!==S.revision)throw new Error('The table changed. Prepare this preview again.');
+        const change=p.change,kpi=p.kind==='configure-kpi';
+        const label=kpi?'Dashboard KPI updated':p.kind==='rename-field'?'Column renamed':'Column converted to dropdown';
+        if(await persist(kpi?S.records:change.records,label,{customFields:kpi?S.customFields:change.customFields,tableSchema:change.tableSchema})){
+          say(label+'.'+(p.kind==='convert-field'&&change.issues.length?' '+change.issues.length+' unmatched values were left blank. '+change.issues.slice(0,20).map(i=>`Row #${i.id}: "${String(i.value).slice(0,200)}" was not one of the dropdown options.`).join(' ')+(change.issues.length>20?' First 20 listed here; the full list was shown before confirmation.':''):''));
+        }
+        return;
+      }
       if(p.kind==='delete-field'){
         if(p.revision!==S.revision)throw new Error('The table changed. Prepare the column deletion again.');
         await persist(p.change.records,`${p.field.name} ${p.change.replacement?'replaced by '+p.change.replacement.name:'column deleted'}`,{customFields:p.change.customFields,tableSchema:p.change.tableSchema});return;
@@ -475,7 +499,7 @@
   function handleAction(response,command) {
     const action=response.crmAction;
     if(!action){say(response.assistantMessage||'What would you like to work on?');return;}
-    if(['add_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','import_records'].includes(action.action)){prepare(action,command);return;}
+    if(['rename_field','convert_field','configure_kpi','add_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='clarify'){
       const originalCommand=S.clarification?.originalCommand||command;
       S.clarification={originalCommand,question:action.question||response.assistantMessage,previousAction:S.sourceAction};S.pending=null;
@@ -511,9 +535,9 @@
     if(S.pending?.kind==='editor'){say('Save or cancel the new-deal form before starting another request.');return;}
     if(S.health?.aiConfigured===false){say('The real AI model is not connected: OPENAI_API_KEY is missing on the server. Manual edits, imports, charts and sharing previews remain available. No changes were made.','assistant',true);return;}
     S.busy=true;updateUsage();const generation=S.generation, revision=S.revision, pending=S.pending;
-    try{const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(aiPayload(command)),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(revision!==S.revision||pending!==S.pending){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}handleAction(response,command);}
+    try{const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(aiPayload(command)),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(revision!==S.revision||pending!==S.pending){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;handleAction(response,command);}
     catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;say(`AI request failed: ${error.message} No table changes were made.`,'assistant',true);}
-    finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving;}}
+    finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);$('addFieldBtn').disabled=S.saving||Boolean(S.failedEdit);}}
   }
   async function importCsv(file) {
     if(!file||!S.loaded||S.busy||S.saving||S.failedEdit)return;
@@ -696,24 +720,35 @@
     return `<th scope="col" data-sort-field="${field.id}" aria-sort="${direction==='asc'?'ascending':direction==='desc'?'descending':'none'}"><div class="column-heading"><button class="sort-column" data-sort-field="${field.id}" title="Sort ${esc(field.name)} ${direction==='asc'?'descending':'ascending'}"><span>${esc(field.name)}</span><span class="sort-indicator" aria-hidden="true">${direction==='asc'?icon('ChevronUp'):direction==='desc'?icon('ChevronDown'):''}</span></button>${deleteFieldButton(field.id)}</div></th>`;
   }
   function closeFieldDialog(){S.fieldDialog=null;if($('fieldDialog')?.open)$('fieldDialog').close();}
+  function closeColumnMenu(){if($('columnMenu'))$('columnMenu').hidden=true;}
+  function openColumnMenu(event){
+    const header=event.target.closest('th[data-sort-field]');if(!header)return;
+    event.preventDefault();if(S.busy||S.saving||S.failedEdit)return;
+    const menu=$('columnMenu');menu.dataset.field=header.dataset.sortField;menu.hidden=false;
+    const rect=header.getBoundingClientRect(),x=event.clientX||rect.left,y=event.clientY||rect.bottom;
+    menu.style.left=Math.max(8,Math.min(x,innerWidth-190))+'px';menu.style.top=Math.max(8,Math.min(y,innerHeight-60))+'px';$('renameColumnBtn').focus();
+  }
   function openFieldDialog(kind,id=null,action=null){
     if(S.saving||S.failedEdit||!S.loaded)return;
     if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}
     const field=id?C.definitions(S.customFields).find(f=>f.id===id):null;
-    if(kind==='delete'&&!field)throw new Error('This column no longer exists.');
+    if(['delete','rename'].includes(kind)&&!field)throw new Error('This column no longer exists.');
     S.fieldDialog={kind,field,action,revision:S.revision,generation:S.generation};
     const primary=field?.id===C.role('primary'),choices=primary?C.definitions(S.customFields).filter(f=>f.id!==id&&f.type==='text'):[];
     $('fieldDialogBody').innerHTML=kind==='add'?'<h2 id="fieldDialogTitle">Add field</h2><label>Field name<input id="newFieldName" name="fieldName" required maxlength="60" autocomplete="off"></label>':`<h2 id="fieldDialogTitle">Delete ${esc(field.name)}</h2><p>Are you sure you want to delete this entire field?</p>${primary?`<fieldset class="replacement-options"><legend>Replacement primary field</legend><label class="radio-option"><input type="radio" name="replacementMode" value="existing" ${choices.length?'checked':'disabled'}>Use an existing text field</label><select id="replacementField" aria-label="Replacement field" ${choices.length?'required':'disabled'}><option value="">Choose a field</option>${choices.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select><label class="radio-option"><input type="radio" name="replacementMode" value="new" ${choices.length?'':'checked'}>Create a new text field</label><input id="replacementName" aria-label="New primary field name" maxlength="60" ${choices.length?'disabled':'required'}></fieldset>`:''}`;
-    $('fieldDialogError').textContent='';$('fieldDialogCancel').textContent=kind==='add'?'Cancel':'No';$('fieldDialogSubmit').textContent=kind==='add'?'Preview field':'Yes';
+    if(kind==='rename')$('fieldDialogBody').innerHTML=`<h2 id="fieldDialogTitle">Rename column</h2><label>Column name<input id="renameFieldName" required maxlength="60" autocomplete="off" value="${esc(field.name)}"></label>`;
+    $('fieldDialogError').textContent='';$('fieldDialogCancel').textContent=kind==='delete'?'No':'Cancel';$('fieldDialogSubmit').textContent=kind==='delete'?'Yes':kind==='rename'?'Preview rename':'Preview field';
     if(!$('fieldDialog').open)$('fieldDialog').showModal();
     if(kind==='add')$('newFieldName').focus();
+    if(kind==='rename')$('renameFieldName').focus();
   }
   function submitFieldDialog(event){
     event.preventDefault();const d=S.fieldDialog;if(!d)return;
     try{
       if(S.saving||S.busy||S.failedEdit||d.generation!==S.generation||d.revision!==S.revision)throw new Error('The workspace changed. Close this dialog and try again.');
       let action=d.kind==='add'?{action:'add_field',newFieldName:$('newFieldName').value.trim()}:{action:'delete_field',field:d.field.id};
-      if(d.field?.id===C.role('primary')){
+      if(d.kind==='rename')action={action:'rename_field',field:d.field.id,newFieldName:$('renameFieldName').value.trim()};
+      if(d.kind==='delete'&&d.field?.id===C.role('primary')){
         const mode=$('fieldDialogForm').elements.replacementMode.value;
         if(mode==='existing')action.replacementField=$('replacementField').value;
         else action.replacementName=$('replacementName').value.trim();
@@ -804,12 +839,7 @@
     const group=options.groups.find(f=>f.id===S.report.groupBy)?.name||'All records';
     $('reportTitle').textContent=title+(S.report.groupBy==='none'?'':' by '+group);$('reportGroupHeading').textContent=group;$('reportValueHeading').textContent=title;
     document.querySelector('.report-table th:last-child').textContent='Records';
-    const kpis=[{name:'Records',value:String(rows.length)}];
-    for(const f of options.metrics){const values=rows.map(r=>r[f.id]).filter(v=>v!==null&&v!==''&&v!==undefined),total=values.reduce((a,v)=>a+(f.type==='currency'?Math.round(Number(v)*100):Number(v)),0)/(f.type==='currency'?100:1);kpis.push({name:'Total '+f.name,value:!values.length?'Not set':f.type==='currency'?currency(total):new Intl.NumberFormat('en-US',{maximumFractionDigits:4}).format(total)});}
-    const follow=C.role('followup'),owner=C.role('owner');
-    if(follow)kpis.push({name:labels()[follow]+' today',value:String(rows.filter(C.predicate({field:follow,operator:'equals',value:'today'},S.customFields)).length)});
-    if(owner)kpis.push({name:'Missing '+labels()[owner],value:String(rows.filter(r=>!r[owner]).length)});
-    document.querySelector('.metrics').innerHTML=kpis.map(k=>`<div><span>${esc(k.name)}</span><strong>${esc(k.value)}</strong></div>`).join('');
+    renderDashboardKpis(rows);
     renderReportSelections();
     $('reportRows').innerHTML=result.data.map(item=>`<tr><td>${esc(item.label)}</td><td>${esc(format(item.value))}</td><td>${item.count}</td></tr>`).join('')||'<tr><td colspan="3">No matching records.</td></tr>';
     $('reportCaption').textContent=`${result.count} matching records. Blank numeric values are excluded from totals and averages.${result.undated?' '+result.undated+' undated records excluded.':''}`;
@@ -821,7 +851,22 @@
     chart=new Chart($('reportCanvas'),{type:S.report.chart==='line'?'line':S.report.chart==='stage'?'doughnut':'bar',data:{labels:result.data.map(item=>item.label),datasets:[{label:title,data:result.data.map(item=>item.value),backgroundColor:colors,borderColor:'#287e76',borderWidth:1}]},options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:S.report.chart==='stage'}},...(S.report.chart!=='stage'?{scales:{y:{beginAtZero:true}}}:{})}});
     $('reportCanvas').setAttribute('aria-label',$('reportTitle').textContent);
   }
+  function renderDashboardKpis(rows){
+    const customize=window.PipeChatCustomize;
+    const cards=customize.kpis(S.tableSchema,S.customFields);
+    document.querySelector('.metrics').innerHTML=cards.map(k=>{
+      const result=customize.calculate(k,rows,S.tableSchema,S.customFields,localDate());
+      const value=result.value==null?'Not set':result.type==='currency'?currency(result.value):new Intl.NumberFormat('en-US',{maximumFractionDigits:4}).format(result.value);
+      return `<div data-kpi-id="${k.id}"><span>${esc(k.title)}</span><strong>${esc(value)}</strong></div>`;
+    }).join('');
+  }
   function wire() {
+    $('dealHeaders').oncontextmenu=openColumnMenu;
+    $('dealHeaders').onkeydown=event=>{if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey)openColumnMenu(event);};
+    $('renameColumnBtn').onclick=()=>{const id=$('columnMenu').dataset.field;closeColumnMenu();try{openFieldDialog('rename',id);}catch(error){toast(error.message);}};
+    document.addEventListener('click',event=>{if(!event.target.closest('#columnMenu'))closeColumnMenu();});
+    document.addEventListener('keydown',event=>{if(event.key==='Escape')closeColumnMenu();});
+    window.addEventListener('resize',closeColumnMenu);document.addEventListener('scroll',closeColumnMenu,true);
     document.querySelectorAll('[data-use-case]').forEach(button=>button.onclick=()=>{S.setupUseCase=button.dataset.useCase;S.schemaPreview=null;S.setupRecords=[];$('setupStatus').textContent='';renderSetup();});
     $('workflowDescription').oninput=()=>{S.schemaPreview=null;S.setupRecords=[];renderSetup();};$('buildAiBtn').onclick=buildTable;$('buildSheetBtn').onclick=()=>openSpreadsheet('setup');
     $('dealHeaders').onclick=event=>{const button=event.target.closest('[data-delete-field]');if(S.saving||S.failedEdit)return;if(button){if(S.busy)return;try{openFieldDialog('delete',button.dataset.deleteField);}catch(error){toast(error.message);}return;}const header=event.target.closest('[data-sort-field]');if(header){const field=header.dataset.sortField;S.sort={field,direction:S.sort?.field===field&&S.sort.direction==='asc'?'desc':'asc'};renderTable(visible());}};
