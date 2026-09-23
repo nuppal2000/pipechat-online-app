@@ -19,12 +19,13 @@
   const key = value => C.normalize(value).replace(/[_-]+/g, ' ');
   function dateEvent(label,role='none') {
     const name=key(label);
-    if(role==='followup'||/\bfollow\s*up\b|\bnext contact\b/.test(name))return 'follow-up';
+    if(/\bfollow\s*up\b|\bnext contact\b/.test(name))return 'follow-up';
     if(/\blast contact(?:ed)?\b|\bcontacted (?:on|date)\b/.test(name))return 'last contact';
     if(/\bclos(?:e|ing|ed)\b/.test(name))return 'closing';
     if(/\bcreat(?:ed|ion)\b/.test(name))return 'creation';
     if(/\bappointment\b/.test(name))return 'appointment';
     if(/\binterview\b/.test(name))return 'interview';
+    if(role==='followup')return 'follow-up';
     return null;
   }
   function missingNames(records,primary,sourceRows) {
