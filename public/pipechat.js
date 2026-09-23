@@ -11,7 +11,8 @@
   const S = {user:null,records:[],updatedAt:null,usage:null,health:null,history:[],pending:null,clarification:null,sourceAction:null,tab:'table',scope:'all',search:'',filter:null,report:defaultReport(),expanded:null,undo:null,saving:false,busy:false,generation:0,revision:0,signup:false,loaded:false};
   let chart=null, toastTimer;
   S.customFields=[];
-  S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.sort=null;S.fieldDialog=null;
+  S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sort=null;S.fieldDialog=null;
+  let spreadsheetPicker=null;
   S.settingsOpen=false;S.resetConfirmation=null;S.resetting=false;
   const tailored=()=>S.tableSchema?.status==='ready';
   const csvCore=()=>window.PipeChatCsv.forTable(S.tableSchema,S.customFields);
@@ -193,7 +194,7 @@
       if(!Array.isArray(saved.deals)||saved.deals.length||!Array.isArray(saved.customFields)||saved.customFields.length||saved.tableSchema?.status!=='pending'||typeof saved.updatedAt!=='string'||saved.updatedAt===confirmation.updatedAt)throw new Error('The server did not confirm an empty workspace.');
       useSchema(saved.tableSchema);S.records=[];S.customFields=[];S.updatedAt=saved.updatedAt;S.revision++;
       S.history=[];S.pending=null;S.clarification=null;S.sourceAction=null;S.undo=null;S.failedEdit=null;keepFailedEdit();
-      S.scope='all';S.search='';S.filter=null;S.sort=null;S.expanded=null;S.report=defaultReport();S.setupUseCase=null;S.schemaPreview=null;S.tab='table';
+      S.scope='all';S.search='';S.filter=null;S.sort=null;S.expanded=null;S.report=defaultReport();S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.tab='table';
       if(chart){chart.destroy();chart=null;}
       clearTimeout(toastTimer);$('toast').hidden=true;
       for(const id of ['chatFeed','trustBody','dealRows','dealHeaders','schemaPreview','activityList','reportRows','reportKpis'])$(id).innerHTML='';
@@ -369,7 +370,7 @@
     for(const field of Object.keys(defaults))record[field]=(imported?C.validateStoredValue:C.validateValue)(field,input[field]??defaults[field]);
     return {...record,...C.customValues(input,S.customFields)};
   }
-  async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema}={}) {
+  async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema,exactRecords=false}={}) {
     if(S.saving||S.resetting||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
     S.saving=true;const before=C.clone(S.records), beforeFields=C.clone(S.customFields),beforeSchema=C.clone(S.tableSchema||(tableSchema?.legacy?window.PipeChatSchema.legacySchema():null)),generation=S.generation,oldPrimary=C.role('primary'),oldOwner=C.role('owner');
     $('saveStatus').textContent='Saving...';$('saveStatus').classList.remove('failed');render();
@@ -378,6 +379,7 @@
       if(generation!==S.generation)return false;
       if(customFields.length&&JSON.stringify(saved.customFields)!==JSON.stringify(customFields))throw new Error('The storage service did not confirm the custom fields. Reload before trying again.');
       if(tableSchema&&JSON.stringify(saved.tableSchema)!==JSON.stringify(tableSchema))throw new Error('Storage did not confirm the table schema. Reload before retrying.');
+      if(exactRecords&&(saved.deals?.length!==next.length||next.some((row,i)=>row.id!==saved.deals[i]?.id||tableSchema.fields.some(f=>row[f.id]!==saved.deals[i]?.[f.id]))))throw new Error('Storage did not confirm every imported cell. Reload before retrying.');
       useSchema(saved.tableSchema);S.records=saved.deals;S.customFields=C.validateCustomFields(saved.customFields);S.updatedAt=saved.updatedAt;S.revision++;
       if(oldPrimary!==C.role('primary')){if(S.report.groupBy===oldPrimary)S.report.groupBy=C.role('primary');S.report.accounts=null;if(S.sort?.field===oldPrimary)S.sort.field=C.role('primary');}
       if(oldOwner!==C.role('owner'))S.report.owners=null;
@@ -536,6 +538,29 @@
     finally{if(importGeneration===S.generation){S.busy=false;updateUsage();$('csvFileInput').value='';}}
     if(draft&&S.pending===draft)await analyzeCsvImport(draft);
   }
+  async function openSpreadsheet(mode){
+    if(!S.loaded||S.busy||S.saving||S.failedEdit||S.resetting)return;
+    if(S.pending||S.clarification){toast('Confirm or cancel the current draft before importing.');return;}
+    if(mode==='setup'&&(S.tableSchema?.status!=='pending'||!S.setupUseCase||S.setupUseCase==='Other'&&!$('workflowDescription').value.trim()))return;
+    const generation=S.generation,revision=S.revision;S.busy=true;updateUsage();if(mode==='setup')renderSetup();
+    let source;
+    try{
+      if(!spreadsheetPicker)spreadsheetPicker=window.PipeChatSpreadsheetUI(api);
+      source=await spreadsheetPicker.open(mode);
+      if(generation!==S.generation||!source)return;
+      if(revision!==S.revision)throw new Error('The workspace changed. Choose the spreadsheet again.');
+      if(mode==='setup'){
+        const result=window.PipeChatSheets.build(source.matrix,{useCase:S.setupUseCase,description:S.setupUseCase==='Other'?$('workflowDescription').value:'',name:source.name,primary:source.primary,idPrefix:crypto.randomUUID().replaceAll('-','')});
+        S.schemaPreview=result.schema;S.setupRecords=result.records;S.schemaPreviewRevision=revision;
+        $('setupStatus').textContent='Review the imported table. No changes have been saved.';
+      }else{
+        const {headers,rows}=window.PipeChatSheets.mappingSource(source.matrix),description=window.PipeChatCsv.describe(headers,rows);
+        S.pending={kind:'csv-import',name:source.name,headers,rows,description,generation,revision,error:null};
+      }
+    }catch(error){if(generation===S.generation){source=null;if(mode==='setup')$('setupStatus').textContent=error.message;else toast(error.message);}}
+    finally{if(generation===S.generation){S.busy=false;updateUsage();if(mode==='setup')renderSetup();}}
+    if(mode!=='setup'&&source&&generation===S.generation&&S.pending?.kind==='csv-import')await analyzeCsvImport(S.pending);
+  }
   function currentCsvImport(draft) {
     if(!draft||draft.kind!=='csv-import'||draft.generation!==S.generation||S.pending!==draft)return false;
     if(draft.revision!==S.revision||S.failedEdit||S.clarification){clearDraft();say('The table or draft changed during import. Choose the file again to prepare a fresh preview.','assistant',true);return false;}
@@ -595,7 +620,7 @@
     closeProfileMenu();S.settingsOpen=false;S.resetting=false;S.resetConfirmation=null;if($('resetDialog')?.open)$('resetDialog').close();
     S.generation++;S.user=user;S.history=[];S.pending=null;S.clarification=null;S.undo=null;S.sourceAction=null;S.loaded=false;S.scope='all';S.search='';S.filter=null;S.tab='table';S.report=defaultReport();S.busy=false;S.expanded=null;
     const generation=S.generation;
-    closeFieldDialog();S.sort=null;useSchema(null);S.setupUseCase=null;S.schemaPreview=null;S.records=[];S.customFields=[];S.updatedAt=null;S.usage=null;S.health=null;
+    spreadsheetPicker?.close();closeFieldDialog();S.sort=null;useSchema(null);S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.records=[];S.customFields=[];S.updatedAt=null;S.usage=null;S.health=null;
     S.failedEdit=null;S.saving=false;$('authRetryBtn').hidden=true;
     document.body.classList.add('auth-locked');$('authScreen').hidden=false;
     $('chatFeed').innerHTML='';$('trustBody').innerHTML='';$('dealSearch').value='';$('authMessage').textContent='';
@@ -700,6 +725,7 @@
   function fieldInput(field,value,editor=false){
     const attributes=`${editor?`name="${field.id}"`:`data-field="${field.id}"`} aria-label="${esc(field.name)}" class="cell-input" ${S.saving||S.failedEdit?'disabled':''}`;
     if(field.type==='choice')return `<select ${attributes}><option value="">Not set</option>${field.options.map(option=>`<option ${option===value?'selected':''}>${esc(option)}</option>`).join('')}</select>`;
+    if(field.type==='text'&&/[\r\n]/.test(value||''))return `<textarea ${attributes} rows="3" maxlength="12000">${esc(value)}</textarea>`;
     return `<input ${attributes} type="${['number','currency'].includes(field.type)?'number':field.type==='date'?'date':'text'}" ${['number','currency'].includes(field.type)?'step="any" min="-1000000000000" max="1000000000000"':'maxlength="12000"'} value="${esc(value??'')}">`;
   }
   function renderTailoredTable(rows){
@@ -724,24 +750,30 @@
     document.querySelectorAll('[data-use-case]').forEach(button=>{button.setAttribute('aria-pressed',String(button.dataset.useCase===S.setupUseCase));button.disabled=S.busy||S.saving;});
     $('workflowDescription').disabled=S.busy||S.saving;
     $('buildAiBtn').disabled=locked||(S.setupUseCase==='Other'&&!$('workflowDescription').value.trim());
+    $('buildSheetBtn').disabled=S.busy||S.saving||(S.setupUseCase==='Other'&&!$('workflowDescription').value.trim());
     $('buildAiBtn').textContent=S.busy?'Building your table...':'Build Pipechat Table using AI';
     if(S.usage?.paymentRequired||S.usage?.remaining===0)$('setupStatus').textContent='Chat allowance exhausted. AI table setup is unavailable.';
     $('schemaPreview').hidden=!S.schemaPreview;
-    if(S.schemaPreview)$('schemaPreview').innerHTML=`<h2>${esc(S.schemaPreview.title)}</h2><p>0 records</p><div class="schema-fields">${S.schemaPreview.fields.map(f=>`<div><strong>${esc(f.name)}</strong><span>${esc(f.type)}${f.options.length?' / '+esc(f.options.join(', ')):''}</span></div>`).join('')}</div><div class="setup-actions"><button id="confirmSchemaBtn" class="primary" ${S.saving?'disabled':''}>${S.saving?'Saving...':'Create empty table'}</button><button id="discardSchemaBtn" class="secondary" ${S.saving?'disabled':''}>Discard preview</button></div>`;
+    if(S.schemaPreview){
+      const sheet=S.schemaPreview.source==='spreadsheet',records=S.setupRecords||[],fields=S.schemaPreview.fields;
+      const preview=sheet?`<div class="sheet-preview" tabindex="0"><table><thead><tr>${fields.map(f=>`<th>${esc(f.name)}</th>`).join('')}</tr></thead><tbody>${records.slice(0,20).map(row=>`<tr>${fields.map(f=>`<td>${esc(row[f.id]??'')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:`<div class="schema-fields">${fields.map(f=>`<div><strong>${esc(f.name)}</strong><span>${esc(f.type)}${f.options.length?' / '+esc(f.options.join(', ')):''}</span></div>`).join('')}</div>`;
+      $('schemaPreview').innerHTML=`<h2>${esc(S.schemaPreview.title)}</h2><p>${records.length} records${records.length>20?' / first 20 shown':''}</p>${preview}<div class="setup-actions"><button id="confirmSchemaBtn" class="primary" ${S.saving?'disabled':''}>${S.saving?'Saving...':sheet?'Create populated table':'Create empty table'}</button><button id="discardSchemaBtn" class="secondary" ${S.saving?'disabled':''}>Discard preview</button></div>`;
+    }
     if($('confirmSchemaBtn'))$('confirmSchemaBtn').onclick=confirmSchema;
-    if($('discardSchemaBtn'))$('discardSchemaBtn').onclick=()=>{S.schemaPreview=null;renderSetup();};
+    if($('discardSchemaBtn'))$('discardSchemaBtn').onclick=()=>{S.schemaPreview=null;S.setupRecords=[];renderSetup();};
   }
   async function buildTable(){
     if(S.busy||S.saving||!S.loaded||S.tableSchema?.status!=='pending'||!S.setupUseCase)return;
     if(S.usage?.paymentRequired||S.usage?.remaining===0)return;
     const description=S.setupUseCase==='Other'?$('workflowDescription').value.trim():'';
     if(S.setupUseCase==='Other'&&!description)return;
-    const generation=S.generation,revision=S.revision;S.busy=true;S.schemaPreview=null;$('setupStatus').textContent='Preparing fields...';renderSetup();
+    const generation=S.generation,revision=S.revision;S.busy=true;S.schemaPreview=null;S.setupRecords=[];$('setupStatus').textContent='Preparing fields...';renderSetup();
     try{
       const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify({tableBuild:{useCase:S.setupUseCase,description}}),signal:AbortSignal.timeout(90000)});
       if(generation!==S.generation)return;S.usage=response.usage||S.usage;
       if(revision!==S.revision)throw new Error('The workspace changed. Reload before building again.');
       S.schemaPreview=window.PipeChatSchema.validate(response.tableSchema);
+      S.schemaPreviewRevision=revision;
       if(S.schemaPreview?.status!=='ready')throw new Error('AI returned an invalid table definition.');
       $('setupStatus').textContent='Review the fields. No table or records have been saved.';
     }catch(error){if(generation===S.generation){S.schemaPreview=null;if(error.usage)S.usage=error.usage;$('setupStatus').textContent=error.message;}}
@@ -750,8 +782,10 @@
   async function confirmSchema(){
     if(!S.schemaPreview||S.tableSchema?.status!=='pending'||S.records.length||S.busy||S.saving)return;
     const schema=S.schemaPreview;
-    if(await persist([],'Empty table created',{undo:false,customFields:[],tableSchema:schema})){
-      S.schemaPreview=null;S.report=C.reconcileReport(defaultReport());S.scope='all';say('Your table is ready. What would you like to track first?');render();
+    if(S.schemaPreviewRevision!==S.revision){$('setupStatus').textContent='The workspace changed. Prepare a new preview.';return;}
+    const records=schema.source==='spreadsheet'?S.setupRecords:[];
+    if(await persist(records,records.length?'Spreadsheet table created':'Empty table created',{undo:false,customFields:[],tableSchema:schema,exactRecords:schema.source==='spreadsheet'})){
+      S.schemaPreview=null;S.setupRecords=[];S.report=C.reconcileReport(defaultReport());S.scope='all';say('Your table is ready. What would you like to work on?');render();
     }
   }
   function renderContextualReport(rows){
@@ -788,8 +822,8 @@
     $('reportCanvas').setAttribute('aria-label',$('reportTitle').textContent);
   }
   function wire() {
-    document.querySelectorAll('[data-use-case]').forEach(button=>button.onclick=()=>{S.setupUseCase=button.dataset.useCase;S.schemaPreview=null;$('setupStatus').textContent='';renderSetup();});
-    $('workflowDescription').oninput=()=>{S.schemaPreview=null;renderSetup();};$('buildAiBtn').onclick=buildTable;
+    document.querySelectorAll('[data-use-case]').forEach(button=>button.onclick=()=>{S.setupUseCase=button.dataset.useCase;S.schemaPreview=null;S.setupRecords=[];$('setupStatus').textContent='';renderSetup();});
+    $('workflowDescription').oninput=()=>{S.schemaPreview=null;S.setupRecords=[];renderSetup();};$('buildAiBtn').onclick=buildTable;$('buildSheetBtn').onclick=()=>openSpreadsheet('setup');
     $('dealHeaders').onclick=event=>{const button=event.target.closest('[data-delete-field]');if(S.saving||S.failedEdit)return;if(button){if(S.busy)return;try{openFieldDialog('delete',button.dataset.deleteField);}catch(error){toast(error.message);}return;}const header=event.target.closest('[data-sort-field]');if(header){const field=header.dataset.sortField;S.sort={field,direction:S.sort?.field===field&&S.sort.direction==='asc'?'desc':'asc'};renderTable(visible());}};
     $('addFieldBtn').onclick=()=>{if(!S.busy)openFieldDialog('add');};
     $('fieldDialogForm').onsubmit=submitFieldDialog;
@@ -822,7 +856,7 @@
     $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
     $('addAccountBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}S.pending={kind:'editor'};renderTrust();focusTrust();$('dealEditor').elements[C.role('primary')].focus();};
     $('undoBtn').onclick=undo;$('quickUndoBtn').onclick=undo;$('dismissToast').onclick=()=>$('toast').hidden=true;
-    $('importCsvBtn').onclick=()=>$('csvFileInput').click();$('csvFileInput').onchange=()=>importCsv($('csvFileInput').files[0]);
+    $('importCsvBtn').title='Import CSV, Excel or Google Sheets';$('importCsvBtn').onclick=()=>openSpreadsheet('append');$('csvFileInput').onchange=()=>importCsv($('csvFileInput').files[0]);
     $('shareBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}setTab('share');};
     ['shareRecipient','shareMessage','shareAccess'].forEach(id=>$(id).addEventListener('input',()=>{if(!S.pending)renderTrust();}));
     document.querySelectorAll('.field-checks input').forEach(input=>input.onchange=()=>renderTrust());

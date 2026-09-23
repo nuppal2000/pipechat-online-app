@@ -1,0 +1,15 @@
+#pipelineTable .sort-column>span:first-child{white-space:pre-wrap}
+.spreadsheet-dialog{width:min(1000px,94vw);max-height:90vh;overflow:auto}
+.spreadsheet-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.spreadsheet-heading h2{font-size:20px;line-height:1.3}
+.spreadsheet-dialog section,.spreadsheet-dialog form{margin-top:20px}
+.spreadsheet-dialog .segmented{display:flex;width:max-content;max-width:100%}
+.spreadsheet-dialog input[type=file]{width:100%;padding:14px 0}
+.sheet-controls{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.sheet-preview{max-height:360px;overflow:auto;border:1px solid var(--line,#e5e7eb)}
+.sheet-preview table{border-collapse:collapse;min-width:100%;table-layout:auto}
+.sheet-preview th,.sheet-preview td{min-width:150px;max-width:420px;padding:10px 12px;white-space:pre-wrap;word-break:normal;overflow-wrap:normal;border-bottom:1px solid var(--line,#e5e7eb);text-align:left;font-size:12px}
+.sheet-preview th{background:#f5f6fa;position:sticky;top:0;font-weight:600}
+.sheet-preview td{overflow-wrap:anywhere}
+#pipelineTable textarea.cell-input{min-height:64px;resize:vertical;white-space:pre-wrap}
+@media(max-width:600px){.sheet-controls{grid-template-columns:1fr}.spreadsheet-dialog .segmented{width:100%}.spreadsheet-dialog .segmented button{flex:1;white-space:normal}}
