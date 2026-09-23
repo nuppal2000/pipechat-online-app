@@ -163,4 +163,5 @@ The approved hosted project has since been configured and tested. See
 `SUPABASE-MIGRATION.md` for dated browser evidence, user-reported real race/expiry
 and revoked-session results, quota restoration, and the remaining recovery,
 rollback and deployment checks. Those results do not turn these embedded tests
-into hosted tests. Live Render still uses Xano.
+into hosted tests. Live Render now uses Supabase; current deployment requirements
+and rollout restrictions are in `SUPABASE-DEPLOYMENT.md`.
