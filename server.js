@@ -5,6 +5,8 @@ const crypto = require("node:crypto");
 const pipelineCore = require("./public/pipeline-core.js");
 const tableSchemaCore = require('./public/table-schema.js');
 const csvImportCore = require("./public/csv-import.js");
+const {createSheetsReader}=require('./lib/google-sheets.js');
+const readGoogleSheet=createSheetsReader();
 const { createXanoBackend, BackendError } = require("./lib/xano-backend.js");
 const { createSupabaseBackend } = require("./lib/supabase-backend.js");
 const { monitorRequest } = require("./lib/request-monitor.js");
@@ -878,6 +880,13 @@ const server = http.createServer(async (req, res) => {
       const backend = req.backend;
       const usage = backend ? await backend.readUsage(backendToken(req)) : await readChatUsage(user.id);
       return sendJson(res, 200, usage);
+    }
+
+    if(req.method==='POST'&&url.pathname==='/api/import/google-sheet'){
+      const user=await requireUser(req,res);if(!user)return;
+      const payload=await readPayload(req);
+      if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(key=>key!=='url'))return sendJson(res,400,{error:'Provide a Google Sheets URL only.'});
+      return sendJson(res,200,await readGoogleSheet(user.id,payload.url));
     }
 
     if (req.method === "POST" && url.pathname === "/api/crm-reset") {
