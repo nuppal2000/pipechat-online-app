@@ -13,3 +13,4 @@
 .sheet-preview td{overflow-wrap:anywhere}
 #pipelineTable textarea.cell-input{min-height:64px;resize:vertical;white-space:pre-wrap}
 @media(max-width:600px){.sheet-controls{grid-template-columns:1fr}.spreadsheet-dialog .segmented{width:100%}.spreadsheet-dialog .segmented button{flex:1;white-space:normal}}
+.sheet-field-type{display:block;font-weight:400;color:var(--muted,#596579);margin-top:4px;white-space:nowrap;}
