@@ -46,6 +46,14 @@ test('F03 exact sales stages propose safe equivalents and retain ambiguous stage
 });
 
 const condition=(field,operator,value=null,values=[])=>({field,operator,value,values});
+test('live real-estate follow-up: showing dates and broad listing states cannot become different events or outcomes',()=>{
+  const source=csv('real_estate'),schema={...oldSales,fields:[field('name','Property','text','primary'),field('status','Deal Stage','choice','status',['Lead','Under Contract','Closed Won','Closed Lost']),field('follow','Next Follow-Up','date','followup')]};
+  const result=I.forTable(schema).build(source.meta.fields,source.data,{columnMap:{f_name:'Property',f_status:'Listing Status',f_follow:'Next Showing'},choiceMappings:[{field:'f_status',source:'Active',target:'Lead'},{field:'f_status',source:'Withdrawn',target:'Closed Lost'},{field:'f_status',source:'Under Offer',target:'Under Contract'},{field:'f_status',source:'Sold',target:'Closed Won'}]});
+  assert.equal(result.mapping.f_follow,null);assert(result.records.every(r=>r.f_follow===''));
+  for(const [index,row] of source.data.entries())assert.equal(result.records[index].f_status,row['Listing Status']==='Sold'?'Closed Won':'');
+  assert(result.warnings.some(w=>/different business events/.test(w)));assert(result.warnings.some(w=>/not reliably equivalent/.test(w)));
+  assert.equal(result.translations.length,2);
+});
 const report=(where,measures)=>({version:1,title:'QA comparison',chart:'bar',scope:'all',groupBy:'f_name',bucket:'none',splitBy:null,measures,where,sort:'label_asc',limit:null});
 test('F05 original two-property report filters its categories even when AI puts the subset inside the measure',()=>{
   const source=csv('real_estate'),core=C.create({...oldSales,fields:[field('name','Property','text','primary'),field('value','Asking Price USD','currency')]}),names=['55 King Street Unit 1','55 King Street Unit 2'];
