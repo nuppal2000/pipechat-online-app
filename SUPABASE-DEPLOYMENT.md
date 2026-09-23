@@ -23,6 +23,8 @@ The reviewed schema starts at `db/migrations/001-supabase.sql`; apply subsequent
 
 ## Acceptance
 
+For column ordering and calendar/text conversion, apply `db/migrations/009-column-order-and-types.sql` after migration 008, before deploying this UI. It replaces three validators/save functions without changing grants, stored rows, cards or usage. Column order is a bounded list of stable IDs inside the existing table schema. Custom fields can now be dates. Type conversion and the corresponding cell values save together under the existing ownership/version checks. After users save these definitions, avoid rollback to code that strips column order or rejects custom dates; prefer a forward fix. Refresh existing app tabs after deployment.
+
 For column renaming, dropdown conversion and dashboard KPI customization, apply `db/migrations/004-column-and-kpi-customization.sql` after migration 003 and before deploying the UI. It adds a private KPI validator and replaces the schema/custom-field/save validators without changing public RPCs or grants. No user records are changed by deployment. KPI definitions live inside the versioned per-workspace table schema; conversions and their cell changes save atomically. Existing preview confirmation, undo, account isolation and usage caps remain in force.
 
 Once users save these new definitions, do not roll back to a UI/backend that drops KPI metadata or rejects custom dropdowns. Prefer a forward fix; preserve snapshots and stop writes before any incompatible rollback. Existing open tabs should be refreshed before further editing after deployment.

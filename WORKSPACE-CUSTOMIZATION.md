@@ -1,5 +1,15 @@
 # Column and Dashboard Customization
 
+## Column Layout And Types
+
+- Drag a column header onto another header to move the entire column. Alt+Left/Right on a focused header also moves it. Stable field IDs, record values, row sorting and the primary-field role are unchanged. Order is stored per workspace, survives reload, and supports Undo.
+- All records clears the pipeline's search, AI filter and owner scope without changing saved records or dashboard report definitions.
+- Ask chat to convert a text column to a calendar/date field. Complete month-name dates and year-first dates are converted to YYYY-MM-DD, with blanks kept blank. Ambiguous numeric dates, missing years and invalid dates require clarification; nothing is silently discarded. The primary field must remain text/choice.
+- Ask chat to convert a dropdown to plain text to retain its selections as text. Both conversions use the normal preview, confirmation, save and Undo flow. Incompatible date/owner/status roles and KPI definitions are explained in the preview.
+- Apply migration 009 before deploying the new UI. Manual column moves do not use AI credits. AI conversion requests use the existing chat allowance.
+
+## Existing Controls
+
 - Right-click a table header (or focus it and press Shift+F10) and select Rename column. Confirm the preview. Only the label changes; stable field IDs, roles, values, records and history remain unchanged.
 - Ask chat to turn a column into a dropdown. Without options, it asks which options to use. A request to use existing distinct values is also valid, but it must be explicit. Up to 30 distinct options are supported, with 80 characters per option.
 - Conversion matches existing values case-insensitively with normalized whitespace/accents. Matches use the canonical option spelling. Nonblank unmatched values are listed by record ID in the preview and become blank only on confirmation. Other columns stay unchanged. Manual dropdowns, filtering, sorting and CSV mapping use the resulting type.
