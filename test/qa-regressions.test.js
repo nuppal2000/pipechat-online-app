@@ -15,6 +15,8 @@ test('F01 exact Sales import cannot reinterpret Follow-up Date as Last Contacted
   assert.equal(review.records.length,12);assert.equal(review.mapping.f_contacted,null);
   assert(review.records.every(r=>r.f_contacted===''));assert(review.ignored.includes('Follow-up Date'));
   assert(review.warnings.some(w=>/different business events/.test(w)));assert.deepEqual(source.data,before);
+  const renamed={...oldSales,fields:oldSales.fields.map(f=>f.id==='f_contacted'?{...f,role:'followup'}:f)};
+  assert.equal(I.forTable(renamed).build(source.meta.fields,source.data,oldMapping).mapping.f_contacted,null,'an old role must not override a renamed business event');
   const matching={...oldSales,fields:oldSales.fields.map(f=>f.id==='f_contacted'?{...f,name:'Next Follow-up',role:'followup'}:f)};
   const safe=I.forTable(matching).build(source.meta.fields,source.data,oldMapping);
   assert.equal(safe.records[1].f_contacted,'2026-09-24');assert.equal(safe.records[4].f_contacted,'');
