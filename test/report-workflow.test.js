@@ -36,7 +36,7 @@ test('AI owner comparison and refinements carry full selections and render compu
   assert.deepEqual(Array.from(h.charts[1].data.datasets[0].data),[150,150]);
   assert.deepEqual(h.S.records,records);assert.equal(h.calls.length,2);assert.equal(h.S.pending,null);
 });
-test('account report produces one bar per selected name and resets to the all-owner default',async()=>{
+test('account report produces one bar per selected name and resets to the all-account default',async()=>{
   const h=harness([{...spec,groupBy:'account',owners:null,accounts:['Alpha','Beta']}]);
   await h.send('Compare the values for accounts Alpha and Beta');
   assert.equal(h.node('reportGroup').value,'account');assert.equal(h.node('reportGroupHeading').textContent,'Account');
@@ -44,7 +44,7 @@ test('account report produces one bar per selected name and resets to the all-ow
   assert.deepEqual(Array.from(h.charts[0].data.datasets[0].data),[250,200]);
   assert.match(h.node('reportCaption').textContent,/same account name are combined/);
   h.S.report=h.defaultReport();h.renderReport(h.S.records);
-  assert.equal(h.S.report.owners,null);assert.equal(h.S.report.accounts,null);assert.equal(h.charts.at(-1).data.labels.length,3);
+  assert.equal(h.S.report.groupBy,'account');assert.equal(h.S.report.owners,null);assert.equal(h.S.report.accounts,null);assert.equal(h.charts.at(-1).data.labels.length,3);
   assert.deepEqual(h.S.records,records);assert.equal(h.calls.length,1);
 });
 test('unmatched or malformed AI selections do not silently show all entities',async()=>{
