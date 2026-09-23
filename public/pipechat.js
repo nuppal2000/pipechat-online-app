@@ -371,6 +371,7 @@
       $('trustTitle').textContent=S.busy?'Analyzing CSV':'CSV mapping paused';
       $('trustStatus').textContent='No import preview confirmed. Existing deals are unchanged.';
       panel.innerHTML=`<h3>${esc(p.name)}</h3><p class="proposal-intro">${p.rows.length} rows / ${p.headers.length} columns</p><p class="${p.error?'error':'subtle'}" role="status">${esc(S.busy?'AI is matching columns by meaning...':p.error||'Ready for AI analysis.')}</p><div class="proposal-actions"><button class="primary" data-retry-import ${S.busy||S.saving?'disabled':''}>${icon('RotateCcw')}Retry AI mapping</button><button class="secondary" data-basic-import ${S.busy||S.saving?'disabled':''}>Review basic mapping (not AI)</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel import</button></div>`;
+      if(p.missingPrimary)panel.insertAdjacentHTML('afterbegin',`<label>Source for ${esc(labels()[C.role('primary')])}<select id="importPrimarySource"><option value="">Choose a column</option>${p.headers.map((h,i)=>`<option value="${i}">${esc(h)}</option>`).join('')}</select></label><button class="secondary" data-import-primary ${S.busy||S.saving?'disabled':''}>Review with this name column</button>`);
       return;
     }
     if(S.pending){
@@ -385,7 +386,8 @@
       }
       if(p.importReview){
         const review=p.importReview;
-        const details=`<details class="import-review"><summary>Import review: ${review.issues.length} uncertain cells, ${review.ignored.length} unused columns</summary><p>${esc(review.ignored.length?'Unused columns: '+review.ignored.join(', '):'All source columns mapped.')}</p>${review.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}${review.issues.slice(0,100).map(issue=>`<p>Row ${issue.row} / ${esc(labels()[issue.field])}: <q>${esc(issue.raw.slice(0,200))}</q> left blank.</p>`).join('')}${review.issues.length>100?'<p>First 100 uncertain cells shown.</p>':''}</details>`;
+        if(review.translations?.length)panel.insertAdjacentHTML('afterbegin',`<section class="import-review"><h3>Proposed dropdown translations</h3><p>${review.translations.length} cells will use equivalent options after confirmation.</p><details open><summary>Review translations</summary>${review.translations.slice(0,100).map(t=>`<p>Row ${t.row} / ${esc(labels()[t.field])}: <q>${esc(t.source)}</q> &rarr; <q>${esc(t.target)}</q></p>`).join('')}${review.translations.length>100?'<p>First 100 translations shown. All resulting values appear in the row preview below.</p>':''}</details></section>`);
+        const details=`<details class="import-review" ${review.warnings.length?'open':''}><summary>Import review: ${review.issues.length} uncertain cells, ${review.ignored.length} unused columns</summary><p>${esc(review.ignored.length?'Unused columns: '+review.ignored.join(', '):'All source columns mapped.')}</p>${review.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}${review.issues.slice(0,100).map(issue=>`<p>Row ${issue.row} / ${esc(labels()[issue.field])}: <q>${esc(issue.raw.slice(0,200))}</q> left blank.</p>`).join('')}${review.issues.length>100?'<p>First 100 uncertain cells shown.</p>':''}</details>`;
         panel.insertAdjacentHTML('afterbegin',details);
       }
       $('trustStatus').textContent='No changes made yet. Review and confirm.';return;
@@ -395,6 +397,7 @@
     panel.innerHTML=`<div class="trust-empty"><span class="empty-icon">${icon('ShieldCheck')}</span><h3>You're in control</h3><p>No changes to review.</p></div>`;
   }
   function clearDraft() {S.pending=null;S.clarification=null;S.sourceAction=null;renderTrust();}
+  function clearClarification(){S.clarification=null;if(!S.pending)S.sourceAction=null;renderTrust();}
   function cancelDraft() {if(S.saving)return;clearDraft();say('Cancelled. No changes were made to the table.');}
   function prepare(action, originalCommand) {
     if(S.tab==='todo'&&!['add_todo','update_todo','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action))throw new Error('To Do edits cannot change CRM cells. Switch to Pipeline to edit the table.');
@@ -452,6 +455,7 @@
       if(S.records.length+source.length>2000)throw new Error('The CRM can contain at most 2,000 deals. Existing deals are unchanged.');
       const max=Math.max(0,...S.records.map(r=>r.id));
       const records=source.map((record,index)=>newRecord(record,max+index+1,action.action==='import_records'));
+      if(records.some(record=>!String(record[C.role('primary')]??'').trim()))throw new Error(`Every new record needs a ${labels()[C.role('primary')]} name. No records were added.`);
       proposal={kind:'add',records,count:records.length,createdAt:Date.now(),note:tailored()||action.action==='import_records'?'Unspecified values stay blank.':'Unspecified values default to Discovery, $0, and blank fields.'};
     } else throw new Error('This request is not an editable table action.');
     if(proposal.clarification){S.pending=null;S.clarification={...proposal.clarification,originalCommand};say('I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
@@ -641,9 +645,9 @@
   }
   function handleAction(response,command) {
     const action=response.crmAction;
-    if(!action){say(response.assistantMessage||'What would you like to work on?');return;}
+    if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
     if(['add_todo','update_todo','delete_todo'].includes(action.action)){prepare(action,command);return;}
-    if(action.action==='show_todo'){S.tab='todo';render();say('Your To Do board is open.');return;}
+    if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your To Do board is open.');return;}
     if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){
       const field=C.fieldName(action.field,S.customFields);
@@ -659,7 +663,7 @@
       const filter=action.filter||{field:action.field,operator:action.operator||'equals',value:action.value};C.predicate(filter,S.customFields)(S.records[0]||{});
       S.filter=filter;S.scope='all';S.search='';$('dealSearch').value='';S.tab='table';S.clarification=null;render();say(`Showing ${visible().length} matching deals.`);return;
     }
-    if(action.action==='clear_view'){S.filter=null;S.search='';S.scope='all';$('dealSearch').value='';S.tab='table';render();say(`Showing all ${S.records.length} deals.`);return;}
+    if(action.action==='clear_view'){clearClarification();S.filter=null;S.search='';S.scope='all';$('dealSearch').value='';S.tab='table';render();say(`Showing all ${S.records.length} deals.`);return;}
     if(action.action==='show_report'){
       if(action.smartReport){
         try{
@@ -685,7 +689,7 @@
     command=String(command||'').trim();if(!command||S.busy||S.saving||!S.loaded||S.usage?.paymentRequired||S.usage?.remaining===0)return;
     if(S.failedEdit){toast('Review or discard the unsaved edit first.');focusTrust();return;}
     $('chatInput').value='';say(command,'user');const answer=C.normalize(command).replace(/[.!?]+$/,'');
-    if((S.pending||S.clarification)&&['cancel','no','no thanks','never mind','nevermind'].includes(answer)){cancelDraft();return;}
+    if((S.pending||S.clarification)&&/^(?:cancel|no|no thanks|never mind|nevermind|(?:no[, ]+)?leave (?:it|that|everything) unchanged|(?:no[, ]+)?(?:do not|don't) change (?:it|that|anything))$/.test(answer)){cancelDraft();return;}
     if(S.pending?.kind==='csv-import'){say('The CSV is waiting for mapping. Use Retry AI mapping, Review basic mapping, or Cancel import in the review panel.');focusTrust();return;}
     if(S.pending?.kind==='import-duplicates'){say('Please choose Keep duplicates, Merge duplicates, or Cancel import in the review panel.');focusTrust();return;}
     if(S.clarification?.candidates){
@@ -695,11 +699,11 @@
     }
     if(S.pending&&S.pending.kind!=='editor'&&['yes','confirm','looks good','ok','okay','yes please'].includes(answer)){await confirmDraft();return;}
     if(S.pending?.kind==='editor'){say('Save or cancel the new-deal form before starting another request.');return;}
-    if(S.health?.aiConfigured===false){say('Sorry, I cannot connect to the AI service right now. Manual editing is still available. No table changes were made.');return;}
+    if(S.health?.aiConfigured===false){clearClarification();say('Sorry, I cannot connect to the AI service right now. Manual editing is still available. No table changes were made.');return;}
     S.busy=true;updateUsage();const generation=S.generation, revision=S.revision, pending=S.pending,requestView=JSON.stringify(tableView());
     let interpreting=false;
     try{const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(aiPayload(command)),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);}
-    catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;const guidance=interpreting?error.message:error.status===401?'Please sign in again, then try your request.':S.usage?.remaining===0||S.usage?.paymentRequired?'Your chat allowance has been used. You can still edit the table manually.':error.status===429?'The service is busy. Please try again shortly.':'Please try again shortly.';say(`Sorry, I couldn't complete that request. ${guidance} No table changes were made.`);}
+    catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;if(revision===S.revision&&pending===S.pending)clearClarification();const guidance=interpreting?error.message:error.status===401?'Please sign in again, then try your request.':S.usage?.remaining===0||S.usage?.paymentRequired?'Your chat allowance has been used. You can still edit the table manually.':error.status===429?'The service is busy. Please try again shortly.':'Please try again shortly.';say(`Sorry, I couldn't complete that request. ${guidance} No table changes were made.`);}
     finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);$('addFieldBtn').disabled=S.saving||Boolean(S.failedEdit);}}
   }
   async function importCsv(file) {
@@ -782,9 +786,23 @@
     if(!currentCsvImport(draft))return;
     const review=csvCore().build(draft.headers,draft.rows,analysis),{records,mapping}=review;
     if(!records.length){draft.error='No CRM fields could be confidently interpreted. No rows were added; the original CSV is unchanged.';say(draft.error,'assistant',true);renderTrust();return;}
+    if(review.missingPrimary?.length){
+      draft.analysis=analysis;draft.missingPrimary=true;
+      draft.error=`${review.missingPrimary.length} imported records have a blank ${labels()[C.role('primary')]}. Source rows: ${review.missingPrimary.slice(0,20).join(', ')}${review.missingPrimary.length>20?' and more':''}. Choose an identifying source column, or fill the missing names in the file and import it again. No records have been added.`;
+      say(draft.error);renderTrust();return;
+    }
     const duplicates=window.PipeChatImportDuplicates.review(S.records,records,C.role('primary'));
     if(duplicates.duplicates.length){S.pending={kind:'import-duplicates',draft,review,duplicates,mappingSource};renderTrust();return;}
     finishImportPreview(draft,review,mappingSource,records);
+  }
+  function chooseImportPrimary(){
+    const draft=S.pending;if(S.busy||S.saving||!currentCsvImport(draft)||!draft.missingPrimary)return;
+    const selected=$('importPrimarySource').value;if(selected==='')return;
+    const header=draft.headers[Number(selected)];if(!header)return;
+    const analysis=C.clone(draft.analysis),primary=C.role('primary');
+    for(const field of Object.keys(analysis.columnMap))if(analysis.columnMap[field]===header)analysis.columnMap[field]=null;
+    analysis.columnMap[primary]=header;
+    previewCsvImport(draft,analysis,'Primary name column selected by you. Other mappings retained.');
   }
   function finishImportPreview(draft,review,mappingSource,records,decision=''){
     if(draft.revision!==S.revision||draft.generation!==S.generation)throw new Error('The table changed. Choose the file again.');
@@ -1054,7 +1072,7 @@
     if(S.schemaPreview){
       const sheet=S.schemaPreview.source==='spreadsheet',records=S.setupRecords||[],fields=S.schemaPreview.fields;
       const preview=sheet?`<div class="sheet-preview" tabindex="0"><table><thead><tr>${fields.map(f=>`<th>${esc(f.name)}<small class="sheet-field-type">${esc(f.type==='choice'?'Dropdown':f.type)}</small></th>`).join('')}</tr></thead><tbody>${records.slice(0,20).map(row=>`<tr>${fields.map(f=>`<td>${esc(row[f.id]??'')}</td>`).join('')}</tr>`).join('')}</tbody></table></div><details><summary>Column type review</summary>${(S.sheetTypeReview||[]).map(f=>`<p><strong>${esc(f.name||'Column '+(f.index+1))}</strong>: ${esc(f.type==='choice'?'Dropdown':f.type)}. ${esc(f.reason)}${f.options.length?' Options: '+esc(f.options.join(', ')):''}</p>`).join('')}</details>`:`<div class="schema-fields">${fields.map(f=>`<div><strong>${esc(f.name)}</strong><span>${esc(f.type)}${f.options.length?' / '+esc(f.options.join(', ')):''}</span></div>`).join('')}</div>`;
-      $('schemaPreview').innerHTML=`<h2>${esc(S.schemaPreview.title)}</h2><p>${records.length} records${records.length>20?' / first 20 shown':''}</p>${preview}<div class="setup-actions"><button id="confirmSchemaBtn" class="primary" ${S.saving?'disabled':''}>${S.saving?'Saving...':sheet?'Create populated table':'Create empty table'}</button><button id="discardSchemaBtn" class="secondary" ${S.saving?'disabled':''}>Discard preview</button></div>`;
+      $('schemaPreview').innerHTML=`<h2>${esc(S.schemaPreview.title)}</h2><p>${records.length} records${records.length>20?' / first 20 shown':''}</p>${preview}${sheet?'':`<p class="subtle">Don't worry about the details, you can modify the table after confirmation. You can remove columns you don't like and add fields you need.</p>`}<div class="setup-actions"><button id="confirmSchemaBtn" class="primary" ${S.saving?'disabled':''}>${S.saving?'Saving...':sheet?'Create populated table':'Create empty table'}</button><button id="discardSchemaBtn" class="secondary" ${S.saving?'disabled':''}>Discard preview</button></div>`;
     }
     if($('confirmSchemaBtn'))$('confirmSchemaBtn').onclick=confirmSchema;
     if($('discardSchemaBtn'))$('discardSchemaBtn').onclick=()=>{if(S.busy||S.saving)return;clearSheetPreview();renderSetup();};
@@ -1188,7 +1206,7 @@
     $('dealRows').addEventListener('input',event=>resizeTextCell(event.target,true));
     $('dealRows').addEventListener('focusout',event=>resizeTextCell(event.target,false));
     $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
-    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;const duplicateChoice=event.target.closest('[data-import-duplicates]');if(duplicateChoice){chooseImportDuplicates(duplicateChoice.dataset.importDuplicates);return;}if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
+    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(event.target.closest('[data-import-primary]')){chooseImportPrimary();return;}const duplicateChoice=event.target.closest('[data-import-duplicates]');if(duplicateChoice){chooseImportDuplicates(duplicateChoice.dataset.importDuplicates);return;}if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
     $('trustBody').addEventListener('input',event=>{if(event.target.id==='failedEditValue'&&S.failedEdit){S.failedEdit.raw=event.target.value;S.failedEdit.reviewed=false;keepFailedEdit();$('failedEditForm').querySelector('[type="submit"]').disabled=true;}});
     $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
     $('addAccountBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}S.pending={kind:'editor'};renderTrust();focusTrust();$('dealEditor').elements[C.role('primary')].focus();};

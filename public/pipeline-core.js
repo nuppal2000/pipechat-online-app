@@ -73,7 +73,7 @@
       }
       if(typeof value!=='string'||value.length>12000)throw new Error('Enter text of at most 12,000 characters.');
       const text=value.trim();
-      if(def.type==='date'){const parsed=date(text);if(!parsed)throw new Error('Enter a complete, valid date.');return parsed.toISOString().slice(0,10);}
+      if(def.type==='date'){const parsed=date(text);if(!parsed)throw new Error('Enter a complete, valid date (YYYY-MM-DD). Date fields cannot store times; use a separate Time text field or Notes to preserve the time.');return parsed.toISOString().slice(0,10);}
       if(def.type==='choice'){const option=def.options.find(v=>normalize(v)===normalize(text));if(!option)throw new Error('Choose one of this field\'s options.');return option;}
       return schema.source==='spreadsheet'?value:text;
     }
