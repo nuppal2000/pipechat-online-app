@@ -74,13 +74,18 @@ global.fetch = async (input, options = {}) => {
   }
   if (session.user.email.startsWith('outage-')) return error(500, 'XX000', 'private provider detail must not escape');
   const rpc = url.pathname.replace('/rest/v1/rpc/', '');
-  if (rpc === 'pipechat_read_crm') return response(200, snapshots.get(id));
-  if (rpc === 'pipechat_write_crm') {
+  if (rpc === 'pipechat_read_workspace') return response(200, snapshots.get(id));
+  if (rpc === 'pipechat_write_workspace_v2') {
     const current = snapshots.get(id);
     if (current.updatedAt !== body.p_expected_updated_at) return error(409, 'PT409', 'Stale save');
-    const next = { deals: body.p_deals, customFields: body.p_custom_fields, tableSchema: body.p_table_schema, updatedAt: crypto.randomUUID() };
+    const next = { deals: body.p_deals, customFields: body.p_custom_fields, tableSchema: body.p_table_schema, todoCards:body.p_todo_cards, updatedAt: crypto.randomUUID() };
     snapshots.set(id, next);
     return response(200, next);
+  }
+  if (rpc === 'pipechat_write_todo') {
+    const current=snapshots.get(id);
+    if(current.updatedAt!==body.p_expected_updated_at)return error(409,'PT409','Stale save');
+    const next={...current,todoCards:body.p_todo_cards,updatedAt:crypto.randomUUID()};snapshots.set(id,next);return response(200,next);
   }
   if (rpc === 'pipechat_read_usage') return response(200, usage(id));
   if (rpc === 'pipechat_reserve_usage') {
