@@ -20,16 +20,15 @@
       if(disabled())return;
       if(S.pending||S.clarification||draft?.dirty){toast('Preview or cancel the current card edit or proposal first.');return;}
       dialogVersion=S.revision;$('todoDialogTitle').textContent='New To Do card';
-      $('todoRecordSearch').value='';$('todoCustomTitle').value='';renderRecordOptions(S.records.length?'':'custom');toggleCustomTitle();
+      $('todoCustomTitle').value='';renderRecordOptions(S.records.length?'':'custom');toggleCustomTitle();
       $('todoStatus').innerHTML=statuses('To Do');$('todoNext').value='';$('todoNotes').value='';$('todoDue').value='';$('todoFormError').textContent='';$('todoDialog').showModal();
     }
     function renderRecordOptions(selected=$('todoRecord').value){
-      const matches=T.recordOptions(S.records,S.tableSchema,$('todoRecordSearch').value,selected);
+      const matches=T.recordOptions(S.records,S.tableSchema,'',selected);
       $('todoRecord').innerHTML='<option value="">Choose a record or custom title</option><option value="custom">Custom title</option>'+matches.map(r=>`<option value="${r.id}">${esc(r.title)} / #${r.id}</option>`).join('');
-      $('todoRecord').value=selected;$('todoRecordMatches').textContent=$('todoRecordSearch').value&&!matches.length?'No matching records.':'';
+      $('todoRecord').value=selected;
     }
     function toggleCustomTitle(){const custom=$('todoRecord').value==='custom';$('todoCustomTitleLabel').hidden=!custom;$('todoCustomTitle').disabled=!custom;$('todoCustomTitle').required=custom;}
-    $('todoRecordSearch').addEventListener('input',()=>renderRecordOptions());
     $('todoRecord').addEventListener('change',()=>{toggleCustomTitle();if($('todoRecord').value==='custom')$('todoCustomTitle').focus();});
     function closeForm(){if($('todoDialog').open)$('todoDialog').close();dialogVersion=null;}
     function propose(after,before,revision){

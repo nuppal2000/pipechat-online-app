@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   let C = window.PipelineCore;
+  const Schema=window.PipeChatSchema;
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon = name => window.PipeChatIcons[name] || '';
@@ -102,6 +103,11 @@
     const rows=tailored()?S.records.filter(record=>matches(record)&&(S.scope!=='mine'||!C.role('owner')||[S.user?.name,S.user?.email].filter(Boolean).some(name=>C.normalize(name)===C.normalize(record[C.role('owner')])) )&&(S.scope!=='open'||!S.tableSchema.legacy||!['Won','Lost'].includes(record.stage))&&(!query||Object.keys(labels()).some(field=>C.normalize(record[field]).includes(query)))):S.records.filter(record=>matches(record) && (S.scope!=='mine'||[S.user?.name,S.user?.email].filter(Boolean).some(name=>C.normalize(name)===C.normalize(record.owner))) && (S.scope!=='open'||!['Won','Lost'].includes(record.stage)) && (!query||['account','owner','stage','next','notes'].some(field=>C.normalize(record[field]).includes(query))));
     return C.sortRecords(rows,S.sort,S.customFields);
   }
+  function selectScope(scope){
+    S.scope=scope;
+    if(scope==='all'){S.filter=null;S.search='';$('dealSearch').value='';}
+    render();
+  }
   function updateUsage() {
     const locked=Boolean(S.usage?.paymentRequired || S.usage?.remaining===0);
     $('usageLabel').textContent=S.usage?`${S.usage.used.toLocaleString()} / ${S.usage.limit.toLocaleString()} chats used`:'Usage unavailable';
@@ -114,7 +120,8 @@
     $('aiModeLabel').classList.toggle('offline',locked||S.health?.aiConfigured===false);
   }
   function renderTable(rows) {
-    if(tailored()){renderTailoredTable(rows);return;}
+    const legacyLayout=!tailored()||S.tableSchema.legacy&&JSON.stringify(S.tableSchema.fields)===JSON.stringify(Schema.legacySchema().fields);
+    if(!legacyLayout){renderTailoredTable(rows);return;}
     const header=$('dealHeaders');
     header.innerHTML=['account','stage','value','close','owner',...S.customFields.map(f=>f.id)].map(field=>fieldHeader({id:field,name:labels()[field]})).join('')+'<th scope="col"><span class="sr-only">Actions</span></th>';
     $('pipelineTable').style.minWidth=`${660+S.customFields.length*170}px`;
@@ -129,6 +136,13 @@
       ${S.expanded===record.id?`<tr class="detail-row" data-id="${record.id}"><td colspan="${6+S.customFields.length}"><div class="detail-content"><label>Next step<input data-field="next" value="${esc(record.next)}" aria-label="Next step for ${esc(record.account)}"></label><label>Follow-up<input data-field="follow" value="${esc(record.follow)}" placeholder="Today, tomorrow or date" aria-label="Follow-up for ${esc(record.account)}"></label><label class="full">Notes<textarea data-field="notes" rows="3" aria-label="Notes for ${esc(record.account)}">${esc(record.notes)}</textarea></label><p class="full">${esc(record.history?.[0]||'No changes recorded yet.')}</p></div></td></tr>`:''}`).join(''):`<tr><td colspan="${6+S.customFields.length}" class="empty-table">No deals in this view.</td></tr>`;
     $('dealRows').classList.toggle('loading',S.saving);
     $('dealRows').querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=S.saving||Boolean(S.failedEdit));
+    if(S.tableSchema?.columnOrder){
+      const ids=['account','stage','value','close','owner',...S.customFields.map(f=>f.id)],ordered=Schema.orderedFields(ids.map(id=>({id})),S.tableSchema.columnOrder);
+      for(const row of [header,...$('dealRows').querySelectorAll('tr:not(.detail-row)')]){
+        const cells=[...row.children];if(cells.length!==ids.length+1)continue;
+        ordered.forEach(f=>row.appendChild(cells[ids.indexOf(f.id)]));row.appendChild(cells.at(-1));
+      }
+    }
   }
   function render() {
     if(!S.loaded)return;
@@ -319,10 +333,10 @@
     if(S.pending?.kind==='editor'){renderEditor();return;}
     if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(S.pending?.kind)){
       const p=S.pending,kpi=p.kind.endsWith('-kpi'),change=p.change;
-      $('trustTitle').textContent=kpi?({ 'configure-kpi':'Update dashboard KPI','add-kpi':'Add dashboard KPI','delete-kpi':'Delete dashboard KPI'})[p.kind]:p.kind==='rename-field'?'Rename column':'Convert to dropdown';
+      $('trustTitle').textContent=kpi?({ 'configure-kpi':'Update dashboard KPI','add-kpi':'Add dashboard KPI','delete-kpi':'Delete dashboard KPI'})[p.kind]:p.kind==='rename-field'?'Rename column':'Convert to '+({choice:'dropdown',date:'date',text:'text'})[change.after.type];
       $('trustStatus').textContent='No changes made yet. Review and confirm.';
       const describe=k=>k?`${k.title}: ${k.metric}${k.field?' '+(labels()[k.field]||k.field):''}${k.conditions.length?' / '+k.conditions.map(c=>`${labels()[c.field]||c.field} ${c.operator.replaceAll('_',' ')} ${c.value??''}`).join('; '):' / all records in the current view'}`:p.kind==='add-kpi'?'New card; existing KPI cards will be kept.':'This KPI card will be removed. Other KPI cards will be kept.';
-      panel.innerHTML=kpi?`<div class="field-diff"><span>Current</span><p>${esc(describe(change.before))}</p></div><div class="field-diff"><span>Proposed</span><p>${esc(describe(change.after))}</p></div><p>Row data stays unchanged.</p>`:`<h3>${esc(change.before.name)}</h3>${p.kind==='rename-field'?`<p>${esc(change.before.name)} ${icon('ArrowRight')} ${esc(change.after.name)}</p><p>Only the header changes. Column values and row data stay unchanged.</p>`:`<p>Dropdown options: ${change.after.options.map(esc).join(', ')}</p><p>${change.issues.length} unmatched ${change.issues.length===1?'value will':'values will'} be left blank.</p>${change.before.role==='followup'?'<p>This column will no longer be the follow-up date field.</p>':''}${change.dropped.length?`<p>Incompatible KPI overrides removed: ${change.dropped.map(esc).join(', ')}. Dashboard defaults will be recalculated.</p>`:''}<div class="conversion-issues">${change.issues.map(issue=>`<p>Row #${issue.id} (${esc(issue.record)}): <q>${esc(issue.value)}</q> is not one of the dropdown options and will be left blank.</p>`).join('')}</div>`}`;
+      panel.innerHTML=kpi?`<div class="field-diff"><span>Current</span><p>${esc(describe(change.before))}</p></div><div class="field-diff"><span>Proposed</span><p>${esc(describe(change.after))}</p></div><p>Row data stays unchanged.</p>`:`<h3>${esc(change.before.name)}</h3>${p.kind==='rename-field'?`<p>${esc(change.before.name)} ${icon('ArrowRight')} ${esc(change.after.name)}</p><p>Only the header changes. Column values and row data stay unchanged.</p>`:`${change.after.type==='choice'?`<p>Dropdown options: ${change.after.options.map(esc).join(', ')}</p><p>${change.issues.length} unmatched ${change.issues.length===1?'value will':'values will'} be left blank.</p>`:`<p>${change.after.type==='date'?'Calendar date field. All nonblank dates will be preserved in YYYY-MM-DD format.':'Text field. Existing dropdown selections will be preserved as text.'}</p>`}${change.before.role&&change.before.role!=='none'&&change.before.role!==change.after.role?`<p>This column will no longer have the ${esc(change.before.role)} role.</p>`:''}${change.dropped.length?`<p>Incompatible KPI overrides removed: ${change.dropped.map(esc).join(', ')}. Dashboard defaults will be recalculated.</p>`:''}<div class="conversion-issues">${change.issues.map(issue=>`<p>Row #${issue.id} (${esc(issue.record)}): <q>${esc(issue.value)}</q> is not one of the dropdown options and will be left blank.</p>`).join('')}</div>`}`;
       panel.innerHTML+=`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm changes</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;return;
     }
     if(S.pending?.kind==='delete-field'){
@@ -373,11 +387,13 @@
       if(!proposal.clarification){proposal.createdAt=Date.now();proposal.revision=S.revision;S.tab='todo';}
     }else if(['rename_field','convert_field'].includes(action.action)){
       const id=C.fieldName(action.field,S.customFields);
-      if(action.action==='convert_field'&&(!Array.isArray(action.dropdownOptions)||!action.dropdownOptions.length)){
+      if(action.action==='convert_field'&&(action.targetType==null||action.targetType==='choice')&&(!Array.isArray(action.dropdownOptions)||!action.dropdownOptions.length)){
         if(!C.definitions(S.customFields).some(f=>f.id===id))throw new Error('Which column should become a dropdown?');
         S.clarification={originalCommand,question:'What options would you like the dropdown menu to have?',field:id,previousAction:action};S.sourceAction={...action,field:id};S.pending=null;say(S.clarification.question);renderTrust();return;
       }
-      const change=window.PipeChatCustomize.editColumn(S.records,S.tableSchema,S.customFields,id,action.action==='rename_field'?{name:action.newFieldName}:{options:action.dropdownOptions});
+      let change;
+      try{change=window.PipeChatCustomize.editColumn(S.records,S.tableSchema,S.customFields,id,action.action==='rename_field'?{name:action.newFieldName}:{options:action.dropdownOptions,targetType:action.targetType});}
+      catch(error){if(!error.clarification)throw error;S.pending=null;S.clarification={originalCommand,question:error.message,field:id,previousAction:action};S.sourceAction=C.clone(action);say(error.message);renderTrust();return;}
       proposal={kind:action.action==='rename_field'?'rename-field':'convert-field',change,count:S.records.length,createdAt:Date.now(),revision:S.revision};
     }else if(['configure_kpi','add_kpi','delete_kpi'].includes(action.action)){
       const customize=window.PipeChatCustomize;
@@ -410,7 +426,7 @@
       proposal={kind:'add',records,count:records.length,createdAt:Date.now(),note:tailored()||action.action==='import_records'?'Unspecified values stay blank.':'Unspecified values default to Discovery, $0, and blank fields.'};
     } else throw new Error('This request is not an editable table action.');
     if(proposal.clarification){S.pending=null;S.clarification={...proposal.clarification,originalCommand};say('I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
-    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(proposal.kind==='todo'?'Review the To Do card change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the dropdown options and ${proposal.change.issues.length} unmatched values before confirming.`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
+    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(proposal.kind==='todo'?'Review the To Do card change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
     if(proposal?.kind==='todo'||proposal?.kind?.endsWith('-kpi'))render();else renderTrust();focusTrust();
   }
   function chooseCandidate(id) {
@@ -481,7 +497,7 @@
       if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(p.kind)){
         if(p.revision!==S.revision)throw new Error('The table changed. Prepare this preview again.');
         const change=p.change,kpi=p.kind.endsWith('-kpi');
-        const label=kpi?({'configure-kpi':'Dashboard KPI updated','add-kpi':'Dashboard KPI added','delete-kpi':'Dashboard KPI deleted'})[p.kind]:p.kind==='rename-field'?'Column renamed':'Column converted to dropdown';
+        const label=kpi?({'configure-kpi':'Dashboard KPI updated','add-kpi':'Dashboard KPI added','delete-kpi':'Dashboard KPI deleted'})[p.kind]:p.kind==='rename-field'?'Column renamed':'Column converted to '+({choice:'dropdown',date:'date',text:'text'})[change.after.type];
         if(await persist(kpi?S.records:change.records,label,{customFields:kpi?S.customFields:change.customFields,tableSchema:change.tableSchema})){
           say(label+'.'+(p.kind==='convert-field'&&change.issues.length?' '+change.issues.length+' unmatched values were left blank. '+change.issues.slice(0,20).map(i=>`Row #${i.id}: "${String(i.value).slice(0,200)}" was not one of the dropdown options.`).join(' ')+(change.issues.length>20?' First 20 listed here; the full list was shown before confirmation.':''):''));
         }
@@ -820,7 +836,51 @@
   function deleteFieldButton(id){return `<button class="icon-btn" data-delete-field="${id}" aria-label="Delete ${esc(labels()[id])} column" title="Delete column" ${S.saving||S.busy||S.failedEdit?'disabled':''}>${icon('Trash2')}</button>`;}
   function fieldHeader(field){
     const active=S.sort?.field===field.id,direction=active?S.sort.direction:null;
-    return `<th scope="col" data-sort-field="${field.id}" aria-sort="${direction==='asc'?'ascending':direction==='desc'?'descending':'none'}"><div class="column-heading"><button class="sort-column" data-sort-field="${field.id}" title="Sort ${esc(field.name)} ${direction==='asc'?'descending':'ascending'}"><span>${esc(field.name)}</span><span class="sort-indicator" aria-hidden="true">${direction==='asc'?icon('ChevronUp'):direction==='desc'?icon('ChevronDown'):''}</span></button>${deleteFieldButton(field.id)}</div></th>`;
+    return `<th scope="col" data-sort-field="${field.id}" aria-sort="${direction==='asc'?'ascending':direction==='desc'?'descending':'none'}"><div class="column-heading"><button class="sort-column" draggable="false" data-reorderable="${canMoveColumn()}" data-sort-field="${field.id}" title="Sort ${esc(field.name)} ${direction==='asc'?'descending':'ascending'}; drag to move, or Alt + arrow keys"><span>${esc(field.name)}</span><span class="sort-indicator" aria-hidden="true">${direction==='asc'?icon('ChevronUp'):direction==='desc'?icon('ChevronDown'):''}</span></button>${deleteFieldButton(field.id)}</div></th>`;
+  }
+  let columnDrag=null,suppressColumnClickUntil=0;
+  function canMoveColumn(){return S.loaded&&!S.saving&&!S.busy&&!S.failedEdit&&!S.pending&&!S.clarification;}
+  async function moveColumn(source,target,revision=S.revision,generation=S.generation){
+    if(!canMoveColumn()||revision!==S.revision||generation!==S.generation||source===target)return false;
+    try{
+      const tableSchema=Schema.reorder(S.tableSchema,S.customFields,source,target);
+      return await persist(S.records,'Column order updated',{tableSchema,exactRecords:true});
+    }catch(error){toast(error.message);return false;}
+  }
+  function clearColumnDrag(){columnDrag=null;$('dealHeaders').querySelectorAll('.column-drop-target,.column-dragging').forEach(el=>el.classList.remove('column-drop-target','column-dragging'));}
+  function wireColumnDrag(){
+    const headers=$('dealHeaders');
+    headers.addEventListener('pointerdown',event=>{
+      const source=event.target.closest('.sort-column');if(event.button!==0||!source||!canMoveColumn())return;
+      columnDrag={source:source.dataset.sortField,revision:S.revision,generation:S.generation,pointerId:event.pointerId,x:event.clientX,y:event.clientY,active:false};
+      source.setPointerCapture(event.pointerId);
+    });
+    headers.addEventListener('pointermove',event=>{
+      const drag=columnDrag;if(!drag||drag.pointerId!==event.pointerId)return;
+      if(!canMoveColumn()){clearColumnDrag();return;}
+      if(!drag.active&&Math.hypot(event.clientX-drag.x,event.clientY-drag.y)<7)return;
+      drag.active=true;event.preventDefault();closeColumnMenu();
+      headers.querySelector(`th[data-sort-field="${drag.source}"]`)?.classList.add('column-dragging');
+      const target=document.elementFromPoint(event.clientX,event.clientY)?.closest('th[data-sort-field]');
+      headers.querySelectorAll('.column-drop-target').forEach(el=>el.classList.remove('column-drop-target'));
+      if(target&&headers.contains(target))target.classList.add('column-drop-target');
+      const scroller=headers.closest('table').parentElement,rect=scroller.getBoundingClientRect();
+      if(event.clientX>rect.right-35)scroller.scrollLeft+=22;else if(event.clientX<rect.left+35)scroller.scrollLeft-=22;
+    });
+    headers.addEventListener('pointerup',event=>{
+      const drag=columnDrag;if(!drag||drag.pointerId!==event.pointerId)return;
+      const target=document.elementFromPoint(event.clientX,event.clientY)?.closest('th[data-sort-field]');
+      if(drag.active)suppressColumnClickUntil=Date.now()+400;
+      clearColumnDrag();
+      if(drag.active&&target&&headers.contains(target))void moveColumn(drag.source,target.dataset.sortField,drag.revision,drag.generation);
+    });
+    headers.addEventListener('pointercancel',clearColumnDrag);
+    headers.addEventListener('lostpointercapture',clearColumnDrag);
+    headers.addEventListener('keydown',async event=>{
+      const source=event.target.closest('.sort-column');if(!source||!event.altKey||!['ArrowLeft','ArrowRight'].includes(event.key))return;
+      event.preventDefault();const ids=[...headers.querySelectorAll('th[data-sort-field]')].map(el=>el.dataset.sortField),target=ids[ids.indexOf(source.dataset.sortField)+(event.key==='ArrowLeft'?-1:1)];
+      if(target&&await moveColumn(source.dataset.sortField,target))headers.querySelector(`button[data-sort-field="${source.dataset.sortField}"]`)?.focus();
+    });
   }
   function closeFieldDialog(){S.fieldDialog=null;if($('fieldDialog')?.open)$('fieldDialog').close();}
   function closeColumnMenu(){if($('columnMenu'))$('columnMenu').hidden=true;}
@@ -878,7 +938,7 @@
     return `<input ${attributes} type="${['number','currency'].includes(field.type)?'number':field.type==='date'?'date':'text'}" ${['number','currency'].includes(field.type)?'step="any" min="-1000000000000" max="1000000000000"':'maxlength="12000"'} value="${esc(value??'')}">`;
   }
   function renderTailoredTable(rows){
-    const fields=C.definitions(S.customFields);
+    const fields=Schema.orderedFields(C.definitions(S.customFields),S.tableSchema?.columnOrder);
     $('dealHeaders').innerHTML=fields.map(fieldHeader).join('')+'<th scope="col"><span class="sr-only">Actions</span></th>';
     $('pipelineTable').style.minWidth=`${Math.max(660,fields.length*175+85)}px`;
     $('dealRows').innerHTML=rows.map(record=>`<tr data-id="${record.id}">${fields.map(f=>`<td>${f.id===C.role('primary')?primaryCell(record,f):fieldInput(f,record[f.id])}</td>`).join('')}<td><button class="icon-btn" data-delete="${record.id}" title="Delete record" aria-label="Delete ${esc(rowName(record))}" ${S.saving||S.failedEdit?'disabled':''}>${icon('Trash2')}</button></td></tr>`).join('')||`<tr><td colspan="${fields.length+1}" class="empty-table">No records yet.</td></tr>`;
@@ -1000,7 +1060,7 @@
     for(const id of ['activityFrom','activityTo'])$(id).onchange=()=>{activityLimit=150;renderActivity();};
     $('activityResetDates').onclick=()=>{$('activityFrom').value='';$('activityTo').value='';activityLimit=150;renderActivity();};
     $('activityMore').onclick=()=>{activityLimit+=150;renderActivity();};
-    $('dealHeaders').oncontextmenu=openColumnMenu;
+    wireColumnDrag();$('dealHeaders').oncontextmenu=openColumnMenu;
     $('dealHeaders').onkeydown=event=>{if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey)openColumnMenu(event);};
     $('renameColumnBtn').onclick=()=>{const id=$('columnMenu').dataset.field;closeColumnMenu();try{openFieldDialog('rename',id);}catch(error){toast(error.message);}};
     document.addEventListener('click',event=>{if(!event.target.closest('#columnMenu'))closeColumnMenu();});
@@ -1008,7 +1068,7 @@
     window.addEventListener('resize',closeColumnMenu);document.addEventListener('scroll',closeColumnMenu,true);
     document.querySelectorAll('[data-use-case]').forEach(button=>button.onclick=()=>{S.setupUseCase=button.dataset.useCase;S.schemaPreview=null;S.setupRecords=[];$('setupStatus').textContent='';renderSetup();});
     $('workflowDescription').oninput=()=>{S.schemaPreview=null;S.setupRecords=[];renderSetup();};$('buildAiBtn').onclick=buildTable;$('buildSheetBtn').onclick=()=>openSpreadsheet('setup');
-    $('dealHeaders').onclick=event=>{const button=event.target.closest('[data-delete-field]');if(S.saving||S.failedEdit)return;if(button){if(S.busy)return;try{openFieldDialog('delete',button.dataset.deleteField);}catch(error){toast(error.message);}return;}const header=event.target.closest('[data-sort-field]');if(header){const field=header.dataset.sortField;S.sort={field,direction:S.sort?.field===field&&S.sort.direction==='asc'?'desc':'asc'};renderTable(visible());}};
+    $('dealHeaders').onclick=event=>{if(Date.now()<suppressColumnClickUntil)return;const button=event.target.closest('[data-delete-field]');if(S.saving||S.failedEdit)return;if(button){if(S.busy)return;try{openFieldDialog('delete',button.dataset.deleteField);}catch(error){toast(error.message);}return;}const header=event.target.closest('[data-sort-field]');if(header){const field=header.dataset.sortField;S.sort={field,direction:S.sort?.field===field&&S.sort.direction==='asc'?'desc':'asc'};renderTable(visible());}};
     $('addFieldBtn').onclick=()=>{if(!S.busy)openFieldDialog('add');};
     $('fieldDialogForm').onsubmit=submitFieldDialog;
     $('fieldDialogForm').onchange=event=>{if(event.target.name!=='replacementMode')return;const existing=event.target.value==='existing';$('replacementField').disabled=!existing;$('replacementField').required=existing;$('replacementName').disabled=existing;$('replacementName').required=!existing;};
@@ -1026,7 +1086,7 @@
     document.addEventListener('click',event=>{if(!event.target.closest('.profile'))closeProfileMenu();});
     document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('profileMenu').hidden){closeProfileMenu();$('profileBtn').focus();}});
     document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));
-    document.querySelectorAll('[data-scope]').forEach(button=>button.onclick=()=>{S.scope=button.dataset.scope;render();});
+    document.querySelectorAll('[data-scope]').forEach(button=>button.onclick=()=>selectScope(button.dataset.scope));
     $('dealSearch').oninput=event=>{S.search=event.target.value;render();};
     $('clearSearchBtn').onclick=()=>{S.scope='all';S.search='';S.filter=null;$('dealSearch').value='';render();};
     $('clearFilterBtn').onclick=()=>{S.filter=null;render();};

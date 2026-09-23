@@ -5,6 +5,11 @@
   'use strict';
   const copy=value=>JSON.parse(JSON.stringify(value));
   const condition=(field,operator,value=null)=>({field,operator,value});
+  function conversionDate(value,core){
+    if(typeof value!=='string')return null;
+    const text=value.trim(),dayFirst=/^(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/.exec(text),yearFirst=/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text);
+    return core.date(dayFirst?`${dayFirst[2]} ${dayFirst[1]} ${dayFirst[3]}`:yearFirst?`${yearFirst[1]}-${yearFirst[2].padStart(2,'0')}-${yearFirst[3].padStart(2,'0')}`:text);
+  }
   function defaults(schema,customFields=[]){
     const core=Core.create(schema),defs=core.definitions(customFields),follow=core.role('followup'),owner=core.role('owner');
     const legacy=!schema||schema.legacy;
@@ -77,16 +82,29 @@
     if(defaults(schema,customFields).some(k=>k.id===id))next.hiddenKpis=[...new Set([...(next.hiddenKpis||[]),id])];
     return {tableSchema:Schema.validate(next),before,after:null};
   }
-  function editColumn(records,schema,customFields,id,{name,options}={}){
+  function editColumn(records,schema,customFields,id,{name,options,targetType}={}){
     const core=Core.create(schema),defs=core.definitions(customFields),old=defs.find(f=>f.id===id);
     if(!old)throw new Error('This column no longer exists.');
     let nextSchema=copy(schema||Schema.legacySchema()),nextFields=copy(customFields),field=nextSchema.fields.find(f=>f.id===id)||nextFields.find(f=>f.id===id);
-    const issues=[],next=copy(records),conversion=options!==undefined;
+    const issues=[],next=copy(records),conversion=targetType!=null||options!==undefined;
+    targetType=targetType??'choice';
+    if(conversion&&!['choice','date','text'].includes(targetType))throw new Error('Choose a dropdown, date or text field.');
     if(conversion){
+      if(targetType==='date'){
+        if(old.role==='primary')throw new Error('Choose another primary text field before converting this column to a date.');
+        for(const row of next){const raw=row[id];if(raw==null||raw===''){row[id]='';continue;}const parsed=conversionDate(raw,core);if(!parsed)issues.push({id:row.id,value:raw});else row[id]=parsed.toISOString().slice(0,10);}
+        if(issues.length){const error=new Error('Please clarify these dates before converting '+old.name+': '+issues.slice(0,5).map(i=>'row #'+i.id+' ('+String(i.value).slice(0,100)+')').join(', ')+'. Use a full month name and year or YYYY-MM-DD. No values were changed.');error.clarification=true;throw error;}
+        field.type='date';field.options=[];if(['owner','status'].includes(field.role))field.role='none';
+      }else if(targetType==='text'){
+        if(!['choice','text','date'].includes(old.type))throw new Error('Only dropdown or date fields can be converted to text.');
+        field.type='text';field.options=[];if(field.role==='followup'&&!(nextSchema.legacy&&id==='follow'))field.role='none';
+        for(const row of next)row[id]=row[id]==null?'':String(row[id]);
+      }else{
       if(!Array.isArray(options)||!options.length)throw new Error('What options would you like the dropdown menu to have?');
       if(options.length>30||options.some(v=>typeof v!=='string'||!v.trim()||v.trim().length>80||/[\x00-\x1f\x7f]/.test(v))||new Set(options.map(core.normalize)).size!==options.length)throw new Error('Provide 1 to 30 distinct dropdown options of at most 80 characters.');
       field.type='choice';field.options=options.map(v=>v.trim());if(field.role==='followup')field.role='none';
       for(const row of next){const raw=row[id];if(raw==null||raw===''){row[id]='';continue;}const option=field.options.find(v=>core.normalize(v)===core.normalize(String(raw)));row[id]=option??'';if(option===undefined)issues.push({id:row.id,record:String(row[core.role('primary')]||'#'+row.id),value:raw});}
+      }
     }else{
       if(typeof name!=='string'||!name.trim()||name.trim().length>60||/[\x00-\x1f\x7f]/.test(name))throw new Error('Enter a header of 1 to 60 readable characters.');
       name=name.trim();if(defs.some(f=>f.id!==id&&core.normalize(f.name)===core.normalize(name)))throw new Error('A column already uses that name.');
