@@ -1,5 +1,0 @@
-Candidate,Recruiter,Hiring stage,Expected compensation,Follow-up date,Score,Contact,Unrelated
-"CSV QA, One",Sarah,Interview,"$125,000.50",2026-10-01,9.5,qa-one@example.invalid,Ignore me
-CSV QA Zero,Ravi,Sourced,0,2026-10-02,0,,No mapping
-CSV QA Unknown,Daniel,Ambiguous,not money,03/04/26,not a score,,Ignore
-CSV QA Partial,,,,,,<b>literal contact</b>,Ignore
