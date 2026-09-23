@@ -33,3 +33,19 @@ test('conversion changes are recorded, unrelated no-op saves do not create activ
   assert.match(changed[0].history[0],/Value.*1/);assert.deepEqual(H.reconcile(rows,rows,C.definitions([]),C.definitions([]),'QA'),rows);
   assert.throws(()=>H.addNote([{...rows[0],history:Array(10000).fill('old')}],1,'new','QA','n'),/limit/);
 });
+test('display removes generated actor prefixes without changing audit storage or colon-containing values and notes',()=>{
+  const raw='2026-09-23T15:00:00Z | qa@example.invalid: Source: notes changed from "a: b" to "contact@example.com: call".';
+  assert.equal(H.displayText(H.parse(raw)),'Source: notes changed from "a: b" to "contact@example.com: call".');assert.match(H.parse(raw).text,/qa@example.invalid/);
+  assert.equal(H.displayText(H.parse('2026-09-23T15:00:00Z | QA: Deal added manually.')),'Deal added manually.');
+  assert.equal(H.displayText(H.parse('Undated: original text')),'Undated: original text');
+  assert.equal(H.displayText(H.parse('2026-09-23T15:00:00Z | Reminder: call Sarah')),'Reminder: call Sarah');
+  const note=H.addNote(rows,1,'Sarah: notes are not an actor prefix','QA','x')[0].history[0];assert.equal(H.displayText(H.parse(note)),'Sarah: notes are not an actor prefix');
+});
+test('global activity filters before pagination, includes full local days and never mutates history',()=>{
+  const now=new Date(2026,8,23,12),old=new Date(2026,8,20,23,59,59),data=[{id:1,history:Array.from({length:200},()=>`${now.toISOString()} | QA: Value changed from "1" to "2".`)},{id:2,history:[`${old.toISOString()} | QA: Deal added.`,'undated']}];
+  const before=JSON.stringify(data);assert.equal(H.activity(data).length,202);
+  const filtered=H.activity(data,{from:'2026-09-20',to:'2026-09-20'});assert.equal(filtered.length,1);assert.equal(filtered[0].recordId,2);
+  assert.equal(H.activity(data,{from:'2026-09-24'}).length,0);assert.equal(H.activity(data,{to:'2026-09-20'}).length,1);
+  assert.throws(()=>H.activity([],{from:'2026-09-24',to:'2026-09-23'}),/start date/);assert.throws(()=>H.activity(data,{from:'2026-02-30'}),/valid date/);
+  assert.equal(JSON.stringify(data),before);
+});
