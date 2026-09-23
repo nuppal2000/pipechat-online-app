@@ -1,0 +1,51 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
+const {randomUUID}=require('node:crypto'),{PGlite}=require('@electric-sql/pglite'),T=require('../public/todo-core.js'),Schema=require('../public/table-schema.js');
+test('independent card SQL migration, isolated writes, rollback, deletion, undo and privileges',{timeout:120000},async t=>{
+  const db=new PGlite();t.after(()=>db.close());
+  const run=async file=>db.exec(await fs.readFile(path.join(__dirname,'../db',file),'utf8'));
+  for(const file of ['tests/mock-supabase.sql','migrations/001-supabase.sql','migrations/002-reset-workspace.sql','migrations/003-spreadsheet-setup.sql','migrations/004-column-and-kpi-customization.sql','migrations/005-kpi-lifecycle.sql','migrations/006-todo-board.sql'])await run(file);
+  async function user(){const u={id:randomUUID(),session_id:randomUUID()};await db.query('insert into auth.users(id) values ($1)',[u.id]);await db.query('insert into auth.sessions(id,user_id) values ($1,$2)',[u.session_id,u.id]);return u;}
+  async function rpc(u,name,args=[]){await db.query("select set_config('request.jwt.claims',$1,false)",[JSON.stringify({sub:u.id,session_id:u.session_id,role:'authenticated'})]);await db.exec('set role authenticated');try{return (await db.query(`select public.${name}(${args.map((_,i)=>'$'+(i+1)).join(',')}) result`,args)).rows[0]?.result;}finally{await db.exec('reset role');}}
+  const a=await user(),b=await user();
+  const row={id:1,account:'Acme',owner:'Sarah',next:'Call',follow:'Tomorrow',notes:'CRM notes',stage:'Discovery',value:0,close:'',history:[],activity:'',health:''};
+  const old={id:'todo_one',recordId:1,status:'To Do',nextAction:'fallback',dueDate:'',nextField:'next',followField:'follow',ownerField:'owner'};
+  const args=s=>[JSON.stringify(s.deals),JSON.stringify(s.customFields),JSON.stringify(s.tableSchema),s.updatedAt];
+  let s=await rpc(a,'pipechat_write_workspace',[...args({deals:[],customFields:[],tableSchema:Schema.legacySchema(),updatedAt:null}),'[]']);
+  s=await rpc(a,'pipechat_write_workspace',[...args({...s,deals:[row]}),JSON.stringify([old])]);
+  const rowsBefore=s.deals,versionBefore=s.updatedAt;
+  await run('migrations/007-independent-todo.sql');await run('tests/security.sql');
+  const read=u=>rpc(u,'pipechat_read_workspace');
+  const write=(u,s,cards=s.todoCards)=>rpc(u,'pipechat_write_workspace_v2',[...args(s),JSON.stringify(cards)]);
+  const todo=(u,s,cards)=>rpc(u,'pipechat_write_todo',[JSON.stringify(cards),s.updatedAt]);
+  s=await read(a);const bBefore=await read(b);
+  assert.deepEqual(s.deals,rowsBefore);assert.equal(s.updatedAt,versionBefore);
+  assert.deepEqual(s.todoCards,[{...T.create('todo_one',1),nextAction:'Call',notes:'Previous due information: Tomorrow'}]);
+  const archive=await db.query('select todo_cards from pipechat.workspace_metadata where workspace_id=(select id from pipechat.workspaces where owner_id=$1)',[a.id]);assert.deepEqual(archive.rows[0].todo_cards,[old]);
+  await assert.rejects(()=>rpc(a,'pipechat_write_workspace',[...args(s),JSON.stringify([old])]),e=>e.code==='PT409');
+  // A tripwire proves the task-only RPC never touches CRM rows, even unchanged rows.
+  await db.exec("create function pipechat.qa_no_crm() returns trigger language plpgsql as $$ begin raise exception 'CRM write forbidden';end $$;create trigger qa_no_crm before insert or update or delete on pipechat.crm_records for each statement execute function pipechat.qa_no_crm();");
+  const original=s,card={...s.todoCards[0],nextAction:'Task only',notes:'Task details',dueDate:'2026-10-01'};
+  s=await todo(a,s,[card]);assert.deepEqual(s.deals,original.deals);assert.deepEqual(s.tableSchema,original.tableSchema);assert.deepEqual(s.todoCards,[card]);
+  await assert.rejects(()=>todo(a,original,[]),e=>e.code==='PT409');
+  await assert.rejects(()=>todo(b,bBefore,[card]),e=>e.code==='PT400');
+  for(const patch of [{recordId:999},{nextField:'next'},{status:'Bad'},{dueDate:'2026-02-30'},{notes:'x'.repeat(16001)}])await assert.rejects(()=>todo(a,s,[{...card,...patch}]),e=>e.code==='PT400');
+  assert.deepEqual(await read(a),s);assert.deepEqual(await read(b),bBefore);
+  await db.exec('drop trigger qa_no_crm on pipechat.crm_records;drop function pipechat.qa_no_crm();');
+  s=await write(a,{...s,deals:[{...row,account:'Renamed',owner:'Ravi',next:'Different CRM action',notes:'Different CRM notes',follow:'Next week'},{...row,id:2,account:'Second'}]});
+  assert.deepEqual(s.todoCards,[card]);assert.equal(T.project(card,s.deals,s.tableSchema).title,'Renamed');
+  await assert.rejects(()=>todo(a,s,[{...card,recordId:2}]),e=>e.code==='PT400');
+  const beforeFailure=s;
+  await assert.rejects(()=>write(a,{...s,deals:[{...row,notes:'must roll back'}]},[{...card,recordId:999}]),e=>e.code==='PT400');assert.deepEqual(await read(a),beforeFailure);
+  await db.exec("create function pipechat.qa_card_fail() returns trigger language plpgsql as $$ begin if new.todo_cards_v2<>old.todo_cards_v2 then raise exception 'Late failure';end if;return new;end $$;create trigger qa_card_fail after update on pipechat.workspace_metadata for each row execute function pipechat.qa_card_fail();");
+  await assert.rejects(()=>todo(a,s,[{...card,status:'Done'}]),e=>e.code==='P0001');assert.deepEqual(await read(a),s);
+  await assert.rejects(()=>write(a,{...s,deals:[{...row,notes:'must roll back too'}]},[{...card,status:'Done'}]),e=>e.code==='P0001');assert.deepEqual(await read(a),s);
+  await db.exec('drop trigger qa_card_fail on pipechat.workspace_metadata;drop function pipechat.qa_card_fail();');
+  const beforeDelete=s;
+  const deleted=await rpc(a,'pipechat_write_crm',args({...s,deals:[]}));assert.deepEqual((await read(a)).todoCards,[]);
+  s=await write(a,{...beforeDelete,updatedAt:deleted.updatedAt});assert.deepEqual(s.todoCards,[card]);assert.deepEqual(s.deals,beforeDelete.deals);
+  await db.exec('set role anon');await assert.rejects(()=>db.query("select public.pipechat_write_todo('[]',null)"),e=>e.code==='42501');await db.exec('reset role');
+  await assert.rejects(()=>rpc(a,'pipechat_read_workspace',['forged user']),e=>e.code==='42883');
+  const reset=await rpc(a,'pipechat_reset_crm',[s.updatedAt,true]);assert.deepEqual(reset.todoCards,[]);assert.deepEqual((await read(a)).todoCards,[]);
+  assert.equal((await db.query('select used from pipechat.usage_counters where user_id=$1',[a.id])).rows[0].used,0);
+  await db.query('delete from auth.sessions where id=$1',[a.session_id]);await assert.rejects(()=>read(a),e=>e.code==='PT401');await assert.rejects(()=>todo(a,reset,[]),e=>e.code==='PT401');
+});

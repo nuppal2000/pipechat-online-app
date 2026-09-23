@@ -108,9 +108,9 @@ function restrictedFetch(nativeFetch, { runId, publishableKey, access, signal, r
     let allowed = false;
     if (path === '/rest/v1/rpc/pipechat_health') {
       allowed = ['GET', 'POST'].includes(method) && !url.search;
-    } else if (/^\/rest\/v1\/rpc\/pipechat_(read_crm|write_crm|write_workspace|read_usage|reserve_usage|finish_usage)$/.test(path)) {
+    } else if (/^\/rest\/v1\/rpc\/pipechat_(read_crm|read_workspace|write_crm|write_workspace|write_workspace_v2|write_todo|read_usage|reserve_usage|finish_usage)$/.test(path)) {
       allowed = method === 'POST' && !url.search && context?.kind === 'data' &&
-        (!restoreOnly || path === '/rest/v1/rpc/pipechat_read_crm');
+        (!restoreOnly || ['/rest/v1/rpc/pipechat_read_crm','/rest/v1/rpc/pipechat_read_workspace'].includes(path));
     } else if (auth && context) {
       if (path === '/auth/v1/user') allowed = method === 'GET' && !url.search;
       if (path === '/auth/v1/signup' || path === '/auth/v1/token' && url.search === '?grant_type=password') {
@@ -229,13 +229,13 @@ function guardedBackend(real, { runId, access = new AsyncLocalStorage(), origin,
             rejected = true;
           }
         };
-        for (const method of ['readCrm', 'writeCrm', 'readUsage', 'reserveUsage', 'finishUsage']) {
+        for (const method of ['readCrm', 'writeCrm', 'writeTodo', 'readUsage', 'reserveUsage', 'finishUsage']) {
           wrapped[method] = async (...args) => {
             // readUsage also expires reservations, so a strictly read-only CRM
             // restoration check must not call it or any metering operation.
             if (restoreOnly && method !== 'readCrm') throw readOnlyDenied();
             const identity = await verify(true);
-            if (outage && ['readCrm', 'writeCrm'].includes(method)) {
+            if (outage && ['readCrm', 'writeCrm', 'writeTodo'].includes(method)) {
               throw new BackendError('QA-only simulated CRM outage. No Supabase CRM request was sent.', 503);
             }
             return access.run({ kind: 'data', userId: identity.id }, () => adapter[method](...args));
