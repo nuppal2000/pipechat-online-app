@@ -4,7 +4,7 @@ const row={id:1,account:'Acme',stage:'Warm',value:0,close:'',owner:'Sarah',next:
 function harness(){
   const nodes=new Map(),calls=[],messages=[];let failure=false,reply=null,saved={deals:[structuredClone(row)],customFields:[],tableSchema:null,todoCards:[],updatedAt:'v1'};
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',textContent:'',style:{},classList:{add(){},remove(){}},querySelectorAll:()=>[]});return nodes.get(id);};
-  const context={crypto,AbortSignal,window:{PipelineCore:C,PipeChatTodo:T,PipeChatSchema:require('../public/table-schema.js'),PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},sessionStorage:{removeItem(){},setItem(){}},fetch:async(url,options={})=>{
+  const context={crypto,AbortSignal,window:{PipeChatInspector:require('../public/inspector-core.js'),PipelineCore:C,PipeChatTodo:T,PipeChatSchema:require('../public/table-schema.js'),PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},sessionStorage:{removeItem(){},setItem(){}},fetch:async(url,options={})=>{
     const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
     if(failure)return {ok:false,status:503,json:async()=>({error:'Test outage'})};
     if(url==='/api/pipechat-ai')return {ok:true,json:async()=>({crmAction:reply,usage:{remaining:9}})};

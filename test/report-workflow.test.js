@@ -15,7 +15,7 @@ function harness(replies){
   const nodes=new Map(),calls=[],charts=[],messages=[];
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',innerHTML:'',style:{},setAttribute(name,value){this[name]=value;}});return nodes.get(id);};
   class Chart{constructor(canvas,config){charts.push(config);}destroy(){}}
-  const context={window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatCustomize:require('../public/workspace-customization.js'),PipeChatIcons:{},Chart,messages},Chart,document:{getElementById:node,querySelector:node},AbortSignal,
+  const context={window:{PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatCustomize:require('../public/workspace-customization.js'),PipeChatIcons:{},Chart,messages},Chart,document:{getElementById:node,querySelector:node},AbortSignal,
     fetch:async(url,options)=>{calls.push({url,options});assert.equal(url,'/api/pipechat-ai');return {ok:true,json:async()=>({crmAction:{action:'show_report',report:replies.shift()},usage:{used:calls.length,remaining:100-calls.length}})};}};
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>renderReport(visible());renderReportSelections=()=>{};updateUsage=()=>{};toast=(text)=>window.messages.push(text);say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,send,handleAction,renderReport,defaultReport};`),context);
   const h=context.window.test;
