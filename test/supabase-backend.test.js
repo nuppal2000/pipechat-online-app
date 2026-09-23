@@ -62,7 +62,7 @@ function fixture({ auth = {}, rpc, serverFactory, healthRpc, ...options } = {}) 
         rpc: async (name, args) => {
           calls.push({ name, args });
           if (rpc) return rpc(name, args);
-          if (name === 'pipechat_read_crm') return ok(empty);
+          if (name === 'pipechat_read_workspace') return ok(empty);
           if (name === 'pipechat_reserve_usage') return ok({ reservationId: 'reservation-1', usage: counters });
           return ok(counters);
         }
@@ -80,12 +80,23 @@ function fixture({ auth = {}, rpc, serverFactory, healthRpc, ...options } = {}) 
 
 test('Supabase shares the existing BackendError identity', () => assert.equal(BackendError, SharedBackendError));
 
+test('card-only adapter sends no CRM fields and rejects changed rows or missing card acknowledgements',async()=>{
+  const card={...require('../public/todo-core.js').create('todo_card',legacyRow.id),nextAction:'Call',notes:'Task-only',dueDate:'2026-10-01'};
+  const before={...empty,deals:[legacyRow],todoCards:[],updatedAt:'v1'};
+  const f=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):ok({...before,todoCards:args.p_todo_cards,updatedAt:'v2'})});
+  const saved=await f.request().adapter.writeTodo([card],'v1');assert.deepEqual(saved.todoCards,[card]);assert.deepEqual(saved.deals,before.deals);
+  assert.equal(f.calls.at(-1).name,'pipechat_write_todo');assert.deepEqual(Object.keys(f.calls.at(-1).args).sort(),['p_expected_updated_at','p_todo_cards']);
+  for(const patch of [{deals:[]},{todoCards:[]},{updatedAt:'v1'}]){
+    const bad=fixture({rpc:name=>ok(name==='pipechat_read_workspace'?before:{...before,todoCards:[card],updatedAt:'v2',...patch})});
+    await assert.rejects(()=>bad.request().adapter.writeTodo([card],'v1'),errorIs(503));
+  }
+});
 test('To Do writes use the atomic workspace RPC and reject incomplete card acknowledgements',async()=>{
   const card=require('../public/todo-core.js').create('todo_test',1,null),before={...empty,deals:[legacyRow],todoCards:[],updatedAt:'v1'};
-  const f=fixture({rpc:(name,args)=>name==='pipechat_read_crm'?ok(before):ok({...before,todoCards:args.p_todo_cards,updatedAt:'v2'})});
+  const f=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):ok({...before,todoCards:args.p_todo_cards,updatedAt:'v2'})});
   const result=await f.request().adapter.writeCrm(null,[legacyRow],'v1',[],null,[card]);
-  assert.deepEqual(result.todoCards,[card]);assert.equal(f.calls.at(-1).name,'pipechat_write_workspace');assert.deepEqual(f.calls.at(-1).args.p_todo_cards,[card]);
-  const bad=fixture({rpc:name=>ok(name==='pipechat_read_crm'?before:{...before,updatedAt:'v2'})});
+  assert.deepEqual(result.todoCards,[card]);assert.equal(f.calls.at(-1).name,'pipechat_write_workspace_v2');assert.deepEqual(f.calls.at(-1).args.p_todo_cards,[card]);
+  const bad=fixture({rpc:name=>ok(name==='pipechat_read_workspace'?before:{...before,updatedAt:'v2'})});
   await assert.rejects(()=>bad.request().adapter.writeCrm(null,[legacyRow],'v1',[],null,[card]),errorIs(503));
 });
 
@@ -200,7 +211,7 @@ test('one verification refresh serves concurrent operations while every request 
     } }, rpc: async name => {
       assert(verified);
       assert.equal(options.cookies.getAll().find(cookie => cookie.name === 'pipechat_supabase').value, `refreshed-${id}`);
-      return ok(name === 'pipechat_read_crm' ? { ...empty, deals: [{ ...legacyRow, account: id }] } : counters);
+      return ok(name === 'pipechat_read_workspace' ? { ...empty, deals: [{ ...legacyRow, account: id }] } : counters);
     } };
   } });
   const a = f.request('identity=alice; pipechat_supabase=expired-a');
@@ -274,25 +285,25 @@ test('missing, invalid, and expired sessions cannot reach authenticated RPCs', a
 test('CRM read/write round-trips typed blanks, custom primary IDs, histories, field metadata and zero values', async () => {
   let stored = { deals: clone(typedRows), customFields: clone(customFields), tableSchema: clone(schema), updatedAt: 'v1' };
   const f = fixture({ rpc: (name, args) => {
-    if (name === 'pipechat_read_crm') return ok({ ...clone(stored), secret, user_id: 'ignored' });
-    assert.equal(name, 'pipechat_write_crm');
-    assert.deepEqual(Object.keys(args).sort(), ['p_custom_fields', 'p_deals', 'p_expected_updated_at', 'p_table_schema']);
+    if (name === 'pipechat_read_workspace') return ok({ ...clone(stored), secret, user_id: 'ignored' });
+    assert.equal(name, 'pipechat_write_workspace_v2');
+    assert.deepEqual(Object.keys(args).sort(), ['p_custom_fields', 'p_deals', 'p_expected_updated_at', 'p_table_schema', 'p_todo_cards']);
     assert.equal(args.p_expected_updated_at, 'v1');
-    stored = { deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, updatedAt: 'v2' };
+    stored = { deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, todoCards:args.p_todo_cards, updatedAt: 'v2' };
     return ok(clone(stored));
   } });
   const { adapter } = f.request();
   assert.deepEqual(await adapter.readCrm(secret), stored);
   const result = await adapter.writeCrm(secret, typedRows.map(row => ({ ...row, user_id: 'victim', access_token: secret })), 'v1', customFields, schema);
-  assert.deepEqual(result, { deals: typedRows, customFields, tableSchema: schema, updatedAt: 'v2' });
+  assert.deepEqual(result, { deals: typedRows, customFields, tableSchema: schema, todoCards:[], updatedAt: 'v2' });
   assert.equal(result.deals[0].f_pay, null); assert.equal(result.deals[0].f_score, 0);
   assert.equal(result.deals[1].cf_candidate, '');
   assert(!JSON.stringify(f.calls).includes(secret));
 });
 
 test('legacy blanks and custom text values remain compatible; omitted metadata is preserved', async () => {
-  const f = fixture({ rpc: (name, args) => name === 'pipechat_read_crm' ? ok({ ...empty, customFields, deals: [{ ...legacyRow, cf_source: 'Referral' }] }) :
-    ok({ deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, updatedAt: 'v1' }) });
+  const f = fixture({ rpc: (name, args) => name === 'pipechat_read_workspace' ? ok({ ...empty, customFields, deals: [{ ...legacyRow, cf_source: 'Referral' }] }) :
+    ok({ deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, todoCards:args.p_todo_cards, updatedAt: 'v1' }) });
   const { adapter } = f.request();
   const result = await adapter.writeCrm('ignored', [{ ...legacyRow, cf_source: 'Referral' }], null);
   assert.deepEqual(result.customFields, customFields); assert.equal(result.tableSchema, null);
@@ -301,16 +312,16 @@ test('legacy blanks and custom text values remain compatible; omitted metadata i
 });
 
 test('setup transitions require an empty table and cannot revert or silently change types', async () => {
-  const f = fixture({ rpc: (name, args) => name === 'pipechat_read_crm' ? ok({ ...empty, tableSchema: { status: 'pending' } }) :
-    ok({ deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, updatedAt: 'v1' }) });
+  const f = fixture({ rpc: (name, args) => name === 'pipechat_read_workspace' ? ok({ ...empty, tableSchema: { status: 'pending' } }) :
+    ok({ deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, todoCards:args.p_todo_cards, updatedAt: 'v1' }) });
   const { adapter } = f.request();
   await assert.rejects(adapter.writeCrm(null, typedRows, null, customFields, schema), errorIs(409));
-  assert(!f.calls.some(call => call.name === 'pipechat_write_crm'));
+  assert(!f.calls.some(call => call.name === 'pipechat_write_workspace_v2'));
   assert.deepEqual((await adapter.writeCrm(null, [], null, [], schema)).tableSchema, schema);
   for (const next of [null, { status: 'pending' }, { ...schema, fields: schema.fields.map(field => field.id === 'f_pay' ? { ...field, type: 'number' } : field) }]) {
     const current = fixture({ rpc: () => ok({ ...empty, tableSchema: schema }) });
     await assert.rejects(current.request().adapter.writeCrm(null, [], null, [], next), errorIs(409));
-    assert(!current.calls.some(call => call.name === 'pipechat_write_crm'));
+    assert(!current.calls.some(call => call.name === 'pipechat_write_workspace_v2'));
   }
 });
 
@@ -334,14 +345,14 @@ test('writes reject invalid versions and malicious field definitions before any 
     await assert.rejects(adapter.writeCrm(null, deals, null, [], null), errorIs(400));
   }
   await assert.rejects(adapter.writeCrm(null, [], null, [{ id: '__proto__', name: secret, type: 'text' }], null), errorIs(400));
-  assert(!f.calls.some(call => call.name === 'pipechat_write_crm'));
+  assert(!f.calls.some(call => call.name === 'pipechat_write_workspace_v2'));
   assert.equal({}.polluted, undefined);
 });
 
 test('write acknowledgement must retain rows, metadata and a fresh version', async () => {
   const current = { deals: typedRows, customFields, tableSchema: schema, updatedAt: 'v1' };
   for (const change of [{ deals: [] }, { customFields: [] }, { tableSchema: { ...schema, title: 'Other' } }, { updatedAt: 'v1' }, { updatedAt: null }]) {
-    const f = fixture({ rpc: name => ok(name === 'pipechat_read_crm' ? current : { ...current, updatedAt: 'v2', ...change }) });
+    const f = fixture({ rpc: name => ok(name === 'pipechat_read_workspace' ? current : { ...current, updatedAt: 'v2', ...change }) });
     await assert.rejects(f.request().adapter.writeCrm(null, typedRows, 'v1', customFields, schema), errorIs(503));
   }
 });
@@ -500,7 +511,7 @@ test('installed SSR refreshes expired chunked sessions independently for concurr
     }
     assert.equal(new Headers(init.headers).get('Authorization'), `Bearer ${fresh.access_token}`);
     if (url.pathname === '/auth/v1/user') { verifications++; return Response.json(user); }
-    if (url.pathname === '/rest/v1/rpc/pipechat_read_crm') return Response.json(empty);
+    if (url.pathname === '/rest/v1/rpc/pipechat_read_workspace') return Response.json(empty);
     assert.equal(url.pathname, '/rest/v1/rpc/pipechat_read_usage');
     return Response.json(counters);
   } });

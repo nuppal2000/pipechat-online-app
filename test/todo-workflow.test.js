@@ -8,7 +8,7 @@ function harness(){
     const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
     if(failure)return {ok:false,status:503,json:async()=>({error:'Test outage'})};
     if(url==='/api/pipechat-ai')return {ok:true,json:async()=>({crmAction:reply,usage:{remaining:9}})};
-    if(options.method==='PUT')saved={...body,tableSchema:body.tableSchema||null,updatedAt:'v'+calls.length};
+    if(options.method==='PUT')saved=url==='/api/todo-cards'?{...saved,todoCards:body.todoCards,updatedAt:'v'+(calls.length+1)}:{...body,tableSchema:body.tableSchema||null,updatedAt:'v'+(calls.length+1)};
     return {ok:true,json:async()=>structuredClone(saved)};
   }};
   context.window.messages=messages;
@@ -23,21 +23,21 @@ test('manual card preview/cancel/confirmation, deletion and undo work at the cha
   h.prepare({action:'add_todo',ids:[1]});assert.equal(h.S.todoCards.length,0);assert.equal(h.calls.length,0);h.cancelDraft();assert.equal(h.calls.length,0);
   h.prepare({action:'add_todo',ids:[1]});await h.confirmDraft();assert.equal(h.S.todoCards.length,1);assert.deepEqual(plain(h.S.records),original);assert.equal(h.calls[0].body.todoCards.length,1);
   h.prepare({action:'delete_todo',todoId:h.S.todoCards[0].id});await h.confirmDraft();assert.equal(h.S.todoCards.length,0);assert.deepEqual(plain(h.S.records),original);
-  await h.undo();assert.equal(h.S.todoCards.length,1);assert.deepEqual(plain(h.S.records),original);assert(h.calls.every(c=>c.url==='/api/crm-data'));
+  await h.undo();assert.equal(h.S.todoCards.length,1);assert.deepEqual(plain(h.S.records),original);assert(h.calls.every(c=>c.url==='/api/todo-cards'));assert(h.calls.every(c=>!Object.hasOwn(c.body,'deals')));
 });
 test('failed card save retains preview; stale and expired proposals cannot overwrite the board',async()=>{
   const h=harness();h.prepare({action:'add_todo',ids:[1]});h.fail(true);await h.confirmDraft();assert(h.S.pending);assert.equal(h.S.todoCards.length,0);
   h.fail(false);h.S.revision++;await h.confirmDraft();assert.equal(h.calls.length,1);assert.equal(h.S.todoCards.length,0);
   h.prepare({action:'add_todo',ids:[1]});h.S.pending.createdAt=Date.now()-31*60*1000;await h.confirmDraft();assert.equal(h.calls.length,1);
 });
-test('CRM follow-up changes project immediately; record deletion and Undo restore linked cards',async()=>{
-  const h=harness();h.prepare({action:'add_todo',ids:[1]});await h.confirmDraft();
-  await h.persist([{...row,follow:'Next week'}],'Follow-up');assert.equal(T.project(h.S.todoCards[0],h.S.records,null).dueDate,'Next week');
+test('CRM follow-up changes leave cards unchanged; record deletion and Undo restore linked cards',async()=>{
+  const h=harness();h.prepare({action:'add_todo',ids:[1],todoDueDate:'2026-10-01',todoNextAction:'Call',todoNotes:'Card note'});await h.confirmDraft();
+  const cards=plain(h.S.todoCards);await h.persist([{...row,follow:'Next week'}],'Follow-up');assert.equal(T.project(h.S.todoCards[0],h.S.records,null).dueDate,'2026-10-01');assert.deepEqual(plain(h.S.todoCards),cards);
   await h.persist([],'Delete record');assert.equal(h.S.todoCards.length,0);await h.undo();assert.equal(h.S.todoCards.length,1);assert.equal(h.S.records.length,1);
 });
-test('urgent edits only enqueue a prompt; AI gets both stable card links and current projections',async()=>{
-  const h=harness();await h.persist([{...row,notes:'must follow up with this account'}],'Urgent note');assert.deepEqual(plain(h.S.todoSuggestions),[1]);assert.equal(h.S.todoCards.length,0);
+test('CRM notes do not change the board; AI gets independent card data and cannot edit CRM in To Do',async()=>{
+  const h=harness();await h.persist([{...row,notes:'must follow up with this account'}],'Urgent note');assert.deepEqual(plain(h.S.todoSuggestions),[]);assert.equal(h.S.todoCards.length,0);
   h.prepare({action:'add_todo',ids:[1]});await h.confirmDraft();
-  const payload=h.aiPayload('What is due?');assert.equal(payload.pipeline.todoCards[0].recordId,1);assert.equal(payload.pipeline.todoView[0].dueDate,'Tomorrow');assert.equal(payload.pipeline.todoView[0].title,'Acme');
+  const payload=h.aiPayload('What is due?');assert.equal(payload.pipeline.todoCards[0].recordId,1);assert.equal(payload.pipeline.todoView[0].dueDate,'');assert.equal(payload.pipeline.todoView[0].title,'Acme');assert.throws(()=>h.prepare({action:'update_record',ids:[1],field:'notes',value:'Must not save'}),/Switch to Pipeline/);
   h.S.usage={remaining:10};h.reply({action:'update_todo',todoId:h.S.todoCards[0].id,todoStatus:'Done'});await h.send('Mark the card done');assert.equal(h.S.todoCards[0].status,'To Do');assert.equal(h.S.pending.after.status,'Done');await h.confirmDraft();assert.equal(h.S.todoCards[0].status,'Done');
 });

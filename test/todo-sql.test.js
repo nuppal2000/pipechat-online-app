@@ -11,14 +11,14 @@ test('To Do migration is atomic, scoped, versioned, compatible with old clients 
   const row={id:1,account:'Acme',owner:'Sarah',next:'Call',follow:'Tomorrow',notes:'',stage:'Discovery',value:0,close:'',history:[],activity:'',health:''};
   let saved=await write(a,{deals:[],tableSchema:Schema.legacySchema(),customFields:[],updatedAt:null},[]);
   saved=await write(a,{...saved,deals:[row]},[]);
-  const card=T.create('todo_one',1,saved.tableSchema),cards=[card];
+  const card={id:'todo_one',recordId:1,status:'To Do',nextAction:'',dueDate:'',nextField:'next',followField:'follow',ownerField:'owner'},cards=[card];
   saved=await write(a,saved,cards);assert.deepEqual(saved.todoCards,cards);assert.deepEqual((await read(a)).todoCards,cards);
   const before=saved;
   await assert.rejects(()=>write(a,{...saved,deals:[{...row,notes:'must roll back'}]},[{...card,recordId:999}]),e=>e.code==='PT400');assert.deepEqual(await read(a),before);
   await db.exec("create function pipechat.qa_todo_fail() returns trigger language plpgsql as $$ begin if new.todo_cards <> old.todo_cards then raise exception 'Late failure'; end if;return new;end $$;create trigger qa_todo_fail after update on pipechat.workspace_metadata for each row execute function pipechat.qa_todo_fail();");
   await assert.rejects(()=>write(a,{...saved,deals:[{...row,notes:'must roll back too'}]},[{...card,status:'Done'}]),e=>e.code==='P0001');assert.deepEqual(await read(a),before);
   await db.exec('drop trigger qa_todo_fail on pipechat.workspace_metadata;drop function pipechat.qa_todo_fail();');
-  saved=await write(a,{...saved,deals:[{...row,follow:'Next week'}]},cards);assert.equal(T.project(saved.todoCards[0],saved.deals,saved.tableSchema).dueDate,'Next week');
+  saved=await write(a,{...saved,deals:[{...row,follow:'Next week'}]},cards);assert.equal(saved.todoCards[0].followField,'follow');
   await assert.rejects(()=>write(a,before,[]),e=>e.code==='PT409');
   for(const patch of [{status:'Other'},{dueDate:'2026-02-30'},{ownerField:'missing'},{nextAction:'x'.repeat(501)},{extra:true}])await assert.rejects(()=>write(a,saved,[{...card,...patch}]),e=>e.code==='PT400');
   saved=await write(a,saved);assert.deepEqual(saved.todoCards,cards);
