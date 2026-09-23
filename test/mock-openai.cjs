@@ -41,7 +41,8 @@ global.fetch = async (url, options) => {
     assert.equal(report.properties[key].items.type,'string');
     assert(report.required.includes(key));
   }
-  assert.match(request.instructions,/selected-owner comparisons/);
-  assert.match(request.instructions,/Preserve owners, accounts/);
+  assert.match(request.instructions,/FULL authorized table/);
+  assert.match(request.instructions,/Preserve all measures, where, splitBy/);
+  assert(request.text.format.schema.properties.crmAction.anyOf[1].properties.smartReport);
   return {ok:true,json:async()=>({output_text:JSON.stringify({assistantMessage:'Test reply',crmAction:null,memoryNote:null})})};
 };

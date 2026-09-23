@@ -334,10 +334,11 @@
     return {records:next,customFields:nextFields,tableSchema:nextSchema,field,replacement:selected,replacementIsNew:Boolean(replacement?.name)};
   }
   function reconcileReport(spec,customFields=[]){
+    if(spec?.version===1)return spec;
     const options=reportOptions(customFields),next={...spec};
     if(!['sum','average','count'].includes(next.metric))next.metric='count';
     if(!options.metrics.some(f=>f.id===next.field)){next.field=options.metrics[0]?.id||null;if(!next.field)next.metric='count';}
-    if(!options.groups.some(f=>f.id===next.groupBy)&&next.groupBy!=='none')next.groupBy=role('status')||role('owner')||'none';
+    if(!options.groups.some(f=>f.id===next.groupBy)&&next.groupBy!=='none')next.groupBy=primary||'none';
     if(!['bar','line','stage','kpi'].includes(next.chart))next.chart='bar';
     if(next.filter&&!Object.hasOwn(fieldsFor(customFields),fieldName(next.filter.field,customFields)))next.filter=null;
     try{predicate(next.filter,customFields);}catch{next.filter=null;}

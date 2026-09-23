@@ -54,7 +54,7 @@ test('contextual reports compare owner and record subsets and exclude unknowns f
 test('dashboard recontextualizes after schema additions, deletions and undo without phantom charts',()=>{
   const removed={...schema,fields:schema.fields.filter(f=>!['f_pay','f_owner'].includes(f.id))},next=Core.create(removed);
   const report=next.reconcileReport({...spec,filter:{field:'f_pay',operator:'gte',value:1}});
-  assert.equal(report.field,'f_score');assert.equal(report.groupBy,'f_stage');assert.equal(report.owners,null);assert.equal(report.filter,null);
+  assert.equal(report.field,'f_score');assert.equal(report.groupBy,'f_name');assert.equal(report.owners,null);assert.equal(report.filter,null);
   assert.equal(next.reconcileReport({...spec,metric:'count'}).field,'f_score');
   const textOnly=Core.create({...schema,fields:[schema.fields[0]]});assert.equal(textOnly.reconcileReport(spec).metric,'count');
   const extras=[{id:'cf_contact',name:'Contact',type:'text'}];assert(core.reportOptions(extras).groups.some(f=>f.id==='cf_contact'));
