@@ -15,8 +15,19 @@
     return {type:'activity',at,time:at?Date.parse(at):null,text:at?match[2]:text,index};
   }
   function entries(history,{from='',to='',kind='all'}={}){
+    for(const value of [from,to])if(value&&(!/^\d{4}-\d\d-\d\d$/.test(value)||day(new Date(value+'T12:00:00'))!==value))throw new Error('Choose a valid date.');
     if(from&&to&&from>to)throw new Error('The start date must be on or before the end date.');
     return (history||[]).map(parse).filter(e=>(kind==='all'||e.type===kind)&&(!from&&!to||e.at&&(!from||day(e.at)>=from)&&(!to||day(e.at)<=to))).sort((a,b)=>(b.time??-Infinity)-(a.time??-Infinity)||a.index-b.index);
+  }
+  function displayText(entry){
+    if(entry.type==='note')return entry.text;
+    // Only remove the actor prefix from the app's dated legacy event formats.
+    const match=entry.at&&/^.+?: ([\s\S]+ changed from "[\s\S]*" to "[\s\S]*"\.|Deal added(?: manually)?\.)$/.exec(entry.text);
+    return match?match[1]:entry.text;
+  }
+  function activity(records,filters={}){
+    entries([],filters);
+    return records.flatMap(record=>entries(record.history,filters).map(entry=>({...entry,recordId:record.id}))).sort((a,b)=>(b.time??-Infinity)-(a.time??-Infinity));
   }
   function addNote(records,id,text,actor,noteId,now=new Date()){
     if(typeof text!=='string'||!text.trim())throw new Error('Enter a note first.');
@@ -47,5 +58,5 @@
       return {...row,history};
     });
   }
-  return {maxNote,day,parse,entries,addNote,reconcile};
+  return {maxNote,day,parse,entries,displayText,activity,addNote,reconcile};
 });

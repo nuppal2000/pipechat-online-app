@@ -94,7 +94,7 @@
           </div>
           <div id="chartContainer" class="chart-container"><canvas id="reportCanvas" role="img" aria-label="Pipeline chart"></canvas></div><div id="reportKpis" class="report-kpis" hidden></div><p id="reportCaption" class="subtle"></p><div class="report-table-wrap"><table class="report-table"><thead><tr><th id="reportGroupHeading">Owner</th><th id="reportValueHeading">Value</th><th>Deals</th></tr></thead><tbody id="reportRows"></tbody></table></div>
         </section>
-        <section id="activityView" class="activity-view" hidden><div id="activityList"></div></section>
+        <section id="activityView" class="activity-view" hidden><div class="activity-filters"><label>From<input id="activityFrom" type="date" aria-label="Activity from date"></label><label>To<input id="activityTo" type="date" aria-label="Activity to date"></label><button id="activityResetDates" type="button" class="icon-btn" title="Reset dates" aria-label="Reset activity dates"><i data-icon="RotateCcw"></i></button></div><span id="activityCount" class="inspector-count" role="status"></span><div id="activityList"></div><button id="activityMore" class="secondary" type="button" hidden>Load older entries</button></section>
         <section id="shareView" class="share-view" hidden>
           <span class="badge">Local preview</span><h3>Pipeline review</h3><p class="subtle">No link or invitation is sent from this prototype.</p>
           <label>Recipient<input id="shareRecipient" placeholder="Name or email"></label><label>Message<textarea id="shareMessage" rows="3" placeholder="Here's the latest pipeline. I'd love your feedback."></textarea></label>
@@ -113,7 +113,7 @@
   <div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button id="undoBtn" class="text-btn"><i data-icon="Undo2"></i>Undo</button><button id="dismissToast" class="icon-btn" title="Dismiss" aria-label="Dismiss"><i data-icon="X"></i></button></div>
   <dialog id="inspectorDialog" class="inspector-dialog" aria-labelledby="inspectorTitle">
     <div class="inspector-shell">
-      <header class="inspector-header"><div><span id="inspectorRecordType">Record</span><h2 id="inspectorTitle" tabindex="-1"></h2></div><button id="inspectorClose" class="icon-btn" type="button" title="Close inspector" aria-label="Close inspector"><i data-icon="X"></i></button></header>
+      <header class="inspector-header"><div class="inspector-identity"><span id="inspectorRecordType">Record</span><div class="inspector-name"><h2 id="inspectorTitle" tabindex="-1"></h2><button id="inspectorEditName" class="icon-btn" type="button" title="Edit record name" aria-label="Edit record name"><i data-icon="Pencil"></i></button></div><form id="inspectorNameForm" hidden><label id="inspectorNameLabel" for="inspectorNameInput">Name</label><textarea id="inspectorNameInput" rows="2" maxlength="12000"></textarea><select id="inspectorNameChoice" aria-label="Record name" hidden></select><div class="inspector-name-actions"><button id="inspectorNameSave" class="primary" type="submit">Save name</button><button id="inspectorNameCancel" class="secondary" type="button">Cancel</button></div><p id="inspectorNameError" class="error" role="alert"></p></form></div><button id="inspectorClose" class="icon-btn" type="button" title="Close inspector" aria-label="Close inspector"><i data-icon="X"></i></button></header>
       <div class="inspector-scroll">
         <h2>History</h2>
         <form id="inspectorForm" class="inspector-composer">
@@ -121,7 +121,7 @@
           <div class="inspector-note-actions"><button id="inspectorSave" class="primary" type="submit">Save note</button><span id="inspectorNoteStatus" role="status"></span></div>
           <p id="inspectorError" class="error" role="alert"></p><button id="inspectorReload" type="button" class="secondary" hidden>Reload latest history</button>
         </form>
-        <div class="inspector-filters"><label>From<input id="inspectorFrom" type="date"></label><label>To<input id="inspectorTo" type="date"></label><label>Show<select id="inspectorKind"><option value="all">All activity</option><option value="note">Notes</option><option value="activity">Changes</option></select></label><button id="inspectorClearDates" type="button" class="icon-btn" title="Clear dates" aria-label="Clear dates"><i data-icon="X"></i></button></div>
+        <div class="inspector-filters"><label>From<input id="inspectorFrom" type="date"></label><label>To<input id="inspectorTo" type="date"></label><label>Show<select id="inspectorKind"><option value="all">All activity</option><option value="note">Notes</option><option value="activity">Changes</option></select></label><button id="inspectorClearDates" type="button" class="icon-btn" title="Reset dates" aria-label="Reset inspector dates"><i data-icon="RotateCcw"></i></button></div>
         <span id="inspectorCount" class="inspector-count" role="status"></span><div id="inspectorTimeline"></div><button id="inspectorMore" type="button" class="secondary" hidden>Load older entries</button>
       </div>
     </div>

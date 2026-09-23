@@ -3,9 +3,31 @@
   // Lucide Pencil, ISC license; see vendor/lucide-LICENSE.
   root.PipeChatIcons.Pencil='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.623l4.353-1.32a2 2 0 0 0 .83-.498z"/><path d="m15 5 4 4"/></svg>';
   root.PipeChatInspectorUI={create};
-  function create({S,esc,icon,rowName,persist,refresh,toast}){
+  function create({S,esc,icon,rowName,persist,refresh,toast,editRecord,clearActivity=()=>{}}){
     const H=root.PipeChatInspector,$=id=>document.getElementById(id),dialog=$('inspectorDialog'),key='pipechat.inspector-drafts.v1';
-    let recordId=null,returnFocus=null,limit=100,error='',needsReview=false,drafts={},identity='';
+    let recordId=null,returnFocus=null,limit=100,error='',needsReview=false,drafts={},identity='',nameEdit=null;
+    function primaryField(){const core=root.PipelineCore.create(S.tableSchema);return core.definitions(S.customFields).find(f=>f.id===core.role('primary'));}
+    function cancelName(){nameEdit=null;$('inspectorNameForm').hidden=true;$('inspectorNameInput').value='';$('inspectorNameChoice').innerHTML='';$('inspectorNameError').textContent='';}
+    function beginName(){
+      if($('inspectorEditName').disabled)return;
+      const row=S.records.find(r=>r.id===recordId),field=primaryField();if(!row||!field)return;
+      nameEdit={id:recordId,field:JSON.stringify(field),before:row[field.id]};
+      $('inspectorNameLabel').textContent=field.name;$('inspectorNameLabel').htmlFor=field.type==='choice'?'inspectorNameChoice':'inspectorNameInput';
+      $('inspectorNameInput').hidden=field.type==='choice';$('inspectorNameChoice').hidden=field.type!=='choice';
+      $('inspectorNameChoice').innerHTML='<option value="">Not set</option>'+(field.options||[]).map(value=>`<option>${esc(value)}</option>`).join('');
+      const input=$(field.type==='choice'?'inspectorNameChoice':'inspectorNameInput');input.value=row[field.id]??'';
+      $('inspectorNameForm').hidden=false;$('inspectorNameError').textContent='';controls();input.focus();
+    }
+    async function saveName(event){
+      event.preventDefault();if(!nameEdit||$('inspectorNameSave').disabled)return;
+      const field=primaryField(),row=S.records.find(r=>r.id===nameEdit.id),generation=S.generation;
+      if(!row||JSON.stringify(field)!==nameEdit.field||row[field.id]!==nameEdit.before){$('inspectorNameError').textContent='The record or primary field changed. Cancel and reopen the name editor to review the latest value.';return;}
+      if(S.pending||S.clarification){$('inspectorNameError').textContent='Confirm or cancel the proposed changes before renaming this record.';return;}
+      const saved=await editRecord(row.id,field.id,$(field.type==='choice'?'inspectorNameChoice':'inspectorNameInput').value);
+      if(generation!==S.generation)return;
+      if(saved){cancelName();draw();$('inspectorTitle').focus();}
+      else {$('inspectorNameError').textContent='Name save was not confirmed. Close the inspector to review and recover the retained edit.';controls();}
+    }
     function scope(){return S.user?JSON.stringify([S.user.id,S.user.email,S.health?.storageProvider]):'';}
     function loadDrafts(){
       if(identity===scope())return;identity=scope();drafts={};
@@ -25,17 +47,20 @@
       $('inspectorSave').disabled=locked||needsReview||!$('inspectorNote').value.trim();$('inspectorNote').disabled=S.saving;
       $('inspectorReload').disabled=locked;$('inspectorReload').hidden=!needsReview;
       $('inspectorError').textContent=error;
+      $('inspectorEditName').disabled=locked||Boolean(nameEdit)||needsReview;
+      $('inspectorNameSave').disabled=locked;$('inspectorNameCancel').disabled=S.saving;
+      $('inspectorNameInput').disabled=locked;$('inspectorNameChoice').disabled=locked;
     }
     function timeline(){
       const row=S.records.find(r=>r.id===recordId);if(!row)return;
       let items;try{items=H.entries(row.history,{from:$('inspectorFrom').value,to:$('inspectorTo').value,kind:$('inspectorKind').value});}
-      catch(e){$('inspectorTimeline').innerHTML=`<p class="error" role="alert">${esc(e.message)}</p>`;return;}
+      catch(e){$('inspectorCount').textContent='';$('inspectorMore').hidden=true;$('inspectorTimeline').innerHTML=`<p class="error" role="alert">${esc(e.message)}</p>`;return;}
       $('inspectorCount').textContent=`${items.length} ${items.length===1?'entry':'entries'}`;
       let last=null;
       $('inspectorTimeline').innerHTML=items.slice(0,limit).map(e=>{
         const date=e.at?H.day(e.at):'';let heading='';
         if(date!==last){last=date;heading=`<h3 class="history-day">${e.at?(date===H.day(new Date())?'Today':'')+(date===H.day(new Date())?' / ':'')+esc(new Date(e.at).toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'})):'Undated activity'}</h3>`;}
-        return `${heading}<article class="history-entry ${e.type}"><span class="history-symbol">${icon(e.type==='note'?'FileText':'RotateCcw')}</span><div class="history-content"><header><strong>${e.type==='note'?'Note added':'Record updated'}</strong>${e.at?`<time datetime="${esc(e.at)}">${esc(new Date(e.at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}))}</time>`:''}</header>${e.type==='note'?`<span class="history-author">${esc(e.actor)}</span>`:''}<p>${esc(e.text)}</p></div></article>`;
+        return `${heading}<article class="history-entry ${e.type}"><span class="history-symbol">${icon(e.type==='note'?'FileText':'RotateCcw')}</span><div class="history-content"><header><strong>${e.type==='note'?'Note added':'Record updated'}</strong>${e.at?`<time datetime="${esc(e.at)}">${esc(new Date(e.at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}))}</time>`:''}</header><p>${esc(H.displayText(e))}</p></div></article>`;
       }).join('')||'<p class="history-empty">No notes or activity for these dates.</p>';
       $('inspectorMore').hidden=items.length<=limit;
     }
@@ -47,13 +72,13 @@
     }
     function open(id,trigger){
       if(!S.loaded||S.saving||!S.records.some(r=>r.id===id))return;
-      loadDrafts();recordId=id;returnFocus=trigger;limit=100;error='';needsReview=false;
+      loadDrafts();cancelName();recordId=id;returnFocus=trigger;limit=100;error='';needsReview=false;
       $('inspectorFrom').value='';$('inspectorTo').value='';$('inspectorKind').value='all';
       $('inspectorNote').value=drafts[id]?.text||'';$('inspectorNoteStatus').textContent=drafts[id]?'Unsaved draft restored':'';
       if(!dialog.open)dialog.showModal();draw();$('inspectorTitle').focus();
     }
-    function close(){if(S.saving)return;if(dialog.open)dialog.close();returnFocus?.isConnected&&returnFocus.focus();recordId=null;}
-    function clear(){if(dialog.open)dialog.close();recordId=null;drafts={};identity='';$('inspectorNote').value='';$('inspectorTimeline').innerHTML='';try{sessionStorage.removeItem(key);}catch{}}
+    function close(){if(S.saving)return;cancelName();if(dialog.open)dialog.close();returnFocus?.isConnected&&returnFocus.focus();recordId=null;}
+    function clear(){if(dialog.open)dialog.close();cancelName();clearActivity();recordId=null;drafts={};identity='';$('inspectorNote').value='';$('inspectorTimeline').innerHTML='';$('inspectorTitle').textContent='';try{sessionStorage.removeItem(key);}catch{}}
     async function save(event){
       event.preventDefault();if($('inspectorSave').disabled||recordId==null)return;
       if(S.pending||S.clarification){error='Confirm or cancel the current proposed changes before saving a note.';controls();return;}
@@ -67,6 +92,8 @@
       }catch(e){error=e.message;controls();}
     }
     $('inspectorForm').addEventListener('submit',save);$('inspectorNote').addEventListener('input',input);
+    $('inspectorEditName').onclick=beginName;$('inspectorNameForm').addEventListener('submit',saveName);
+    $('inspectorNameCancel').onclick=()=>{if(S.saving)return;cancelName();controls();$('inspectorEditName').focus();};
     $('inspectorClose').onclick=close;dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
     for(const id of ['inspectorFrom','inspectorTo','inspectorKind'])$(id).addEventListener('change',()=>{limit=100;timeline();});
     $('inspectorClearDates').onclick=()=>{$('inspectorFrom').value='';$('inspectorTo').value='';limit=100;timeline();};

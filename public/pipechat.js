@@ -12,7 +12,7 @@
   let chart=null, toastTimer;
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];let todoUI=null;
-  let inspectorUI=null;
+  let inspectorUI=null,activityLimit=150;
   S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sort=null;S.fieldDialog=null;
   let spreadsheetPicker=null;
   S.settingsOpen=false;S.resetConfirmation=null;S.resetting=false;
@@ -273,9 +273,15 @@
     chart=new Chart($('reportCanvas'),{type:S.report.chart==='stage'?'doughnut':S.report.chart==='line'?'line':'bar',data:{labels:result.data.map(d=>d.label),datasets:[{label:metricLabels[S.report.metric],data:result.data.map(d=>d.value),backgroundColor:S.report.chart==='line'?'#8b7bea22':colors,borderColor:S.report.chart==='line'?'#8471e8':'#fff',borderWidth:S.report.chart==='stage'?3:0,borderRadius:S.report.chart==='bar'?4:0,maxBarThickness:35,tension:0,pointRadius:4,fill:S.report.chart==='line'}]},options:{responsive:true,maintainAspectRatio:false,animation:false,indexAxis:S.report.chart==='bar'?'y':'x',plugins:{legend:{display:S.report.chart==='stage',position:'bottom',labels:{boxWidth:10,padding:15,font:{size:10}}},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${showValue(ctx.raw)}`}}},...(S.report.chart==='stage'?{cutout:'66%'}:{scales:{x:{grid:{color:'#f0f1f7'},ticks:{font:{size:10}},beginAtZero:true},y:{grid:{display:S.report.chart==='line'},ticks:{font:{size:10},precision:0},beginAtZero:true}}})}});
     $('reportCanvas').setAttribute('aria-label',`${$('reportTitle').textContent}. ${result.data.map(d=>`${d.label}: ${showValue(d.value)}`).join('; ')||'No data'}`);
   }
+  function clearActivity(){
+    $('activityFrom').value='';$('activityTo').value='';activityLimit=150;$('activityList').innerHTML='';$('activityCount').textContent='';$('activityMore').hidden=true;
+  }
   function renderActivity() {
-    const entries=S.records.flatMap(record=>window.PipeChatInspector.entries(record.history).map(entry=>({...entry,id:record.id,account:rowName(record)}))).sort((a,b)=>(b.time??-Infinity)-(a.time??-Infinity));
-    $('activityList').innerHTML=entries.slice(0,150).map(item=>`<div class="activity-item"><button class="record-link" data-inspect="${item.id}">${esc(item.account)}</button>${item.at?`<time datetime="${esc(item.at)}">${esc(new Date(item.at).toLocaleString())}</time>`:''}<p>${esc(item.type==='note'?`${item.actor}: Note added. ${item.text}`:item.text)}</p></div>`).join('')||'<p class="empty-table">No recorded changes yet.</p>';
+    const H=window.PipeChatInspector,names=new Map(S.records.map(r=>[r.id,rowName(r)]));let entries;
+    try{entries=H.activity(S.records,{from:$('activityFrom').value,to:$('activityTo').value});}
+    catch(error){$('activityCount').textContent='';$('activityMore').hidden=true;$('activityList').innerHTML=`<p class="error" role="alert">${esc(error.message)}</p>`;return;}
+    $('activityCount').textContent=`${entries.length} ${entries.length===1?'entry':'entries'}`;$('activityMore').hidden=entries.length<=activityLimit;
+    $('activityList').innerHTML=entries.slice(0,activityLimit).map(item=>`<div class="activity-item"><button class="record-link" data-inspect="${item.recordId}">${esc(names.get(item.recordId))}</button>${item.at?`<time datetime="${esc(item.at)}">${esc(new Date(item.at).toLocaleString())}</time>`:''}<p>${esc((item.type==='note'?'Note added. ':'')+H.displayText(item))}</p></div>`).join('')||'<p class="empty-table">No activity for these dates.</p>';
   }
   function focusTrust() {if(innerWidth<1200)document.querySelector('.trust-pane').scrollIntoView({behavior:'smooth',block:'start'});}
   function renderTrust() {
@@ -508,16 +514,21 @@
     }finally{if(generation===S.generation){S.saving=false;render();}}
   }
   async function manualEdit(el) {
-    const record=S.records.find(r=>r.id===Number(el.closest('[data-id]')?.dataset.id));if(!record||S.saving||S.failedEdit)return;
-    const failedEdit={id:record.id,account:rowName(record),field:el.dataset.field,raw:el.value,before:record[el.dataset.field],reviewed:false};
+    return editRecord(Number(el.closest('[data-id]')?.dataset.id),el.dataset.field,el.value);
+  }
+  async function editRecord(id,field,input) {
+    const record=S.records.find(r=>r.id===id);if(!record||S.saving||S.failedEdit)return false;
+    const failedEdit={id:record.id,account:rowName(record),field,raw:input,before:record[field],reviewed:false};
     try{
-      const field=el.dataset.field,raw=field==='value'?el.value.replace(/[$,]/g,'').trim():el.value;
-      const value=C.validateStoredValue(field,raw,S.customFields);if(value===(record[field]??'')){renderTable(visible());return;}
+      const raw=field==='value'?input.replace(/[$,]/g,'').trim():input;
+      const value=C.validateStoredValue(field,raw,S.customFields);if(value===(record[field]??'')){renderTable(visible());return true;}
       const proposal=C.plan(S.records,{action:'update_record',ids:[record.id],field,value},S.customFields);
       const next=C.apply(S.records,proposal,S.user.name||S.user.email,new Date(),S.customFields);
       const hadDraft=Boolean(S.pending||S.clarification);
-      if(await persist(next,`${labels()[field]} updated`,{failedEdit})&&hadDraft)say('The manual edit was saved. I cleared the earlier draft so it cannot overwrite your new value.');
+      const saved=await persist(next,`${labels()[field]} updated`,{failedEdit});
+      if(saved&&hadDraft)say('The manual edit was saved. I cleared the earlier draft so it cannot overwrite your new value.');return saved;
     }catch(error){S.failedEdit={...failedEdit,message:error.message};keepFailedEdit();$('saveStatus').textContent='Unsaved edit retained';$('saveStatus').classList.add('failed');toast(error.message);render();}
+    return false;
   }
   function renderEditor() {
     $('trustTitle').textContent='New deal';$('trustStatus').textContent='Nothing is added until you save.';
@@ -697,6 +708,7 @@
     ].map(([account,stage,value,close,rep,next,follow],i)=>newRecord({account,stage,value,close,owner:rep,next,follow},i+1));
   }
   async function loadWorkspace(user) {
+    clearActivity();
     closeProfileMenu();S.settingsOpen=false;S.resetting=false;S.resetConfirmation=null;if($('resetDialog')?.open)$('resetDialog').close();
     S.generation++;S.user=user;S.history=[];S.pending=null;S.clarification=null;S.undo=null;S.sourceAction=null;S.loaded=false;S.scope='all';S.search='';S.filter=null;S.tab='table';S.report=defaultReport();S.busy=false;S.expanded=null;
     S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();
@@ -818,8 +830,8 @@
   function textCell(id,value,label,extraClass=''){
     return `<textarea class="cell-input expandable-text ${extraClass}" data-field="${id}" data-expand-text rows="1" maxlength="12000" aria-label="${esc(label)}" ${S.saving||S.failedEdit?'disabled':''}>${esc(value??'')}</textarea>`;
   }
-  function primaryCell(record,field){
-    return `<div class="primary-name"><button type="button" class="record-link" data-inspect="${record.id}" aria-label="Open inspector for ${esc(rowName(record))}">${esc(rowName(record))}</button><button type="button" class="icon-btn" data-edit-primary title="Edit ${esc(field.name)}" aria-label="Edit ${esc(rowName(record))}" ${S.saving||S.failedEdit?'disabled':''}>${icon('Pencil')}</button></div><div class="primary-editor" hidden>${fieldInput(field,record[field.id])}</div>`;
+  function primaryCell(record){
+    return `<div class="primary-name"><button type="button" class="record-link" data-inspect="${record.id}" aria-label="Open inspector for ${esc(rowName(record))}">${esc(rowName(record))}</button></div>`;
   }
   function resizeTextCell(el,expanded){
     if(!el?.hasAttribute('data-expand-text'))return;
@@ -932,9 +944,11 @@
   function wire() {
     const addTodo=document.createElement('button');addTodo.id='addTodoBtn';addTodo.className='icon-btn';addTodo.title='Add To Do card';addTodo.setAttribute('aria-label','Add To Do card');addTodo.innerHTML=icon('Plus');addTodo.hidden=true;$('shareBtn').after(addTodo);
     todoUI=window.PipeChatTodoUI.create({S,esc,icon,persistTodo,prepare,render,toast,localDate});
-    inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast});
+    inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast,editRecord,clearActivity});
     document.addEventListener('click',event=>{const target=event.target.closest('[data-inspect]');if(target)inspectorUI.open(Number(target.dataset.inspect),target);});
-    $('dealRows').addEventListener('click',event=>{const edit=event.target.closest('[data-edit-primary]');if(!edit||S.saving||S.failedEdit)return;const cell=edit.closest('td');cell.querySelector('.primary-name').hidden=true;cell.querySelector('.primary-editor').hidden=false;cell.querySelector('[data-field]').focus();});
+    for(const id of ['activityFrom','activityTo'])$(id).onchange=()=>{activityLimit=150;renderActivity();};
+    $('activityResetDates').onclick=()=>{$('activityFrom').value='';$('activityTo').value='';activityLimit=150;renderActivity();};
+    $('activityMore').onclick=()=>{activityLimit+=150;renderActivity();};
     $('dealHeaders').oncontextmenu=openColumnMenu;
     $('dealHeaders').onkeydown=event=>{if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey)openColumnMenu(event);};
     $('renameColumnBtn').onclick=()=>{const id=$('columnMenu').dataset.field;closeColumnMenu();try{openFieldDialog('rename',id);}catch(error){toast(error.message);}};
