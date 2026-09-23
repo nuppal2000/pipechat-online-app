@@ -80,6 +80,15 @@ function fixture({ auth = {}, rpc, serverFactory, healthRpc, ...options } = {}) 
 
 test('Supabase shares the existing BackendError identity', () => assert.equal(BackendError, SharedBackendError));
 
+test('To Do writes use the atomic workspace RPC and reject incomplete card acknowledgements',async()=>{
+  const card=require('../public/todo-core.js').create('todo_test',1,null),before={...empty,deals:[legacyRow],todoCards:[],updatedAt:'v1'};
+  const f=fixture({rpc:(name,args)=>name==='pipechat_read_crm'?ok(before):ok({...before,todoCards:args.p_todo_cards,updatedAt:'v2'})});
+  const result=await f.request().adapter.writeCrm(null,[legacyRow],'v1',[],null,[card]);
+  assert.deepEqual(result.todoCards,[card]);assert.equal(f.calls.at(-1).name,'pipechat_write_workspace');assert.deepEqual(f.calls.at(-1).args.p_todo_cards,[card]);
+  const bad=fixture({rpc:name=>ok(name==='pipechat_read_crm'?before:{...before,updatedAt:'v2'})});
+  await assert.rejects(()=>bad.request().adapter.writeCrm(null,[legacyRow],'v1',[],null,[card]),errorIs(503));
+});
+
 test('reset adapter uses authenticated CAS RPC and rejects incomplete reset acknowledgement', async () => {
   const reset={deals:[],customFields:[],tableSchema:{status:'pending'},updatedAt:'new-version'};
   const f=fixture({rpc:()=>ok(reset)});

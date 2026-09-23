@@ -17,7 +17,7 @@ function harness(handler) {
       disabled: false, setAttribute() {}, classList: { add() {}, remove() {} } });
     return nodes.get(id);
   };
-  const context = { window: { PipelineCore: require('../public/pipeline-core.js'), PipeChatIcons: {} },
+  const context = { window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore: require('../public/pipeline-core.js'), PipeChatIcons: {} },
     document: { getElementById: node, querySelectorAll: () => [], querySelector:()=>null,
       body: { classList: { add: key => classes.add(key), remove: key => classes.delete(key) } } },
     fetch: async (url, options) => ({ ok: true, json: async () => handler(url, options) }) };
