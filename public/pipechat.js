@@ -14,7 +14,7 @@
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];let todoUI=null;
   let inspectorUI=null,activityLimit=150;
-  S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sort=null;S.fieldDialog=null;
+  S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sheetDraft=null;S.sheetTypeReview=[];S.sort=null;S.fieldDialog=null;
   let spreadsheetPicker=null;
   S.settingsOpen=false;S.resetConfirmation=null;S.resetting=false;
   const tailored=()=>S.tableSchema?.status==='ready';
@@ -361,6 +361,11 @@
       panel.innerHTML=`<h3>${esc(S.pending.field.name)}</h3><p class="proposal-intro">Text field / ${S.records.length} existing records</p><p class="subtle">Every record will have a blank cell in this new column. Existing values stay unchanged.</p><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':'Confirm new field'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
       return;
     }
+    if(S.pending?.kind==='import-duplicates'){
+      const p=S.pending,d=p.duplicates;$('trustTitle').textContent='Review duplicates';$('trustStatus').textContent='Choose how to handle duplicates. No records have been saved.';
+      panel.innerHTML=`<h3>${esc(p.draft.name)}</h3><p>${d.existingMatches} incoming rows match the existing table; ${d.fileMatches} repeat an earlier imported row.</p><p>Names match ignoring case and extra spaces. Merge keeps existing records unchanged and the first new occurrence. It skips later matches, including their other imported values. Blank names are kept separately.</p><p>Keep: ${S.records.length+p.review.records.length} total records. Merge: ${S.records.length+d.records.length} total records.</p><details><summary>Matched rows</summary>${d.duplicates.map(row=>`<p>Imported row ${row.index+1}: ${esc(row.name)} (${esc(row.source)})</p>`).join('')}</details><div class="proposal-actions"><button class="primary" data-import-duplicates="merge" ${S.busy||S.saving?'disabled':''}>Merge duplicates</button><button class="secondary" data-import-duplicates="keep" ${S.busy||S.saving?'disabled':''}>Keep duplicates</button><button class="secondary" data-cancel>Cancel import</button></div>`;
+      return;
+    }
     if(S.pending?.kind==='csv-import'){
       const p=S.pending;
       $('trustTitle').textContent=S.busy?'Analyzing CSV':'CSV mapping paused';
@@ -510,7 +515,8 @@
     finally{if(generation===S.generation){S.saving=false;render();}}
   }
   async function confirmDraft() {
-    const p=S.pending;if(!p||S.saving||S.failedEdit||['editor','csv-import'].includes(p.kind))return;
+    const p=S.pending;if(!p||S.busy||S.saving||S.failedEdit||['editor','csv-import','import-duplicates'].includes(p.kind))return;
+    if(p.importRevision!==undefined&&(p.importRevision!==S.revision||p.importGeneration!==S.generation)){clearDraft();say('The table changed. Import the file again to review duplicates against the current table.');return;}
     try{
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
       if(['move-record','move-field'].includes(p.kind)){
@@ -681,6 +687,7 @@
     $('chatInput').value='';say(command,'user');const answer=C.normalize(command).replace(/[.!?]+$/,'');
     if((S.pending||S.clarification)&&['cancel','no','no thanks','never mind','nevermind'].includes(answer)){cancelDraft();return;}
     if(S.pending?.kind==='csv-import'){say('The CSV is waiting for mapping. Use Retry AI mapping, Review basic mapping, or Cancel import in the review panel.');focusTrust();return;}
+    if(S.pending?.kind==='import-duplicates'){say('Please choose Keep duplicates, Merge duplicates, or Cancel import in the review panel.');focusTrust();return;}
     if(S.clarification?.candidates){
       const found=S.clarification.candidates.filter(r=>C.normalize(rowName(r))===answer||String(r.id)===answer);
       if(found.length===1){chooseCandidate(found[0].id);return;}
@@ -730,16 +737,41 @@
       if(generation!==S.generation||!source)return;
       if(revision!==S.revision)throw new Error('The workspace changed. Choose the spreadsheet again.');
       if(mode==='setup'){
-        const result=window.PipeChatSheets.build(source.matrix,{useCase:S.setupUseCase,description:S.setupUseCase==='Other'?$('workflowDescription').value:'',name:source.name,primary:source.primary,idPrefix:crypto.randomUUID().replaceAll('-','')});
-        S.schemaPreview=result.schema;S.setupRecords=result.records;S.schemaPreviewRevision=revision;
-        $('setupStatus').textContent='Review the imported table. No changes have been saved.';
+        clearSheetPreview();
+        const options={useCase:S.setupUseCase,description:S.setupUseCase==='Other'?$('workflowDescription').value:'',name:source.name,primary:source.primary,idPrefix:crypto.randomUUID().replaceAll('-','')};
+        S.sheetDraft={source,options,generation,revision,description:window.PipeChatSheetTypes.describe(source.matrix,options),error:null};
       }else{
         const {headers,rows}=window.PipeChatSheets.mappingSource(source.matrix),description=window.PipeChatCsv.describe(headers,rows);
         S.pending={kind:'csv-import',name:source.name,headers,rows,description,generation,revision,error:null};
       }
     }catch(error){if(generation===S.generation){source=null;if(mode==='setup')$('setupStatus').textContent=error.message;else toast(error.message);}}
     finally{if(generation===S.generation){S.busy=false;updateUsage();if(mode==='setup')renderSetup();}}
+    if(mode==='setup'&&source&&generation===S.generation&&S.sheetDraft)await analyzeSheetTypes();
     if(mode!=='setup'&&source&&generation===S.generation&&S.pending?.kind==='csv-import')await analyzeCsvImport(S.pending);
+  }
+  function clearSheetPreview(){S.sheetDraft=null;S.sheetTypeReview=[];S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;}
+  function currentSheetDraft(draft){return draft&&S.sheetDraft===draft&&draft.generation===S.generation&&draft.revision===S.revision&&S.tableSchema?.status==='pending'&&draft.options.useCase===S.setupUseCase&&draft.options.description===(S.setupUseCase==='Other'?$('workflowDescription').value:'');}
+  function previewSheetTypes(draft,result){
+    if(!currentSheetDraft(draft))throw new Error('The workspace changed. Choose the spreadsheet again.');
+    S.schemaPreview=result.schema;S.setupRecords=result.records;S.sheetTypeReview=result.review;S.schemaPreviewRevision=draft.revision;draft.error=null;
+    $('setupStatus').textContent='Review column types and values. Original headers are unchanged. Nothing has been saved.';
+  }
+  async function analyzeSheetTypes(){
+    const draft=S.sheetDraft;if(S.busy||S.saving||!currentSheetDraft(draft))return;
+    S.busy=true;draft.error=null;$('setupStatus').textContent='AI is analyzing spreadsheet column types...';renderSetup();updateUsage();
+    try{
+      if(S.usage?.paymentRequired||S.usage?.remaining===0)throw new Error('Chat allowance exhausted. You can still import the original text without AI.');
+      if(S.health?.aiConfigured===false)throw new Error('The AI API key is not configured on the server.');
+      const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify({spreadsheetBuild:draft.description}),signal:AbortSignal.timeout(90000)});
+      if(draft.generation!==S.generation)return;S.usage=response.usage||S.usage;
+      if(!currentSheetDraft(draft))return;
+      previewSheetTypes(draft,window.PipeChatSheetTypes.build(draft.source.matrix,draft.options,response.spreadsheetTypes));
+    }catch(error){if(currentSheetDraft(draft)){if(error.usage)S.usage=error.usage;draft.error=error.message;$('setupStatus').textContent='AI type analysis unavailable. No data was saved.';}}
+    finally{if(draft.generation===S.generation){S.busy=false;renderSetup();updateUsage();}}
+  }
+  function useOriginalSheetText(){
+    const draft=S.sheetDraft;if(S.busy||S.saving||!currentSheetDraft(draft))return;
+    try{previewSheetTypes(draft,window.PipeChatSheetTypes.asText(draft.source.matrix,draft.options));renderSetup();}catch(error){draft.error=error.message;renderSetup();}
   }
   function currentCsvImport(draft) {
     if(!draft||draft.kind!=='csv-import'||draft.generation!==S.generation||S.pending!==draft)return false;
@@ -750,12 +782,25 @@
     if(!currentCsvImport(draft))return;
     const review=csvCore().build(draft.headers,draft.rows,analysis),{records,mapping}=review;
     if(!records.length){draft.error='No CRM fields could be confidently interpreted. No rows were added; the original CSV is unchanged.';say(draft.error,'assistant',true);renderTrust();return;}
+    const duplicates=window.PipeChatImportDuplicates.review(S.records,records,C.role('primary'));
+    if(duplicates.duplicates.length){S.pending={kind:'import-duplicates',draft,review,duplicates,mappingSource};renderTrust();return;}
+    finishImportPreview(draft,review,mappingSource,records);
+  }
+  function finishImportPreview(draft,review,mappingSource,records,decision=''){
+    if(draft.revision!==S.revision||draft.generation!==S.generation)throw new Error('The table changed. Choose the file again.');
+    if(!records.length){clearDraft();say('All imported records matched existing entries. Merge kept the table unchanged; nothing needed to be added.');return;}
     prepare({action:'import_records',records},`Import ${draft.name}`);
-    const primary=C.role('primary');
-    const duplicates=records.filter(r=>r[primary]&&S.records.some(existing=>C.normalize(existing[primary])===C.normalize(r[primary]))).length;
+    if(S.pending?.kind!=='add')throw new Error('Could not prepare the import.');
     S.pending.importReview=review;
-    S.pending.note=`${mappingSource} ${Object.entries(mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${labels()[f]}`).join('; ')}. Missing or uncertain values stay blank, including amounts. ${review.skipped?`${review.skipped} rows with no usable CRM fields skipped. `:''}${duplicates?`${duplicates} rows share existing company names and will be added separately.`:''}`;
+    S.pending.importRevision=draft.revision;S.pending.importGeneration=draft.generation;
+    S.pending.note=`${decision} ${mappingSource} ${Object.entries(review.mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${labels()[f]}`).join('; ')}. Missing or uncertain values stay blank, including amounts. ${review.skipped?`${review.skipped} rows with no usable CRM fields skipped. `:''}`;
     renderTrust();
+  }
+  function chooseImportDuplicates(mode){
+    const p=S.pending;if(S.busy||S.saving||S.failedEdit||p?.kind!=='import-duplicates'||!['keep','merge'].includes(mode))return;
+    if(p.draft.generation!==S.generation||p.draft.revision!==S.revision){clearDraft();say('The table changed. Import the file again to review duplicates.');return;}
+    try{finishImportPreview(p.draft,p.review,p.mappingSource,mode==='merge'?p.duplicates.records:p.review.records,mode==='merge'?`${p.duplicates.duplicates.length} duplicate rows skipped. Existing records stay unchanged.`:'Duplicates will be added as separate records.');}
+    catch(error){S.pending=p;toast(error.message);renderTrust();}
   }
   async function analyzeCsvImport(draft=S.pending) {
     if(S.busy||S.saving||!currentCsvImport(draft))return;
@@ -802,7 +847,7 @@
     S.generation++;S.user=user;S.history=[];S.pending=null;S.clarification=null;S.undo=null;S.sourceAction=null;S.loaded=false;S.scope='all';S.search='';S.filter=null;S.tab='table';S.report=defaultReport();S.busy=false;S.expanded=null;
     S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();
     const generation=S.generation;
-    spreadsheetPicker?.close();closeFieldDialog();S.sort=null;useSchema(null);S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.records=[];S.customFields=[];S.updatedAt=null;S.usage=null;S.health=null;
+    spreadsheetPicker?.close();clearSheetPreview();closeFieldDialog();S.sort=null;useSchema(null);S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.records=[];S.customFields=[];S.updatedAt=null;S.usage=null;S.health=null;
     S.failedEdit=null;S.saving=false;$('authRetryBtn').hidden=true;
     document.body.classList.add('auth-locked');$('authScreen').hidden=false;
     $('chatFeed').innerHTML='';$('trustBody').innerHTML='';$('dealSearch').value='';$('authMessage').textContent='';
@@ -1001,22 +1046,27 @@
     $('buildAiBtn').disabled=locked||(S.setupUseCase==='Other'&&!$('workflowDescription').value.trim());
     $('buildSheetBtn').disabled=S.busy||S.saving||(S.setupUseCase==='Other'&&!$('workflowDescription').value.trim());
     $('buildAiBtn').textContent=S.busy?'Building your table...':'Build Pipechat Table using AI';
-    if(S.usage?.paymentRequired||S.usage?.remaining===0)$('setupStatus').textContent='Chat allowance exhausted. AI table setup is unavailable.';
-    $('schemaPreview').hidden=!S.schemaPreview;
+    if(!S.sheetDraft&&(S.usage?.paymentRequired||S.usage?.remaining===0))$('setupStatus').textContent='Chat allowance exhausted. AI table setup is unavailable.';
+    $('schemaPreview').hidden=!S.schemaPreview&&!S.sheetDraft;
+    if(S.sheetDraft&&!S.schemaPreview){
+      $('schemaPreview').innerHTML=`<h2>${esc(S.sheetDraft.source.name)}</h2><p role="status">${esc(S.busy?'Analyzing column types...':S.sheetDraft.error||'Ready to analyze column types.')}</p><div class="setup-actions"><button id="retrySheetTypesBtn" class="primary" ${locked?'disabled':''}>Retry AI analysis</button><button id="originalSheetTextBtn" class="secondary" ${S.busy||S.saving?'disabled':''}>Use original text (no AI)</button><button id="discardSchemaBtn" class="secondary" ${S.busy||S.saving?'disabled':''}>Cancel import</button></div>`;
+    }
     if(S.schemaPreview){
       const sheet=S.schemaPreview.source==='spreadsheet',records=S.setupRecords||[],fields=S.schemaPreview.fields;
-      const preview=sheet?`<div class="sheet-preview" tabindex="0"><table><thead><tr>${fields.map(f=>`<th>${esc(f.name)}</th>`).join('')}</tr></thead><tbody>${records.slice(0,20).map(row=>`<tr>${fields.map(f=>`<td>${esc(row[f.id]??'')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:`<div class="schema-fields">${fields.map(f=>`<div><strong>${esc(f.name)}</strong><span>${esc(f.type)}${f.options.length?' / '+esc(f.options.join(', ')):''}</span></div>`).join('')}</div>`;
+      const preview=sheet?`<div class="sheet-preview" tabindex="0"><table><thead><tr>${fields.map(f=>`<th>${esc(f.name)}<small class="sheet-field-type">${esc(f.type==='choice'?'Dropdown':f.type)}</small></th>`).join('')}</tr></thead><tbody>${records.slice(0,20).map(row=>`<tr>${fields.map(f=>`<td>${esc(row[f.id]??'')}</td>`).join('')}</tr>`).join('')}</tbody></table></div><details><summary>Column type review</summary>${(S.sheetTypeReview||[]).map(f=>`<p><strong>${esc(f.name||'Column '+(f.index+1))}</strong>: ${esc(f.type==='choice'?'Dropdown':f.type)}. ${esc(f.reason)}${f.options.length?' Options: '+esc(f.options.join(', ')):''}</p>`).join('')}</details>`:`<div class="schema-fields">${fields.map(f=>`<div><strong>${esc(f.name)}</strong><span>${esc(f.type)}${f.options.length?' / '+esc(f.options.join(', ')):''}</span></div>`).join('')}</div>`;
       $('schemaPreview').innerHTML=`<h2>${esc(S.schemaPreview.title)}</h2><p>${records.length} records${records.length>20?' / first 20 shown':''}</p>${preview}<div class="setup-actions"><button id="confirmSchemaBtn" class="primary" ${S.saving?'disabled':''}>${S.saving?'Saving...':sheet?'Create populated table':'Create empty table'}</button><button id="discardSchemaBtn" class="secondary" ${S.saving?'disabled':''}>Discard preview</button></div>`;
     }
     if($('confirmSchemaBtn'))$('confirmSchemaBtn').onclick=confirmSchema;
-    if($('discardSchemaBtn'))$('discardSchemaBtn').onclick=()=>{S.schemaPreview=null;S.setupRecords=[];renderSetup();};
+    if($('discardSchemaBtn'))$('discardSchemaBtn').onclick=()=>{if(S.busy||S.saving)return;clearSheetPreview();renderSetup();};
+    if($('retrySheetTypesBtn'))$('retrySheetTypesBtn').onclick=analyzeSheetTypes;
+    if($('originalSheetTextBtn'))$('originalSheetTextBtn').onclick=useOriginalSheetText;
   }
   async function buildTable(){
     if(S.busy||S.saving||!S.loaded||S.tableSchema?.status!=='pending'||!S.setupUseCase)return;
     if(S.usage?.paymentRequired||S.usage?.remaining===0)return;
     const description=S.setupUseCase==='Other'?$('workflowDescription').value.trim():'';
     if(S.setupUseCase==='Other'&&!description)return;
-    const generation=S.generation,revision=S.revision;S.busy=true;S.schemaPreview=null;S.setupRecords=[];$('setupStatus').textContent='Preparing fields...';renderSetup();
+    const generation=S.generation,revision=S.revision;clearSheetPreview();S.busy=true;$('setupStatus').textContent='Preparing fields...';renderSetup();
     try{
       const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify({tableBuild:{useCase:S.setupUseCase,description}}),signal:AbortSignal.timeout(90000)});
       if(generation!==S.generation)return;S.usage=response.usage||S.usage;
@@ -1034,7 +1084,7 @@
     if(S.schemaPreviewRevision!==S.revision){$('setupStatus').textContent='The workspace changed. Prepare a new preview.';return;}
     const records=schema.source==='spreadsheet'?S.setupRecords:[];
     if(await persist(records,records.length?'Spreadsheet table created':'Empty table created',{undo:false,customFields:[],tableSchema:schema,exactRecords:schema.source==='spreadsheet'})){
-      S.schemaPreview=null;S.setupRecords=[];S.report=C.reconcileReport(defaultReport());S.scope='all';say('Your table is ready. What would you like to work on?');render();
+      clearSheetPreview();S.report=C.reconcileReport(defaultReport());S.scope='all';say('Your table is ready. What would you like to work on?');render();
     }
   }
   function renderContextualReport(rows){
@@ -1106,8 +1156,8 @@
     document.addEventListener('click',event=>{if(!event.target.closest('#columnMenu'))closeColumnMenu();});
     document.addEventListener('keydown',event=>{if(event.key==='Escape')closeColumnMenu();});
     window.addEventListener('resize',closeColumnMenu);document.addEventListener('scroll',closeColumnMenu,true);
-    document.querySelectorAll('[data-use-case]').forEach(button=>button.onclick=()=>{S.setupUseCase=button.dataset.useCase;S.schemaPreview=null;S.setupRecords=[];$('setupStatus').textContent='';renderSetup();});
-    $('workflowDescription').oninput=()=>{S.schemaPreview=null;S.setupRecords=[];renderSetup();};$('buildAiBtn').onclick=buildTable;$('buildSheetBtn').onclick=()=>openSpreadsheet('setup');
+    document.querySelectorAll('[data-use-case]').forEach(button=>button.onclick=()=>{S.setupUseCase=button.dataset.useCase;clearSheetPreview();$('setupStatus').textContent='';renderSetup();});
+    $('workflowDescription').oninput=()=>{clearSheetPreview();renderSetup();};$('buildAiBtn').onclick=buildTable;$('buildSheetBtn').onclick=()=>openSpreadsheet('setup');
     $('dealHeaders').onclick=event=>{if(Date.now()<suppressColumnClickUntil)return;const button=event.target.closest('[data-delete-field]');if(S.saving||S.failedEdit)return;if(button){if(S.busy)return;try{openFieldDialog('delete',button.dataset.deleteField);}catch(error){toast(error.message);}return;}const header=event.target.closest('[data-sort-field]');if(header){const field=header.dataset.sortField;S.sort={field,direction:S.sort?.field===field&&S.sort.direction==='asc'?'desc':'asc'};renderTable(visible());}};
     $('addFieldBtn').onclick=()=>{if(!S.busy)openFieldDialog('add');};
     $('fieldDialogForm').onsubmit=submitFieldDialog;
@@ -1138,7 +1188,7 @@
     $('dealRows').addEventListener('input',event=>resizeTextCell(event.target,true));
     $('dealRows').addEventListener('focusout',event=>resizeTextCell(event.target,false));
     $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
-    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
+    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;const duplicateChoice=event.target.closest('[data-import-duplicates]');if(duplicateChoice){chooseImportDuplicates(duplicateChoice.dataset.importDuplicates);return;}if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
     $('trustBody').addEventListener('input',event=>{if(event.target.id==='failedEditValue'&&S.failedEdit){S.failedEdit.raw=event.target.value;S.failedEdit.reviewed=false;keepFailedEdit();$('failedEditForm').querySelector('[type="submit"]').disabled=true;}});
     $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
     $('addAccountBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}S.pending={kind:'editor'};renderTrust();focusTrust();$('dealEditor').elements[C.role('primary')].focus();};
