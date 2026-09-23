@@ -27,7 +27,7 @@ if ($ConnectionsOnly) {
     Write-Host 'Restore and deliberate rollback tests: EMPTY PipeChat Restore QA (pznjcsscfthondvvdljq) ONLY.'
     Write-Host 'This copies disposable Auth accounts/password hashes, CRM data and quotas to that separate project.'
     Write-Host 'The backup is private under your Local AppData, outside GitHub. It is sensitive and must be secured afterward.'
-    Write-Host 'No source writes, OpenAI calls, Xano changes, Render deployment or database switch. Keep both QA accounts idle.'
+    Write-Host 'No source writes, OpenAI calls, Render deployment or database switch. Keep both QA accounts idle.'
 }
 if ((Read-Host "Type $consentWord to authorize this exact test") -cne $consentWord) { Write-Host 'Cancelled.'; return }
 $source = Read-Host 'SOURCE project DATABASE password (hidden; not a QA account password)' -AsSecureString

@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),crypto=require('node:crypto');
 const Core=require('../public/pipeline-core.js'),Schema=require('../public/table-schema.js');
-const {snapshotResult}=require('../lib/xano-backend.js');
+const {snapshotResult}=require('../lib/backend-contract.js');
 const schema={status:'ready',useCase:'Recruiting',description:'',title:'Recruiting',recordLabel:'candidate',fields:[
   {id:'f_name',name:'Candidate',type:'text',role:'primary',options:[]},
   {id:'f_contact',name:'Contact',type:'text',role:'none',options:[]},
@@ -78,15 +78,6 @@ test('legacy field deletion is explicit and preserves the remaining columns and 
   assert.throws(()=>Schema.transition(null,schema,[]));assert.throws(()=>Schema.transition(null,{...Schema.legacySchema(),fields:Schema.legacySchema().fields.slice(0,2)},[]));
 });
 
-test('Xano helper round-trips legacy conversion and promoted custom primary with no schema loss',()=>{
-  const run=new Function('$input',require('../scripts/build-xano-custom-fields.js').code);
-  const custom={id:'cf_hiring',name:'Hiring contact',type:'text'};
-  for(const change of [Core.deleteColumn([legacy],'account',[],{name:'Candidate',id:'f_candidate'}),core.deleteColumn([{...row,cf_hiring:'Sam'}],'f_name',[custom],{field:'cf_hiring'})]){
-    const saved=run({mode:'write',payload:{deals:change.records,customFields:change.customFields,tableSchema:change.tableSchema}});assert(saved.ok);
-    const read=run({mode:'read',payload:{customData:saved.data,deals:[{id:1,history:[],activity:'',health:''}],updatedAt:'v1'}});assert(read.ok);
-    assert.deepEqual(read.data.tableSchema,change.tableSchema);assert.deepEqual(read.data.deals,change.records);
-  }
-});
 
 function harness(table=schema,records=[row]){
   const nodes=new Map(),calls=[],messages=[];

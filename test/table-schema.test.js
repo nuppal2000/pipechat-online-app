@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const Schema=require('../public/table-schema.js'),Core=require('../public/pipeline-core.js'),Csv=require('../public/csv-import.js');
-const {snapshotResult,createXanoBackend}=require('../lib/xano-backend.js');
+const {snapshotResult}=require('../lib/backend-contract.js');
 const schema={status:'ready',useCase:'Recruiting',description:'',title:'Recruiting pipeline',recordLabel:'candidate',fields:[
   {id:'f_name',name:'Candidate name',type:'text',role:'primary',options:[]},
   {id:'f_owner',name:'Recruiter',type:'text',role:'owner',options:[]},
@@ -66,26 +66,9 @@ test('contextual CSV maps semantic headers, keeps valid cells and blanks uncerta
   assert.equal(result.records[0].f_pay,80000);assert.equal(result.records[0].f_stage,'Interview');assert.equal(result.records[1].f_pay,null);assert.equal(result.records[1].f_stage,'');assert.equal(result.issues.length,2);assert(result.ignored.includes('Extraneous'));
   assert(!Object.hasOwn(importer.schema.properties.columnMap.properties,'account'));assert.match(importer.instructions,/business meaning/);
 });
-test('Xano projection retains only active fields and preserves an empty schema',()=>{
+test('Backend projection retains only active fields and preserves an empty schema',()=>{
   const data=snapshotResult({deals:rows,customFields:[],tableSchema:schema,updatedAt:'v1'});assert.deepEqual(data.deals,rows);assert.deepEqual(data.tableSchema,schema);
   assert.deepEqual(snapshotResult({...data,deals:[]}).tableSchema,schema);
   assert(!Object.hasOwn(snapshotResult({...data,deals:[{...rows[0],password:'never returned'}]}).deals[0],'password'));
-});
-test('tailored writes fail before PUT against Xano without schema support',async()=>{
-  let puts=0;const backend=createXanoBackend({baseUrl:'https://qa.example/api:qa',serverKey:'x'.repeat(32),fetchImpl:async(url,options)=>{if(options.method==='PUT')puts++;return {ok:true,json:async()=>({deals:[],customFields:[],updatedAt:null})};}});
-  await assert.rejects(()=>backend.writeCrm('token',[],null,[],schema),/table-schema support/);assert.equal(puts,0);
-});
-test('generated Xano helper round-trips tailored cells and blocks schema-stripping transitions',()=>{
-  const run=new Function('$input',require('../scripts/build-xano-custom-fields.js').code);
-  const saved=run({mode:'write',payload:{tableSchema:schema,customFields:[],deals:rows}});
-  assert.equal(saved.ok,true);
-  const read=run({mode:'read',payload:{customData:saved.data,deals:rows.map(r=>({id:r.id,history:[],activity:'',health:'',account:''})),updatedAt:'qa'}});
-  assert.deepEqual(read.data.deals,rows);assert.deepEqual(read.data.tableSchema,schema);
-  assert.equal(run({mode:'transition',payload:{current:saved.data,next:{fields:[],cells:{}},deals:[]}}).data.valid,false);
-  assert.equal(run({mode:'transition',payload:{current:{tableSchema:{status:'pending'}},next:saved.data,deals:[]}}).data.valid,true);
-  assert.equal(run({mode:'transition',payload:{current:{tableSchema:{status:'pending'}},next:saved.data,deals:rows}}).data.valid,false);
-  assert.equal(run({mode:'transition',payload:{current:{},next:saved.data,deals:[]}}).data.valid,false);
-  const empty=run({mode:'read',payload:{customData:saved.data,deals:[],updatedAt:'qa'}});
-  assert.deepEqual(empty.data.tableSchema,schema);assert.deepEqual(empty.data.deals,[]);
 });
 module.exports={schema};

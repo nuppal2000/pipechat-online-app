@@ -98,7 +98,7 @@ async function main() {
     ready = true; clearTimeout(startupTimer);
     const restoreOnly = env.PIPECHAT_SUPABASE_RESTORE_QA === '1';
     console.log(restoreOnly ? 'RESTORED QA ONLY: existing-account login and CRM reads. Chat, signup and CRM/usage writes are blocked.' :
-      'REAL Supabase QA storage and usage. SIMULATED AI ONLY: no OpenAI or Xano network calls.');
+      'REAL Supabase QA storage and usage. SIMULATED AI ONLY: no OpenAI network calls.');
     console.log(`QA URL: http://127.0.0.1:${message.port}/`);
     console.log(`QA run ID: ${env.PIPECHAT_QA_RUN_ID}`);
     for (const account of identities(env.PIPECHAT_QA_RUN_ID)) console.log(`QA ${account.label.toUpperCase()} email: ${account.email}`);
@@ -107,7 +107,7 @@ async function main() {
       console.log('Authentication creates/refreshes/revokes test sessions and can update login metadata; CRM/schema/quotas remain unchanged.');
       console.log('The usage meter is unavailable here: its normal read RPC can expire reservations, so it is blocked too.');
       console.log('This follows the completed snapshot/rollback checks. Do not rerun full-Auth backup equality checks after login changes Auth data.');
-      console.log('No source-project, OpenAI or Xano requests. No database passwords are needed.');
+      console.log('No source-project or OpenAI requests. No database passwords are needed.');
     } else {
       console.log('Create only these two users in Supabase Dashboard > Authentication > Users > Add user, with Auto Confirm enabled.');
       console.log('Enter disposable passwords privately in the dashboard and app Sign in form, never in this terminal or chat.');

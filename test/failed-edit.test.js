@@ -23,7 +23,7 @@ function harness(handler, storage = new Map()) {
     window.test={S,manualEdit,reviewFailedEdit,retryFailedEdit,discardFailedEdit,restoreFailedEdit,renderFailedEdit,logout,loadWorkspace};`), context);
   const h = context.window.test;
   Object.assign(h.S, { user: { id: 1, email: 'a@example.invalid', name: 'A' }, loaded: true,
-    records: [structuredClone(row)], updatedAt: 'v1', health: { storageProvider: 'xano' } });
+    records: [structuredClone(row)], updatedAt: 'v1', health: { storageProvider: 'supabase' } });
   const edit = (value, field = 'value') => h.manualEdit({ value, dataset: { field }, closest: () => ({ dataset: { id: '1' } }) });
   return { ...h, node, edit, calls, storage };
 }
@@ -109,6 +109,6 @@ test('exhausted chat quota does not block manual draft recovery', async () => {
 test('temporary missing health response does not delete a stored same-user draft', async () => {
   const h = harness(offline); await h.edit('30'); const restarted = harness(offline, h.storage);
   restarted.S.health = null; restarted.restoreFailedEdit(); assert.equal(h.storage.size, 1);
-  restarted.S.health = { storageProvider: 'xano' }; restarted.restoreFailedEdit();
+  restarted.S.health = { storageProvider: 'supabase' }; restarted.restoreFailedEdit();
   assert.equal(restarted.S.failedEdit.raw, '30');
 });

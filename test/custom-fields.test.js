@@ -5,27 +5,10 @@ const path=require('node:path');
 const vm=require('node:vm');
 const crypto=require('node:crypto');
 const C=require('../public/pipeline-core.js');
-const {snapshotResult,createXanoBackend}=require('../lib/xano-backend.js');
+const {snapshotResult}=require('../lib/backend-contract.js');
 const field={id:'cf_contact',name:'Contact',type:'text'};
 const row={id:1,account:'Acme QA',stage:'Warm',value:25,close:'',owner:'Ravi',next:'',follow:'',notes:'',history:[]};
 const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
-test('generated Xano helper matches shared validation and round-trips custom metadata',()=>{
-  const {code,script}=require('../scripts/build-xano-custom-fields.js');
-  assert.equal(fs.readFileSync(path.join(__dirname,'../xano/custom-fields.xs'),'utf8').replace(/\r\n/g,'\n'),script);
-  const run=new Function('$input',code);
-  assert.deepEqual(run({mode:'read',payload:{deals:[row],customData:{},updatedAt:'old'}}).data.deals,[row]);
-  const saved=run({mode:'write',payload:{customFields:[field],deals:[{...row,cf_contact:'Taylor'},{...row,id:2}]}});
-  assert(saved.ok);assert.equal(saved.data.cells['2'].cf_contact,'');
-  const read=run({mode:'read',payload:{deals:[row],customData:saved.data,updatedAt:'v2'}});
-  assert.equal(read.data.deals[0].cf_contact,'Taylor');assert.deepEqual(read.data.customFields,[field]);
-  const empty=run({mode:'read',payload:{deals:[],customData:saved.data,updatedAt:'v3'}});
-  assert.deepEqual(empty.data.customFields,[field]);assert.equal(empty.data.deals.length,0);
-  for(const name of ['Owner','Company','__proto__','constructor','contact']){
-    const fields=name==='contact'?[field,{...field,id:'cf_second',name}]:[{...field,name}];
-    assert.equal(run({mode:'write',payload:{customFields:fields,deals:[]}}).ok,false);
-  }
-  assert.equal(run({mode:'write',payload:{customFields:[field],deals:[{id:1,cf_contact:123}]}}).ok,false);
-});
 function harness(){
   const nodes=new Map(),calls=[],messages=[],storage=new Map();
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',style:{},innerHTML:'',textContent:'',hidden:false,classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[]});return nodes.get(id);};
@@ -42,7 +25,7 @@ function harness(){
     }};
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};toast=()=>{};focusTrust=()=>{};updateUsage=()=>{};say=(message)=>window.messages.push(message);window.test={S,send,prepare,confirmDraft,cancelDraft,manualEdit,undo,newRecord,renderTable,renderTrust,restoreFailedEdit,reviewFailedEdit,retryFailedEdit,aiPayload};`),Object.assign(context,{window:{...context.window,messages}}));
   const h=context.window.test;
-  Object.assign(h.S,{user:{id:1,email:'qa@example.invalid',name:'QA'},loaded:true,records:[structuredClone(row)],updatedAt:'v1',health:{aiConfigured:true,storageProvider:'xano'},usage:{used:0,remaining:10}});
+  Object.assign(h.S,{user:{id:1,email:'qa@example.invalid',name:'QA'},loaded:true,records:[structuredClone(row)],updatedAt:'v1',health:{aiConfigured:true,storageProvider:'supabase'},usage:{used:0,remaining:10}});
   return {...h,node,calls,messages,storage,fail:value=>failure=value,snapshot:()=>structuredClone(snapshot)};
 }
 test('custom definitions reject duplicates, aliases, reserved names, invalid types and oversized schemas',()=>{
@@ -101,17 +84,9 @@ test('column names and cells are escaped and new columns render only after confi
   assert(h.node('dealHeaders').innerHTML.includes('&lt;img'));assert(!h.node('dealRows').innerHTML.includes('<script>'));
   assert.match(h.node('dealRows').innerHTML,/data-field="cf_/);assert.equal(h.node('pipelineTable').style.minWidth,'830px');
 });
-test('Xano custom snapshots validate and preserve metadata even without deals',()=>{
+test('Backend custom snapshots validate and preserve metadata even without deals',()=>{
   assert.deepEqual(snapshotResult({deals:[],customFields:[field],updatedAt:'v1'}).customFields,[field]);
   const result=snapshotResult({deals:[{...row,cf_contact:'Taylor',password:'secret'}],customFields:[field],updatedAt:'v1'});
   assert.equal(result.deals[0].cf_contact,'Taylor');assert.equal(result.deals[0].password,undefined);
   assert.throws(()=>snapshotResult({deals:[{...row,cf_bad:'x'}],customFields:[field],updatedAt:'v1'}));
-});
-test('custom writes stop before PUT against legacy Xano and detect stripped acknowledgements',async()=>{
-  const requests=[];let mode='legacy';
-  const backend=createXanoBackend({baseUrl:'https://example.test/api:pipechat',serverKey:'test-only-server-key-not-a-secret-12345',fetchImpl:async(url,options)=>{
-    requests.push(options.method);return {ok:true,json:async()=>({deals:[{...row,cf_contact:''}],updatedAt:'v1',...(mode==='modern'&&options.method!=='PUT'?{customFields:[field]}:{})})};
-  }});
-  await assert.rejects(backend.writeCrm('token',[{...row,cf_contact:''}],'v1',[field]),/endpoint update/);assert.deepEqual(requests,['GET']);
-  mode='modern';await assert.rejects(backend.writeCrm('token',[{...row,cf_contact:''}],'v1',[field]));assert.deepEqual(requests,['GET','GET','PUT']);
 });

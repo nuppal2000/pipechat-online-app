@@ -7,8 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js && node --check lib/xano-backend.js && node --check lib/supabase-backend.js && node --check scripts/check-xano.js && node --check scripts/check-supabase.js && node --check scripts/start-supabase-browser-qa.js && node --check scripts/supabase-browser-qa-guard.cjs && node --check scripts/test-supabase-live.js && node --check public/pipechat.js && node --check public/pipeline-core.js",
-    "xano:check": "node scripts/check-xano.js",
+    "check": "node --check server.js && node --check lib/backend-contract.js && node --check lib/supabase-backend.js && node --check scripts/check-supabase.js && node --check scripts/start-supabase-browser-qa.js && node --check scripts/supabase-browser-qa-guard.cjs && node --check scripts/test-supabase-live.js && node --check public/pipechat.js && node --check public/pipeline-core.js",
     "supabase:check": "node scripts/check-supabase.js",
     "test": "node --test test/*.test.js"
   },

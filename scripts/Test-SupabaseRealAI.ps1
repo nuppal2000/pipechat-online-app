@@ -5,7 +5,7 @@ if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf)) { $nodePath = (Get-C
 Write-Host 'One real GPT-5.5 synthetic CSV mapping request, capped at 4,000 output tokens, with no retry.'
 Write-Host 'This incurs an OpenAI API charge and one chat on disposable Supabase QA A if successful.'
 Write-Host 'It runs the real app endpoint privately on localhost. CRM writes are disabled; no CSV import is confirmed.'
-Write-Host 'Keep QA A idle. No Render deployment, Xano change or account creation.'
+Write-Host 'Keep QA A idle. No Render deployment or account creation.'
 if ((Read-Host 'Type AI to authorize this one paid preview') -cne 'AI') { Write-Host 'Cancelled.'; return }
 $password = Read-Host 'Supabase QA A account password (hidden)' -AsSecureString
 $key = Read-Host 'OpenAI API key (hidden; never paste into chat)' -AsSecureString

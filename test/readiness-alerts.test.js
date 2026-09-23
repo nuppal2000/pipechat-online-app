@@ -2,7 +2,6 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createReadiness } = require('../lib/readiness.js');
 const { createOperationalAlerts } = require('../lib/operational-alerts.js');
-const { createXanoBackend } = require('../lib/xano-backend.js');
 
 test('readiness is cached, single-flight, bounded and emits only state transitions', async () => {
   let now = 0, probes = 0, fail = false;
@@ -24,14 +23,6 @@ test('a hanging probe returns unavailable within its deadline and aborts', async
   let signal;
   const readiness = createReadiness({ timeoutMs: 20, write() {}, probe: s => { signal = s; return new Promise(() => {}); } });
   assert.deepEqual(await readiness.check(), { ok: false }); assert.equal(signal.aborted, true);
-});
-test('Xano readiness requires DB confirmation without weakening contract startup validation', async () => {
-  let result = { contract: 'pipechat-xano-v1', capabilities: ['auth', 'user-scoped-crm', 'atomic-crm-save', 'atomic-usage-reservations', 'token-revocation'] };
-  const backend = createXanoBackend({ baseUrl: 'https://xano.example.test/api:pipechat', serverKey: 'x'.repeat(40),
-    fetchImpl: async () => ({ ok: true, json: async () => result }) });
-  await backend.check(); await assert.rejects(backend.check({ requireDatabase: true }), /database readiness/);
-  result.database = 'ok'; await backend.check({ requireDatabase: true });
-  result.capabilities = []; await assert.rejects(backend.check(), /integration contract/);
 });
 const event = (status = 200, durationMs = 100, route = '/api/crm-data') => ({ outcome: 'finished', status, durationMs, route, body: 'PRIVATE_CANARY', requestId: 'PRIVATE_ID' });
 test('error and latency thresholds fire, deduplicate and recover with closed-schema events', () => {

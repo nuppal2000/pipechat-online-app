@@ -535,7 +535,7 @@ async function main(input, { connectionsOnly = false, verifyOnly = false, rollba
     stage = 'forced rollback in restored QA database';
     await forcedRollback(target);
     console.log(`BACKUP: ${dir}`);
-    console.log('RESTORE DATABASE CHECKS PASSED. Browser login/signup/email/project-settings checks remain; Render still uses Xano.');
+    console.log('RESTORE DATABASE CHECKS PASSED. Browser login/signup/email/project-settings checks are separate. No live app settings changed.');
   } catch (error) {
     if (checkingConnections) console.log(`FAIL: ${stage}; ${connectionFailure(error)}. No backup or restore started.`);
     else {

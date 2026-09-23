@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createSupabaseBackend, BackendError } = require('../lib/supabase-backend.js');
-const { BackendError: SharedBackendError } = require('../lib/xano-backend.js');
+const { BackendError: SharedBackendError } = require('../lib/backend-contract.js');
 
 const config = { url: 'https://pipechat-test.supabase.co', publishableKey: 'sb_publishable_offline_test_key_123456789' };
 const secret = 'DO_NOT_EXPOSE_ACCESS_REFRESH_PASSWORD_SQL';

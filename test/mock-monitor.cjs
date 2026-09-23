@@ -1,4 +1,4 @@
-// Synthetic provider only. Never sends a request to OpenAI or Xano.
+// Synthetic provider only. Never sends an external network request.
 const assert = require('node:assert/strict');
 global.fetch = async (url, options) => {
   assert.equal(String(url), 'https://api.openai.com/v1/responses');

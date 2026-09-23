@@ -10,20 +10,20 @@ One successful AI mapping uses the existing chat allowance. An unavailable clien
 
 Column meaning is separate from individual-cell validity. A recognizable sales-status column can map to Stage even when some cells have ambiguous labels. Known stage cells are retained; unclear labels remain blank. The same policy applies to estimated amounts, responsible representatives, and anticipated close dates under differently worded headers.
 
-## Coordinated Xano update
+## Storage Validation
 
-Before deploying the app, allow null on `deal.value`, without rewriting existing records. Publish the matching validation helper and CRM GET/PUT mappings together:
+Supabase's private JSONB records and save RPC preserve blank imported cells:
 
 - Validation accepts empty account/stage strings, but retains other field, ID, date and ownership rules.
-- `value` must be an explicit key. Null is unknown; numeric values retain their existing range constraints. Use `is_null`, not loose equality, so numeric zero passes.
+- Null is unknown; numeric zero is a known value. Numeric cells retain their existing range constraints.
 - Both write paths and both response mappings preserve null instead of using a `?? 0.0` fallback.
 - Transaction locking, stale-version checks, user filters, authentication and usage endpoints are unchanged.
 
-The local `xano/API-CONTRACT.md` documents the revised storage shape. This app release does not enable broader production readiness or resolve deferred full-workspace recovery checks.
+`db/tests/README.md` documents the SQL contract. Shared Node snapshot validators are in `lib/backend-contract.js`; there is no generated external-provider helper.
 
 ## Verification and rollback
 
-Run `node --test test/*.test.js`. Coverage includes sparse CSVs, semantic mappings, ambiguous cells, zero versus null, quota behavior, confirm/append/undo, stale responses, failed-save recovery and JSON/Xano-adapter persistence. Offline browser checks use `node scripts/start-local-qa.js --offline`; they do not prove a live model's interpretation or live database persistence.
+Run `npm test`. Coverage includes sparse CSVs, semantic mappings, ambiguous cells, zero versus null, quota behavior, confirm/append/undo, stale responses, failed-save recovery and JSON/Supabase persistence. Hosted browser QA uses the approved Supabase runner with simulated AI and disposable accounts; it does not prove a live model's interpretation.
 
 The fixture `test/fixtures/csv-tolerant-import.csv` contains only synthetic data. Review its four proposed additions before saving. An actual model may choose more conservative mappings than the fixture model.
 

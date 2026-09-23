@@ -80,7 +80,6 @@ function harness(provider, fetchImpl, { failRelease = false } = {}) {
     require(name) {
       if (name === 'node:http') return { createServer(callback) { handler = callback; return {}; } };
       if (name === './lib/request-monitor.js') return { monitorRequest() {} };
-      if (name === './lib/xano-backend.js') return { ...serverRequire(name), createXanoBackend: () => backend };
       if (name === './lib/supabase-backend.js') return { createSupabaseBackend: () => ({ forRequest: () => backend }) };
       return serverRequire(name);
     }
@@ -92,7 +91,7 @@ function harness(provider, fetchImpl, { failRelease = false } = {}) {
     const req = new EventEmitter();
     req.method = 'POST'; req.url = '/api/pipechat-ai';
     req.headers = { host: 'pipechat.example.invalid', origin: 'https://pipechat.example.invalid',
-      'content-type': 'application/json', cookie: 'pipechat_xano_session=offline-session' };
+      'content-type': 'application/json', cookie: 'pipechat_session=offline-session' };
     const headers = new Map();
     const res = {
       ended: false,
@@ -123,7 +122,7 @@ function assertReleased(h, res) {
   assert.equal(h.clock.timers.size, 0);
 }
 
-for (const provider of ['supabase', 'xano']) {
+for (const provider of ['supabase']) {
   test(`${provider}: stalled fetch aborts at the unchanged 80-second deadline and releases quota`, { timeout: 2000 }, async () => {
     const h = harness(provider, async () => new Promise(() => {}));
     const { done, res } = await h.request();

@@ -9,7 +9,7 @@ const customizationInstructions = 'Use rename_field with field and newFieldName 
 const csvImportCore = require("./public/csv-import.js");
 const {createSheetsReader}=require('./lib/google-sheets.js');
 const readGoogleSheet=createSheetsReader();
-const { createXanoBackend, BackendError } = require("./lib/xano-backend.js");
+const { BackendError } = require("./lib/backend-contract.js");
 const { createSupabaseBackend } = require("./lib/supabase-backend.js");
 const { monitorRequest } = require("./lib/request-monitor.js");
 const { createReadiness } = require("./lib/readiness.js");
@@ -25,17 +25,13 @@ const FREE_CHAT_LIMIT = Number(process.env.PIPECHAT_FREE_CHAT_LIMIT || 1000);
 const ALLOW_SIGNUP = (process.env.PIPECHAT_ALLOW_SIGNUP ?? 'true') === 'true';
 const STATIC_ROOT = path.join(__dirname, "public");
 const STORAGE_PROVIDER = process.env.PIPECHAT_STORAGE_PROVIDER || "json";
-if (!["json", "xano", "supabase"].includes(STORAGE_PROVIDER)) throw new Error("PIPECHAT_STORAGE_PROVIDER must be json, xano or supabase.");
-const xano = STORAGE_PROVIDER === "xano" ? createXanoBackend({
-  baseUrl: process.env.XANO_API_BASE_URL,
-  serverKey: process.env.XANO_SERVER_KEY
-}) : null;
+if (!["json", "supabase"].includes(STORAGE_PROVIDER)) throw new Error("PIPECHAT_STORAGE_PROVIDER must be json or supabase.");
 const supabase = STORAGE_PROVIDER === "supabase" ? createSupabaseBackend({
   url: process.env.SUPABASE_URL,
   publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY
 }) : null;
-const cloudBackend = xano || supabase;
-const SESSION_COOKIE = process.env.PIPECHAT_SESSION_COOKIE || (xano ? "pipechat_xano_session" : "pipechat_session");
+const cloudBackend = supabase;
+const SESSION_COOKIE = process.env.PIPECHAT_SESSION_COOKIE || "pipechat_session";
 if (!/^[A-Za-z0-9_-]+$/.test(SESSION_COOKIE)) throw new Error("PIPECHAT_SESSION_COOKIE must be a valid cookie name.");
 const SECURE_COOKIE = process.env.NODE_ENV === "production" || process.env.PIPECHAT_COOKIE_SECURE === "true";
 const userQueues = new Map();
@@ -452,7 +448,7 @@ function verifyPassword(password, stored) {
 }
 
 function sessionCookie(token) {
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${xano ? 86400 : 2592000}${SECURE_COOKIE ? "; Secure" : ""}`;
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${SECURE_COOKIE ? "; Secure" : ""}`;
 }
 
 function clearSessionCookie() {
@@ -468,7 +464,6 @@ async function getAuthenticatedUser(req) {
   if (supabase) return req.backend.getUser();
   const token = getCookie(req, SESSION_COOKIE);
   if (!token) return null;
-  if (xano) return xano.getUser(token);
   const store = await readAuthStore();
   const session = store.sessions[token];
   if (!session) return null;
@@ -765,7 +760,7 @@ const server = http.createServer(async (req, res) => {
     // Static files and health checks must not start background session refreshes.
     Object.defineProperty(req, 'backend', { get() {
       if (requestBackend === undefined) {
-        requestBackend = supabase ? supabase.forRequest(req, res, { secureCookie: SECURE_COOKIE }) : xano;
+        requestBackend = supabase ? supabase.forRequest(req, res, { secureCookie: SECURE_COOKIE }) : null;
       }
       return requestBackend;
     } });

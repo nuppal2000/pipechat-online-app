@@ -1,7 +1,7 @@
 // Opt-in QA preload only. Never imported by the production startup path.
 const { AsyncLocalStorage } = require('node:async_hooks');
 const http = require('node:http');
-const { BackendError } = require('../lib/xano-backend.js');
+const { BackendError } = require('../lib/backend-contract.js');
 const Core = require('../public/pipeline-core.js');
 
 const BASE = 'https://nzktondjxxxiezkbrhdo.supabase.co';
@@ -288,7 +288,6 @@ function install() {
     harness.wrapped.check = startupCheck(harness.wrapped.check, message => process.send?.(message));
     return harness.wrapped;
   };
-  require('../lib/xano-backend.js').createXanoBackend = () => { throw deny(); };
   const listen = http.Server.prototype.listen;
   http.Server.prototype.listen = function (...args) {
     if (server || stopping || args[0] !== 0 || args[1] !== '127.0.0.1') throw new Error('QA listener must use an ephemeral loopback port.');
