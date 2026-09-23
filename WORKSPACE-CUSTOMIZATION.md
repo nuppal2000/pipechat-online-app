@@ -1,0 +1,11 @@
+# Column and Dashboard Customization
+
+- Right-click a table header (or focus it and press Shift+F10) and select Rename column. Confirm the preview. Only the label changes; stable field IDs, roles, values, records and history remain unchanged.
+- Ask chat to turn a column into a dropdown. Without options, it asks which options to use. A request to use existing distinct values is also valid, but it must be explicit. Up to 30 distinct options are supported, with 80 characters per option.
+- Conversion matches existing values case-insensitively with normalized whitespace/accents. Matches use the canonical option spelling. Nonblank unmatched values are listed by record ID in the preview and become blank only on confirmation. Other columns stay unchanged. Manual dropdowns, filtering, sorting and CSV mapping use the resulting type.
+- Numeric/date fields can become dropdowns. A converted follow-up date loses its date role. Invalid report filters and incompatible KPI overrides are removed; the preview lists removed overrides. Undo restores the previous schema, values and KPI definitions.
+- Ask chat to edit a top dashboard KPI, such as changing Total Score to Average Score. The model proposes a definition, never a numeric result. Preview, confirm and undo work as for table edits. Settings persist across reloads and sessions.
+- KPI measures are count, sum and average. Blank numbers are excluded, zeroes included. Conditions are ANDed: equality/inequality, blank/nonblank, numeric/date comparisons, dates before today or older than a specified number of days. Empty dates never count as stale. The chatbot must clarify the meaning of stale and relevant date/status fields rather than inventing a policy.
+- Cards calculate from the current visible table rows and current date; chart-specific selections remain separate. A KPI change does not change rows or the chart definition. Existing saved overrides are supplied to the model for subsequent refinements.
+
+No authentication, quota, signup, provider or model settings change. AI actions use the normal metered endpoint; manual rename remains available at the chat cap. See `SUPABASE-DEPLOYMENT.md` for migration order and rollback constraints.

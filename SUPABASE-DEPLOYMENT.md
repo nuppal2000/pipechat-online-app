@@ -23,6 +23,10 @@ The reviewed schema is in `db/migrations/001-supabase.sql`. Apply it only during
 
 ## Acceptance
 
+For column renaming, dropdown conversion and dashboard KPI customization, apply `db/migrations/004-column-and-kpi-customization.sql` after migration 003 and before deploying the UI. It adds a private KPI validator and replaces the schema/custom-field/save validators without changing public RPCs or grants. No user records are changed by deployment. KPI definitions live inside the versioned per-workspace table schema; conversions and their cell changes save atomically. Existing preview confirmation, undo, account isolation and usage caps remain in force.
+
+Once users save these new definitions, do not roll back to a UI/backend that drops KPI metadata or rejects custom dropdowns. Prefer a forward fix; preserve snapshots and stop writes before any incompatible rollback. Existing open tabs should be refreshed before further editing after deployment.
+
 For spreadsheet onboarding, apply `db/migrations/003-spreadsheet-setup.sql` after migrations 001 and 002, before deploying this UI. It updates validation and the existing atomic save RPC without changing grants or writing any user's records. It permits a pending workspace to become a populated spreadsheet table in one version-checked transaction. Existing configured workspaces cannot change their source mode through an ordinary save. See `SPREADSHEET-IMPORT.md` for snapshot semantics and limits.
 
 For profile settings/reset support, apply `db/migrations/002-reset-workspace.sql` once after migration 001 and before deploying the reset UI. It adds one owner-only, authenticated, version-checked RPC; applying the migration does not delete data. A confirmed reset removes the current workspace's records (including their history), custom fields and table definition, then returns it to pending onboarding. It does not recreate the Auth account, change sessions or memberships, refund chats, or reset the usage limit. Standard saves still cannot return a configured table to onboarding. Reset cannot be undone in the app; historical private backups and previously exported files are unaffected.
