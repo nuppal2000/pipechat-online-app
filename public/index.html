@@ -10,6 +10,9 @@
   <script defer src="/icons.js"></script>
   <script defer src="/table-schema.js"></script>
   <script defer src="/pipeline-core.js"></script>
+  <script defer src="/todo-core.js"></script>
+  <script defer src="/todo-ui.js"></script>
+  <link rel="stylesheet" href="/todo.css">
   <script defer src="/workspace-customization.js"></script>
   <link rel="stylesheet" href="/workspace-customization.css">
   <script defer src="/csv-import.js"></script>
@@ -37,7 +40,7 @@
     <header class="masthead">
       <a class="wordmark" href="/">Pipe<span>Chat</span></a><span class="workspace-label">Sales workspace</span>
       <nav class="view-tabs" aria-label="Workspace views">
-        <button id="tableTab" data-tab="table" class="active">Pipeline</button><button id="dashboardTab" data-tab="dashboard">Dashboard</button><button id="activityTab" data-tab="activity">Activity</button><button id="shareTab" data-tab="share">Shared views</button>
+        <button id="tableTab" data-tab="table" class="active">Pipeline</button><button id="todoTab" data-tab="todo">To Do</button><button id="dashboardTab" data-tab="dashboard">Dashboard</button><button id="activityTab" data-tab="activity">Activity</button><button id="shareTab" data-tab="share">Shared views</button>
       </nav>
       <div class="account-actions"><div class="profile"><button id="profileBtn" aria-label="Profile" aria-expanded="false" aria-controls="profileMenu" title="Profile"><span id="accountPill"></span><span id="userAvatar" class="avatar"></span></button><div id="profileMenu" class="profile-menu" hidden><button id="settingsBtn"><i data-icon="Settings"></i>Settings</button></div></div><button id="logoutBtn" class="icon-btn" title="Sign out" aria-label="Sign out"><i data-icon="LogOut"></i></button></div>
     </header>
@@ -74,6 +77,8 @@
         <div id="viewFilters" class="view-filters"><div class="segmented" aria-label="Pipeline scope"><button data-scope="all" class="active">All deals</button><button data-scope="mine">My deals</button><button data-scope="open">Open only</button></div><label class="search"><i data-icon="Search"></i><input id="dealSearch" type="search" aria-label="Search deals" placeholder="Search deals..."></label></div>
         <div id="filterStrip" class="filter-strip" hidden><i data-icon="ListFilter"></i><span id="filterText"></span><button id="clearFilterBtn" class="icon-btn" title="Clear filter" aria-label="Clear filter"><i data-icon="X"></i></button></div>
         <div id="undoStrip" class="undo-strip" hidden><span id="undoText"></span><button id="quickUndoBtn" class="text-btn"><i data-icon="Undo2"></i>Undo</button></div>
+        <div id="todoSuggestion" class="todo-suggestion" hidden><span id="todoSuggestionText"></span><button id="todoSuggestYes" class="secondary compact">Yes</button><button id="todoSuggestNo" class="quiet compact">No</button></div>
+        <section id="todoView" class="todo-board" aria-label="To Do board" hidden></section>
         <div id="tableView" class="table-wrap"><table id="pipelineTable" class="pipeline-table"><thead><tr id="dealHeaders"><th>Company</th><th>Stage</th><th>Value</th><th>Close date</th><th>Owner</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="dealRows"></tbody></table></div>
         <section id="dashboardView" class="dashboard-view" hidden>
           <div class="metrics"><div><span>Open pipeline value</span><strong id="valueMetric"></strong></div><div><span>Open deals</span><strong id="openMetric"></strong></div><div><span>Follow-ups today</span><strong id="followupsMetric"></strong></div><div><span>Missing owners</span><strong id="missingOwnerMetric"></strong></div></div>
@@ -100,6 +105,7 @@
   </div>
   <dialog id="resetDialog" class="field-dialog" aria-labelledby="resetDialogTitle" aria-describedby="resetDialogDescription"><h2 id="resetDialogTitle">Reset Pipechat</h2><p id="resetDialogDescription">Are you sure you want to reset Pipechat? This will delete all existing information in your Pipechat table and return you to the onboarding screen.</p><p id="resetError" class="error" role="alert"></p><div class="dialog-actions"><button id="resetNoBtn" class="secondary" type="button">No</button><button id="resetYesBtn" class="danger" type="button">Yes</button></div></dialog>
   <dialog id="fieldDialog" class="field-dialog" aria-labelledby="fieldDialogTitle"><form id="fieldDialogForm"><div id="fieldDialogBody"></div><p id="fieldDialogError" class="error" role="alert"></p><div class="dialog-actions"><button id="fieldDialogCancel" type="button" class="secondary">Cancel</button><button id="fieldDialogSubmit" type="submit" class="primary">Preview field</button></div></form></dialog>
+  <dialog id="todoDialog" class="field-dialog" aria-labelledby="todoDialogTitle"><form id="todoForm"><h2 id="todoDialogTitle">New To Do card</h2><div class="todo-form-grid"><label>Linked record<select id="todoRecord" required></select></label><label>Board status<select id="todoStatus"></select></label><label>Next action source<select id="todoNextSource"></select></label><p id="todoNextLinked"></p><label id="todoNextLabel">Next action<input id="todoNext" maxlength="500"></label><label>Due date source<select id="todoDueSource"></select></label><p id="todoDueLinked"></p><label id="todoDueLabel">Due date<input id="todoDue" type="date"></label><label>Owner / contact field<select id="todoOwnerSource"></select></label></div><p id="todoFormError" class="error" role="alert"></p><div class="dialog-actions"><button id="todoCancel" type="button" class="secondary">Cancel</button><button type="submit" class="primary">Preview card</button></div></form></dialog>
   <div id="columnMenu" class="column-menu" role="menu" aria-label="Column actions" hidden><button id="renameColumnBtn" role="menuitem" type="button">Rename column</button></div>
   <div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button id="undoBtn" class="text-btn"><i data-icon="Undo2"></i>Undo</button><button id="dismissToast" class="icon-btn" title="Dismiss" aria-label="Dismiss"><i data-icon="X"></i></button></div>
 </body>
