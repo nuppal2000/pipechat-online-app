@@ -3,7 +3,7 @@ const {randomUUID}=require('node:crypto'),{PGlite}=require('@electric-sql/pglite
 const X=require('../public/workspace-customization.js');
 test('column/KPI migration preserves atomicity, CAS, rows, isolation and private grants',{timeout:120000},async t=>{
   const db=new PGlite();t.after(()=>db.close());
-  for(const file of ['tests/mock-supabase.sql','migrations/001-supabase.sql','migrations/002-reset-workspace.sql','migrations/003-spreadsheet-setup.sql','migrations/004-column-and-kpi-customization.sql','tests/security.sql'])await db.exec(await fs.readFile(path.join(__dirname,'../db',file),'utf8'));
+  for(const file of ['tests/mock-supabase.sql','migrations/001-supabase.sql','migrations/002-reset-workspace.sql','migrations/003-spreadsheet-setup.sql','migrations/004-column-and-kpi-customization.sql','migrations/005-kpi-lifecycle.sql','tests/security.sql'])await db.exec(await fs.readFile(path.join(__dirname,'../db',file),'utf8'));
   async function user(){const u={id:randomUUID(),session_id:randomUUID()};await db.query('insert into auth.users(id) values ($1)',[u.id]);await db.query('insert into auth.sessions(id,user_id) values ($1,$2)',[u.session_id,u.id]);return u;}
   async function rpc(u,sql,args=[]){await db.query("select set_config('request.jwt.claims',$1,false)",[JSON.stringify({sub:u.id,session_id:u.session_id,role:'authenticated'})]);await db.exec('set role authenticated');try{return (await db.query(sql,args)).rows[0]?.result;}finally{await db.exec('reset role');}}
   const read=u=>rpc(u,'select public.pipechat_read_crm() result');
@@ -23,6 +23,16 @@ test('column/KPI migration preserves atomicity, CAS, rows, isolation and private
   saved=await write(a,converted.records,converted.tableSchema,converted.customFields,saved.updatedAt);assert.deepEqual(saved.customFields,converted.customFields);assert.deepEqual(saved.deals,converted.records);
   const tuned=X.configure(saved.tableSchema,saved.customFields,'kpi_f_score',{title:'Average score',metric:'average',field:'f_score',conditions:[]});
   saved=await write(a,saved.deals,tuned.tableSchema,saved.customFields,saved.updatedAt);assert.deepEqual((await read(a)).tableSchema,tuned.tableSchema);
+  const extra=X.addKpi(saved.tableSchema,saved.customFields,'kpi_user_test',{title:'Total follow-ups',metric:'count',field:null,conditions:[{field:'cf_status',operator:'is_not_blank',value:null}]});
+  saved=await write(a,saved.deals,extra.tableSchema,saved.customFields,saved.updatedAt);
+  assert.equal(X.kpis((await read(a)).tableSchema,saved.customFields).length,3);
+  const removed=X.deleteKpi(saved.tableSchema,saved.customFields,'kpi_f_score');
+  saved=await write(a,saved.deals,removed.tableSchema,saved.customFields,saved.updatedAt);
+  assert.deepEqual((await read(a)).tableSchema.hiddenKpis,['kpi_f_score']);assert.equal(X.kpis(saved.tableSchema,saved.customFields).length,2);
+  assert.deepEqual(saved.deals,converted.records);
+  for(const hiddenKpis of [null,'kpi_records',['kpi_records','kpi_records'],['bad'],[null],Array.from({length:121},(_,i)=>'kpi_'+i)]){
+    await assert.rejects(()=>write(a,saved.deals,{...saved.tableSchema,hiddenKpis},saved.customFields,saved.updatedAt),e=>e.code==='PT400');assert.deepEqual(await read(a),saved);
+  }
   for(const k of [{...tuned.after,field:'missing'},{...tuned.after,conditions:[{field:'f_name',operator:'older_than_days',value:1}]},{...tuned.after,metric:'execute'},{...tuned.after,conditions:[{field:'f_score',operator:'gt',value:'1 OR 1=1'}]}]){
     await assert.rejects(()=>write(a,saved.deals,{...saved.tableSchema,kpis:[k]},saved.customFields,saved.updatedAt),e=>e.code==='PT400');assert.deepEqual(await read(a),saved);
   }
