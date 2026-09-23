@@ -4,7 +4,9 @@ declare item record; rpc_count integer;
 begin
   select count(*) into rpc_count from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname like 'pipechat_%';
-  if rpc_count <> 6 then raise exception 'Expected exactly six public PipeChat RPCs'; end if;
+  if rpc_count <> 6 + (case when to_regprocedure('public.pipechat_reset_crm(text,boolean)') is null then 0 else 1 end) then
+    raise exception 'Unexpected public PipeChat RPC inventory';
+  end if;
   for item in select p.oid, p.proname, p.prosecdef, p.proconfig, n.nspname
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'pipechat' or (n.nspname = 'public' and p.proname like 'pipechat_%') loop
@@ -38,4 +40,3 @@ begin
     has_schema_privilege('service_role','pipechat','USAGE') then raise exception 'Private schema is accessible'; end if;
 end
 $$;
-
