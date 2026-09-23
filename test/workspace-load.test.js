@@ -27,7 +27,7 @@ function harness(handler) {
   assert(normalized.includes(boot));
   vm.runInNewContext(normalized.replace(boot, `
     render=()=>{};say=()=>{};
-    window.test={S,loadWorkspace,restoreSession,authSubmit};`), context);
+    window.test={S,loadWorkspace,restoreSession,authSubmit,loadAuthPolicy,toggleAuthMode};`), context);
   return { ...context.window.test, node, classes };
 }
 const user = id => ({ id, name: `QA ${id}`, email: `qa-${id}@example.invalid` });
@@ -85,4 +85,39 @@ test('failed workspace load stays locked and clears previous in-memory records',
   await h.loadWorkspace(user(2));
   assert.equal(h.S.loaded, false); assert.equal(h.S.records.length, 0);
   assert(h.classes.has('auth-locked')); assert.equal(h.node('authScreen').hidden, false);
+});
+
+test('email confirmation leaves the CRM locked and switches back to sign in', async () => {
+  const calls=[];
+  const h=harness(url=>{calls.push(url);return {confirmationRequired:true,message:'Confirm your email first.'};});
+  h.S.signupAllowed=true;h.S.signup=true;h.node('authPassword').value='temporary-password';
+  await h.authSubmit({preventDefault(){}});
+  assert.deepEqual(calls,['/api/auth/signup']);assert.equal(h.S.user,null);assert.equal(h.S.loaded,false);
+  assert(h.classes.has('auth-locked'));assert.equal(h.S.signup,false);assert.equal(h.node('authPassword').value,'');
+  assert.equal(h.node('authSubmitBtn').textContent,'Sign in');assert.equal(h.node('authSubmitBtn').disabled,false);
+  assert.equal(h.node('authMessage').textContent,'Confirm your email first.');
+});
+
+test('an auth response without a user never attempts to open the workspace', async () => {
+  const calls=[];const h=harness(url=>{calls.push(url);return {};});
+  await h.authSubmit({preventDefault(){}});
+  assert.deepEqual(calls,['/api/auth/login']);assert(h.classes.has('auth-locked'));
+  assert.match(h.node('authMessage').textContent,/Sign-in was not completed/);
+});
+
+test('signup stays hidden unless the server explicitly allows it; existing login remains usable', async () => {
+  for(const health of [{signupAllowed:false},{},{signupAllowed:'true'},new Error('offline')]) {
+    const calls=[];
+    const h=harness(url=>{calls.push(url);if(url==='/api/health'){if(health instanceof Error)throw health;return health;}return {};});
+    await h.loadAuthPolicy();
+    assert.equal(h.S.signupAllowed,false);assert.equal(h.node('authToggleBtn').hidden,true);
+    h.toggleAuthMode();assert.equal(h.S.signup,false);
+    h.S.signup=true;await h.authSubmit({preventDefault(){}});
+    assert.deepEqual(calls,['/api/health']);assert.match(h.node('authMessage').textContent,/signup is currently closed/);
+    h.S.signup=false;await h.authSubmit({preventDefault(){}});
+    assert.equal(calls.at(-1),'/api/auth/login');
+  }
+  const h=harness(()=>({signupAllowed:true}));
+  await h.loadAuthPolicy();assert.equal(h.node('authToggleBtn').hidden,false);
+  h.toggleAuthMode();assert.equal(h.S.signup,true);assert.equal(h.node('nameField').hidden,false);
 });

@@ -6,6 +6,7 @@ const pipelineCore = require("./public/pipeline-core.js");
 const tableSchemaCore = require('./public/table-schema.js');
 const csvImportCore = require("./public/csv-import.js");
 const { createXanoBackend, BackendError } = require("./lib/xano-backend.js");
+const { createSupabaseBackend } = require("./lib/supabase-backend.js");
 const { monitorRequest } = require("./lib/request-monitor.js");
 const { createReadiness } = require("./lib/readiness.js");
 const { createOperationalAlerts } = require("./lib/operational-alerts.js");
@@ -17,13 +18,19 @@ const OPENAI_MODEL = process.env.PIPECHAT_MODEL || "gpt-4.1-mini";
 const DATA_DIR = process.env.PIPECHAT_DATA_DIR || path.join(__dirname, "data");
 const AUTH_FILE = path.join(DATA_DIR, "pipechat-auth.json");
 const FREE_CHAT_LIMIT = Number(process.env.PIPECHAT_FREE_CHAT_LIMIT || 1000);
+const ALLOW_SIGNUP = (process.env.PIPECHAT_ALLOW_SIGNUP ?? 'true') === 'true';
 const STATIC_ROOT = path.join(__dirname, "public");
 const STORAGE_PROVIDER = process.env.PIPECHAT_STORAGE_PROVIDER || "json";
-if (!["json", "xano"].includes(STORAGE_PROVIDER)) throw new Error("PIPECHAT_STORAGE_PROVIDER must be json or xano.");
+if (!["json", "xano", "supabase"].includes(STORAGE_PROVIDER)) throw new Error("PIPECHAT_STORAGE_PROVIDER must be json, xano or supabase.");
 const xano = STORAGE_PROVIDER === "xano" ? createXanoBackend({
   baseUrl: process.env.XANO_API_BASE_URL,
   serverKey: process.env.XANO_SERVER_KEY
 }) : null;
+const supabase = STORAGE_PROVIDER === "supabase" ? createSupabaseBackend({
+  url: process.env.SUPABASE_URL,
+  publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY
+}) : null;
+const cloudBackend = xano || supabase;
 const SESSION_COOKIE = process.env.PIPECHAT_SESSION_COOKIE || (xano ? "pipechat_xano_session" : "pipechat_session");
 if (!/^[A-Za-z0-9_-]+$/.test(SESSION_COOKIE)) throw new Error("PIPECHAT_SESSION_COOKIE must be a valid cookie name.");
 const SECURE_COOKIE = process.env.NODE_ENV === "production" || process.env.PIPECHAT_COOKIE_SECURE === "true";
@@ -440,7 +447,13 @@ function clearSessionCookie() {
   return `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${SECURE_COOKIE ? "; Secure" : ""}`;
 }
 
+function backendToken(req) {
+  // Supabase owns its separate chunked cookie; ignore legacy provider cookies.
+  return supabase ? undefined : getCookie(req, SESSION_COOKIE);
+}
+
 async function getAuthenticatedUser(req) {
+  if (supabase) return req.backend.getUser();
   const token = getCookie(req, SESSION_COOKIE);
   if (!token) return null;
   if (xano) return xano.getUser(token);
@@ -592,9 +605,10 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
   const csv = csvImport ? csvImportCore.validateDescription(csvImport) : null;
   const tableSchema=tableSchemaCore.validate(pipeline?.tableSchema),core=pipelineCore.create(tableSchema),customFields=core.validateCustomFields(pipeline?.customFields);
   const csvCore=csvImportCore.forTable(tableSchema,customFields);
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const controller = cloudBackend ? new AbortController() : null;
+  const requestOptions = {
     method: "POST",
-    ...(xano ? { signal: AbortSignal.timeout(80000) } : {}),
+    ...(controller ? { signal: controller.signal } : {}),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${OPENAI_API_KEY}`
@@ -661,9 +675,27 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
         }
       }
     })
-  });
-
-  const data = await response.json();
+  };
+  let timer;
+  const deadline = controller ? new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new RequestError("The AI request timed out. No CRM changes were made.", 502));
+      controller.abort();
+    }, 80000);
+  }) : null;
+  let response, data;
+  try {
+    const request = fetch("https://api.openai.com/v1/responses", requestOptions).then(async response => {
+      controller?.signal.throwIfAborted();
+      const data = await response.json();
+      controller?.signal.throwIfAborted();
+      return { response, data };
+    });
+    // Keep the same AI deadline through headers and body consumption.
+    ({ response, data } = await (deadline ? Promise.race([request, deadline]) : request));
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
   if (!response.ok) {
     const messages = {
       401: "The AI provider rejected the server credentials. Check OPENAI_API_KEY.",
@@ -690,7 +722,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
 }
 
 const readiness = createReadiness({ probe: async signal => {
-  if (xano) { await xano.check({ requireDatabase: true, signal }); return; }
+  if (cloudBackend) { await cloudBackend.check({ requireDatabase: true, signal }); return; }
   const directory = await fs.stat(DATA_DIR);
   if (!directory.isDirectory()) throw new Error('Storage unavailable');
   await fs.access(DATA_DIR, fs.constants.R_OK | fs.constants.W_OK);
@@ -714,8 +746,16 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+    let requestBackend;
+    // Static files and health checks must not start background session refreshes.
+    Object.defineProperty(req, 'backend', { get() {
+      if (requestBackend === undefined) {
+        requestBackend = supabase ? supabase.forRequest(req, res, { secureCookie: SECURE_COOKIE }) : xano;
+      }
+      return requestBackend;
+    } });
 
-    // Browser writes must originate from this app. The Xano bearer token stays in an HttpOnly cookie.
+    // Browser writes must originate from this app. Provider tokens stay in HttpOnly cookies.
     if (["POST", "PUT", "DELETE", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")) {
       if (!(req.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
         return sendJson(res, 415, { error: "Use application/json for API requests." });
@@ -732,8 +772,9 @@ const server = http.createServer(async (req, res) => {
         app: "PipeChat",
         model: OPENAI_MODEL,
         aiConfigured: Boolean(OPENAI_API_KEY),
+        signupAllowed: ALLOW_SIGNUP,
         prototypeVersion: "product-v2",
-        freeChatLimit: xano ? null : FREE_CHAT_LIMIT,
+        freeChatLimit: cloudBackend ? null : FREE_CHAT_LIMIT,
         storageProvider: STORAGE_PROVIDER
       });
     }
@@ -750,6 +791,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/auth/signup") {
+      if (!ALLOW_SIGNUP) return sendJson(res, 403, { error: "Public signup is currently closed. Use an existing account." });
       const payload = await readPayload(req);
       const email = String(payload.email || "").trim().toLowerCase();
       const password = String(payload.password || "");
@@ -757,8 +799,12 @@ const server = http.createServer(async (req, res) => {
       if (!email.includes("@") || password.length < 8) {
         return sendJson(res, 400, { error: "Use a valid email and a password with at least 8 characters." });
       }
-      if (xano) {
-        const result = await xano.authenticate("signup", { email, password, name });
+      const backend = req.backend;
+      if (backend) {
+        const result = await backend.authenticate("signup", { email, password, name });
+        if (supabase) return sendJson(res, 200, result.confirmationRequired
+          ? { confirmationRequired: true, message: result.message }
+          : { user: result.user });
         return sendJsonWithHeaders(res, 200, { user: result.user }, { "Set-Cookie": sessionCookie(result.token) });
       }
       const store = await readAuthStore();
@@ -784,8 +830,10 @@ const server = http.createServer(async (req, res) => {
       const payload = await readPayload(req);
       const email = String(payload.email || "").trim().toLowerCase();
       const password = String(payload.password || "");
-      if (xano) {
-        const result = await xano.authenticate("login", { email, password });
+      const backend = req.backend;
+      if (backend) {
+        const result = await backend.authenticate("login", { email, password });
+        if (supabase) return sendJson(res, 200, { user: result.user });
         return sendJsonWithHeaders(res, 200, { user: result.user }, { "Set-Cookie": sessionCookie(result.token) });
       }
       const store = await readAuthStore();
@@ -800,9 +848,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-      const token = getCookie(req, SESSION_COOKIE);
-      if (xano) {
-        await xano.logout(token);
+      const token = backendToken(req);
+      const backend = req.backend;
+      if (backend) {
+        await backend.logout(token);
+        if (supabase) return sendJson(res, 200, { ok: true });
         return sendJsonWithHeaders(res, 200, { ok: true }, { "Set-Cookie": clearSessionCookie() });
       }
       if (token) {
@@ -816,26 +866,29 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/crm-data") {
       const user = await requireUser(req, res);
       if (!user) return;
-      const data = xano ? await xano.readCrm(getCookie(req, SESSION_COOKIE)) : await readCrmData(user.id);
-      const tableSchema=data.tableSchema||(!xano&&user.tableSetup?{status:'pending'}:null);
+      const backend = req.backend;
+      const data = backend ? await backend.readCrm(backendToken(req)) : await readCrmData(user.id);
+      const tableSchema=data.tableSchema||(!backend&&user.tableSetup?{status:'pending'}:null);
       return sendJson(res, 200, { ...data, ...(tableSchema?{tableSchema}:{}), seedDemoData: false });
     }
 
     if (req.method === "GET" && url.pathname === "/api/chat-usage") {
       const user = await requireUser(req, res);
       if (!user) return;
-      const usage = xano ? await xano.readUsage(getCookie(req, SESSION_COOKIE)) : await readChatUsage(user.id);
+      const backend = req.backend;
+      const usage = backend ? await backend.readUsage(backendToken(req)) : await readChatUsage(user.id);
       return sendJson(res, 200, usage);
     }
 
     if (req.method === "PUT" && url.pathname === "/api/crm-data") {
       const user = await requireUser(req, res);
       if (!user) return;
+      const backend = req.backend;
       const payload = await readPayload(req);
       if (!Array.isArray(payload.deals)) {
         return sendJson(res, 400, { error: "Expected { deals: [...] }" });
       }
-      if (xano && payload.deals.length > 2000) return sendJson(res, 400, { error: "This integration supports up to 2,000 deals per CRM snapshot." });
+      if (backend && payload.deals.length > 2000) return sendJson(res, 400, { error: "This integration supports up to 2,000 deals per CRM snapshot." });
       try {
         payload.tableSchema=tableSchemaCore.validate(payload.tableSchema);
         const core=pipelineCore.create(payload.tableSchema);
@@ -854,8 +907,8 @@ const server = http.createServer(async (req, res) => {
           if(payload.tableSchema?.status==='ready')core.tableValues(record,payload.customFields);
         }
       } catch (error) { return sendJson(res, 400, { error: error.message }); }
-      if (xano) {
-        const saved = await xano.writeCrm(getCookie(req, SESSION_COOKIE), payload.deals.map((row,index)=>normalizeDeal(row,index,payload.customFields,payload.tableSchema)), payload.expectedUpdatedAt, payload.customFields, payload.tableSchema);
+      if (backend) {
+        const saved = await backend.writeCrm(backendToken(req), payload.deals.map((row,index)=>normalizeDeal(row,index,payload.customFields,payload.tableSchema)), payload.expectedUpdatedAt, payload.customFields, payload.tableSchema);
         return sendJson(res, 200, saved);
       }
       return await userLock(`crm:${user.id}`, async () => {
@@ -873,37 +926,38 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/pipechat-ai") {
       const user = await requireUser(req, res);
       if (!user) return;
+      const backend = req.backend;
       const payload = await readPayload(req);
       try {pipelineCore.create(tableSchemaCore.validate(payload.pipeline?.tableSchema)).validateCustomFields(payload.pipeline?.customFields);}
       catch(error){return sendJson(res,400,{error:error.message});}
       if(payload.tableBuild){
         const build=payload.tableBuild;
         if(!['Sales','Recruiting','Real Estate','Other'].includes(build.useCase)||typeof build.description!=='string'||build.description.length>2000||build.useCase==='Other'&&!build.description.trim())return sendJson(res,400,{error:'Choose a use case and describe Other workflows before building.'});
-        const current=xano?await xano.readCrm(getCookie(req,SESSION_COOKIE)):await readCrmData(user.id);
-        if((current.tableSchema?.status!=='pending'&&(xano||!user.tableSetup||current.tableSchema))||current.deals.length)return sendJson(res,409,{error:'AI setup is only available for a new, unconfigured workspace.'});
+        const current=backend?await backend.readCrm(backendToken(req)):await readCrmData(user.id);
+        if((current.tableSchema?.status!=='pending'&&(backend||!user.tableSetup||current.tableSchema))||current.deals.length)return sendJson(res,409,{error:'AI setup is only available for a new, unconfigured workspace.'});
         payload.tableBuild={useCase:build.useCase,description:build.description};
       }
       if (payload.csvImport) {
         try { payload.csvImport = csvImportCore.validateDescription(payload.csvImport); }
         catch { return sendJson(res,400,{error:'Invalid CSV analysis input. No chat allowance was used.'}); }
       }
-      if (xano) {
+      if (backend) {
         if (!OPENAI_API_KEY) return sendJson(res, 503, { error: "OPENAI_API_KEY is not set. No chat allowance was reserved." });
-        const token = getCookie(req, SESSION_COOKIE);
-        const reservation = await xano.reserveUsage(token, crypto.randomUUID());
+        const token = backendToken(req);
+        const reservation = await backend.reserveUsage(token, crypto.randomUUID());
         let action;
         try {
           action = await planPipeChatAction(payload);
         } catch (error) {
           let usage;
-          try { usage = await xano.finishUsage(token, reservation.reservationId, "release"); }
-          catch { /* An abandoned reservation expires in Xano; never fall back to a local counter. */ }
+          try { usage = await backend.finishUsage(token, reservation.reservationId, "release"); }
+          catch { /* Abandoned reservations expire in the provider; never fall back to a local counter. */ }
           return sendJson(res, 502, { error: "The AI request failed. No CRM changes were made. Any unreleased chat reservation expires within five minutes.", ...(usage ? { usage } : {}) });
         }
         // Finalization is idempotent. Never rerun the paid model call to retry usage accounting.
         let usage;
-        try { usage = await xano.finishUsage(token, reservation.reservationId, "commit"); }
-        catch { usage = await xano.finishUsage(token, reservation.reservationId, "commit"); }
+        try { usage = await backend.finishUsage(token, reservation.reservationId, "commit"); }
+        catch { usage = await backend.finishUsage(token, reservation.reservationId, "commit"); }
         return sendJson(res, 200, { ...action, usage });
       }
       return await userLock(`ai:${user.id}`, async () => {
@@ -936,13 +990,13 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function start() {
-  if (xano) await xano.check();
+  if (cloudBackend) await cloudBackend.check();
   else await fs.mkdir(DATA_DIR, { recursive: true });
   server.listen(PORT, HOST, () => {
     console.log(`PipeChat app running at http://127.0.0.1:${PORT}/`);
     console.log(`PipeChat AI server running at http://127.0.0.1:${PORT}/api/pipechat-ai`);
     console.log(`PipeChat storage: ${STORAGE_PROVIDER}`);
-    console.log(`Free AI messages per user: ${xano ? "managed in Xano" : FREE_CHAT_LIMIT}`);
+    console.log(`Free AI messages per user: ${cloudBackend ? "managed in " + STORAGE_PROVIDER : FREE_CHAT_LIMIT}`);
     console.log(`Model: ${OPENAI_MODEL}`);
   });
 }
