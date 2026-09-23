@@ -34,8 +34,9 @@
       <nav class="view-tabs" aria-label="Workspace views">
         <button id="tableTab" data-tab="table" class="active">Pipeline</button><button id="dashboardTab" data-tab="dashboard">Dashboard</button><button id="activityTab" data-tab="activity">Activity</button><button id="shareTab" data-tab="share">Shared views</button>
       </nav>
-      <div class="account-actions"><span id="accountPill"></span><span id="userAvatar" class="avatar"></span><button id="logoutBtn" class="icon-btn" title="Sign out" aria-label="Sign out"><i data-icon="LogOut"></i></button></div>
+      <div class="account-actions"><div class="profile"><button id="profileBtn" aria-label="Profile" aria-expanded="false" aria-controls="profileMenu" title="Profile"><span id="accountPill"></span><span id="userAvatar" class="avatar"></span></button><div id="profileMenu" class="profile-menu" hidden><button id="settingsBtn"><i data-icon="Settings"></i>Settings</button></div></div><button id="logoutBtn" class="icon-btn" title="Sign out" aria-label="Sign out"><i data-icon="LogOut"></i></button></div>
     </header>
+    <section id="settingsView" class="settings-view" hidden aria-labelledby="settingsTitle"><div class="settings-heading"><button id="settingsBackBtn" class="icon-btn" aria-label="Back to workspace" title="Back to workspace"><i data-icon="ArrowRight"></i></button><h1 id="settingsTitle" tabindex="-1">Settings</h1></div><div class="settings-row"><button id="resetPipechatBtn" class="danger"><i data-icon="RotateCcw"></i>Reset Pipechat</button></div></section>
     <section id="setupView" class="setup-view" hidden aria-labelledby="setupQuestion">
       <p class="eyebrow">YOUR WORKSPACE</p><h1 id="setupQuestion">What will you use pipechat for?</h1>
       <div class="setup-choices" id="useCaseChoices"><button class="secondary" data-use-case="Sales">Sales</button><button class="secondary" data-use-case="Recruiting">Recruiting</button><button class="secondary" data-use-case="Real Estate">Real Estate</button><button class="secondary" data-use-case="Other">Other</button></div>
@@ -85,6 +86,7 @@
       <aside class="trust-pane pane" aria-label="Review proposed changes"><div class="pane-header"><h2 id="trustTitle">Proposed changes</h2><span id="changeCount" class="badge" hidden></span></div><div id="trustBody" class="trust-body" aria-live="polite"></div><footer class="trust-footer"><i data-icon="ShieldCheck"></i><span id="trustStatus">No changes pending.</span></footer></aside>
     </div>
   </div>
+  <dialog id="resetDialog" class="field-dialog" aria-labelledby="resetDialogTitle" aria-describedby="resetDialogDescription"><h2 id="resetDialogTitle">Reset Pipechat</h2><p id="resetDialogDescription">Are you sure you want to reset Pipechat? This will delete all existing information in your Pipechat table and return you to the onboarding screen.</p><p id="resetError" class="error" role="alert"></p><div class="dialog-actions"><button id="resetNoBtn" class="secondary" type="button">No</button><button id="resetYesBtn" class="danger" type="button">Yes</button></div></dialog>
   <dialog id="fieldDialog" class="field-dialog" aria-labelledby="fieldDialogTitle"><form id="fieldDialogForm"><div id="fieldDialogBody"></div><p id="fieldDialogError" class="error" role="alert"></p><div class="dialog-actions"><button id="fieldDialogCancel" type="button" class="secondary">Cancel</button><button id="fieldDialogSubmit" type="submit" class="primary">Preview field</button></div></form></dialog>
   <div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button id="undoBtn" class="text-btn"><i data-icon="Undo2"></i>Undo</button><button id="dismissToast" class="icon-btn" title="Dismiss" aria-label="Dismiss"><i data-icon="X"></i></button></div>
 </body>

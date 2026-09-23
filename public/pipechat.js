@@ -12,6 +12,7 @@
   let chart=null, toastTimer;
   S.customFields=[];
   S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.sort=null;S.fieldDialog=null;
+  S.settingsOpen=false;S.resetConfirmation=null;S.resetting=false;
   const tailored=()=>S.tableSchema?.status==='ready';
   const csvCore=()=>window.PipeChatCsv.forTable(S.tableSchema,S.customFields);
   function useSchema(schema){S.tableSchema=window.PipeChatSchema?.validate(schema)||null;C=window.PipelineCore.create(S.tableSchema);}
@@ -128,9 +129,13 @@
   }
   function render() {
     if(!S.loaded)return;
+    $('settingsView').hidden=!S.settingsOpen;
+    $('resetPipechatBtn').disabled=S.saving||S.busy||S.resetting;
+    $('logoutBtn').disabled=S.resetting;
     if($('setupView')){
-      const pending=S.tableSchema?.status==='pending';$('setupView').hidden=!pending;
-      document.querySelector('.workspace').hidden=pending;document.querySelector('.workspace-heading').hidden=pending;document.querySelector('.view-tabs').hidden=pending;
+      const pending=S.tableSchema?.status==='pending';$('setupView').hidden=!pending||S.settingsOpen;
+      document.querySelector('.workspace').hidden=pending||S.settingsOpen;document.querySelector('.workspace-heading').hidden=pending||S.settingsOpen;document.querySelector('.view-tabs').hidden=pending||S.settingsOpen;
+      if(S.settingsOpen)return;
       if(pending){renderSetup();return;}
     }
     const rows=visible();renderTable(rows);
@@ -161,7 +166,44 @@
     if(S.tab==='activity')renderActivity();
     renderTrust();updateUsage();
   }
-  function setTab(tab) {S.tab=tab;render();}
+  function setTab(tab) {S.tab=tab;S.settingsOpen=false;render();}
+  function closeProfileMenu(){ $('profileMenu').hidden=true;$('profileBtn').setAttribute('aria-expanded','false'); }
+  function openSettings(){
+    if(!S.loaded||S.resetting)return;
+    closeProfileMenu();closeFieldDialog();S.settingsOpen=true;render();$('settingsTitle').focus();
+  }
+  function closeResetDialog(){
+    if(S.resetting)return;
+    S.resetConfirmation=null;if($('resetDialog').open)$('resetDialog').close();$('resetPipechatBtn').focus();
+  }
+  function openResetDialog(){
+    if(!S.loaded||!S.settingsOpen||S.saving||S.busy||S.resetting)return;
+    S.resetConfirmation={generation:S.generation,revision:S.revision,updatedAt:S.updatedAt};
+    $('resetError').textContent='';$('resetYesBtn').disabled=false;$('resetNoBtn').disabled=false;
+    $('resetDialog').showModal();$('resetNoBtn').focus();
+  }
+  async function resetWorkspace(){
+    const confirmation=S.resetConfirmation;
+    if(!confirmation||!S.loaded||S.saving||S.busy||S.resetting)return;
+    if(confirmation.generation!==S.generation||confirmation.revision!==S.revision){$('resetError').textContent='The workspace changed. Cancel and review it before resetting.';return;}
+    const generation=S.generation;S.resetting=true;$('resetYesBtn').disabled=true;$('resetNoBtn').disabled=true;$('resetError').textContent='Resetting...';render();
+    try{
+      const saved=await api('/api/crm-reset',{method:'POST',body:JSON.stringify({confirm:true,expectedUpdatedAt:confirmation.updatedAt})});
+      if(generation!==S.generation)return;
+      if(!Array.isArray(saved.deals)||saved.deals.length||!Array.isArray(saved.customFields)||saved.customFields.length||saved.tableSchema?.status!=='pending'||typeof saved.updatedAt!=='string'||saved.updatedAt===confirmation.updatedAt)throw new Error('The server did not confirm an empty workspace.');
+      useSchema(saved.tableSchema);S.records=[];S.customFields=[];S.updatedAt=saved.updatedAt;S.revision++;
+      S.history=[];S.pending=null;S.clarification=null;S.sourceAction=null;S.undo=null;S.failedEdit=null;keepFailedEdit();
+      S.scope='all';S.search='';S.filter=null;S.sort=null;S.expanded=null;S.report=defaultReport();S.setupUseCase=null;S.schemaPreview=null;S.tab='table';
+      if(chart){chart.destroy();chart=null;}
+      clearTimeout(toastTimer);$('toast').hidden=true;
+      for(const id of ['chatFeed','trustBody','dealRows','dealHeaders','schemaPreview','activityList','reportRows','reportKpis'])$(id).innerHTML='';
+      for(const id of ['dealSearch','chatInput','workflowDescription','shareRecipient','shareMessage','csvFileInput'])$(id).value='';
+      $('shareAccess').value='viewer';$('inviteStatus').textContent='';$('setupStatus').textContent='';
+      $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');
+      S.resetting=false;closeResetDialog();S.settingsOpen=false;render();$('setupQuestion').setAttribute('tabindex','-1');$('setupQuestion').focus();
+    }catch(error){if(generation===S.generation)$('resetError').textContent=`Reset not confirmed: ${error.message} Reload the workspace before trying again.`;}
+    finally{if(generation===S.generation){S.resetting=false;$('resetYesBtn').disabled=false;$('resetNoBtn').disabled=false;render();}}
+  }
   function renderReportSelections() {
     for(const [key,field,title] of [['owners',C.role('owner'),'Owners'],['accounts',C.role('primary'),'Accounts']]) {
       document.querySelector(`[data-report-selection="${key}"]`).hidden=!field;
@@ -328,7 +370,7 @@
     return {...record,...C.customValues(input,S.customFields)};
   }
   async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema}={}) {
-    if(S.saving||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
+    if(S.saving||S.resetting||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
     S.saving=true;const before=C.clone(S.records), beforeFields=C.clone(S.customFields),beforeSchema=C.clone(S.tableSchema||(tableSchema?.legacy?window.PipeChatSchema.legacySchema():null)),generation=S.generation,oldPrimary=C.role('primary'),oldOwner=C.role('owner');
     $('saveStatus').textContent='Saving...';$('saveStatus').classList.remove('failed');render();
     try{
@@ -550,6 +592,7 @@
     ].map(([account,stage,value,close,rep,next,follow],i)=>newRecord({account,stage,value,close,owner:rep,next,follow},i+1));
   }
   async function loadWorkspace(user) {
+    closeProfileMenu();S.settingsOpen=false;S.resetting=false;S.resetConfirmation=null;if($('resetDialog')?.open)$('resetDialog').close();
     S.generation++;S.user=user;S.history=[];S.pending=null;S.clarification=null;S.undo=null;S.sourceAction=null;S.loaded=false;S.scope='all';S.search='';S.filter=null;S.tab='table';S.report=defaultReport();S.busy=false;S.expanded=null;
     const generation=S.generation;
     closeFieldDialog();S.sort=null;useSchema(null);S.setupUseCase=null;S.schemaPreview=null;S.records=[];S.customFields=[];S.updatedAt=null;S.usage=null;S.health=null;
@@ -618,7 +661,7 @@
     catch(error){if(generation===S.generation){$('authMessage').textContent=`Server unavailable: ${error.message}`;$('authRetryBtn').hidden=false;}}
   }
   async function logout() {
-    if(S.saving){toast('Wait for the current save to finish.');return;}
+    if(S.saving||S.resetting){toast('Wait for the current save to finish.');return;}
     if(S.failedEdit&&!window.confirm('Sign out and discard the unsaved edit in this tab?'))return;
     try{await api('/api/auth/logout',{method:'POST'});S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.customFields=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
   }
@@ -757,6 +800,13 @@
     $('authRetryBtn').onclick=async()=>{if($('authRetryBtn').disabled)return;$('authRetryBtn').disabled=true;$('authRetryBtn').hidden=true;$('authMessage').textContent='Connecting...';try{await restoreSession();if(!$('authScreen').hidden&&$('authRetryBtn').hidden)$('authMessage').textContent='Please sign in to continue.';}finally{$('authRetryBtn').disabled=false;}};
     $('authToggleBtn').onclick=toggleAuthMode;
     $('logoutBtn').onclick=logout;
+    $('profileBtn').onclick=()=>{const open=$('profileMenu').hidden;$('profileMenu').hidden=!open;$('profileBtn').setAttribute('aria-expanded',String(open));if(open)$('settingsBtn').focus();};
+    $('settingsBtn').onclick=openSettings;
+    $('settingsBackBtn').onclick=()=>{if(S.resetting)return;S.settingsOpen=false;render();$('profileBtn').focus();};
+    $('resetPipechatBtn').onclick=openResetDialog;$('resetNoBtn').onclick=closeResetDialog;$('resetYesBtn').onclick=resetWorkspace;
+    $('resetDialog').addEventListener('cancel',event=>{event.preventDefault();closeResetDialog();});
+    document.addEventListener('click',event=>{if(!event.target.closest('.profile'))closeProfileMenu();});
+    document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('profileMenu').hidden){closeProfileMenu();$('profileBtn').focus();}});
     document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));
     document.querySelectorAll('[data-scope]').forEach(button=>button.onclick=()=>{S.scope=button.dataset.scope;render();});
     $('dealSearch').oninput=event=>{S.search=event.target.value;render();};
