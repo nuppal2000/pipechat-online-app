@@ -11,9 +11,9 @@ const original={id:8,account:'Existing',stage:'Warm',value:500,owner:'A',close:'
 function harness(handler) {
   const nodes=new Map(),calls=[],messages=[];
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',classList:{add(){},remove(){}},insertAdjacentHTML(){}});return nodes.get(id);};
-  const context={window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatCsv:I,PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},Papa,AbortSignal,
+  const context={window:{PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatCsv:I,PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},Papa,AbortSignal,
     sessionStorage:{removeItem(){}},fetch:async(url,options)=>{calls.push({url,options});return handler(url,options);}};
-  const ctx={...context,window:{...context.window,messages}};
+  const ctx={...context,window:{PipeChatInspector:require('../public/inspector-core.js'),...context.window,messages}};
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};renderTrust=()=>{};focusTrust=()=>{};updateUsage=()=>{};toast=()=>{};say=(text)=>window.messages.push(text);window.test={S,importCsv,analyzeCsvImport,basicCsvImport,confirmDraft,cancelDraft,undo,display};`),ctx);
   const h=ctx.window.test;Object.assign(h.S,{records:[structuredClone(original)],user:{id:1,name:'QA'},loaded:true,updatedAt:'v1',usage:{used:0,remaining:10},health:{aiConfigured:true}});
   return {...h,calls,messages,node,import:csv=>h.importCsv({name:'synthetic.csv',size:csv.length,text:async()=>csv})};

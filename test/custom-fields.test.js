@@ -14,7 +14,7 @@ function harness(){
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',style:{},innerHTML:'',textContent:'',hidden:false,classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[]});return nodes.get(id);};
   let snapshot={deals:[structuredClone(row)],customFields:[],updatedAt:'v1'},failure=false;
   const context={crypto,AbortSignal,innerWidth:1400,
-    window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatIcons:{}},document:{getElementById:node,querySelectorAll:()=>[],querySelector:()=>null},
+    window:{PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatIcons:{}},document:{getElementById:node,querySelectorAll:()=>[],querySelector:()=>null},
     sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
     fetch:async(url,options)=>{
       const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
@@ -23,7 +23,7 @@ function harness(){
       if(options.method==='PUT')snapshot={deals:body.deals,customFields:body.customFields,updatedAt:'v'+(calls.length+1)};
       return {ok:true,json:async()=>structuredClone(snapshot)};
     }};
-  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};toast=()=>{};focusTrust=()=>{};updateUsage=()=>{};say=(message)=>window.messages.push(message);window.test={S,send,prepare,confirmDraft,cancelDraft,manualEdit,undo,newRecord,renderTable,renderTrust,restoreFailedEdit,reviewFailedEdit,retryFailedEdit,aiPayload};`),Object.assign(context,{window:{...context.window,messages}}));
+  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};toast=()=>{};focusTrust=()=>{};updateUsage=()=>{};say=(message)=>window.messages.push(message);window.test={S,send,prepare,confirmDraft,cancelDraft,manualEdit,undo,newRecord,renderTable,renderTrust,restoreFailedEdit,reviewFailedEdit,retryFailedEdit,aiPayload};`),Object.assign(context,{window:{PipeChatInspector:require('../public/inspector-core.js'),...context.window,messages}}));
   const h=context.window.test;
   Object.assign(h.S,{user:{id:1,email:'qa@example.invalid',name:'QA'},loaded:true,records:[structuredClone(row)],updatedAt:'v1',health:{aiConfigured:true,storageProvider:'supabase'},usage:{used:0,remaining:10}});
   return {...h,node,calls,messages,storage,fail:value=>failure=value,snapshot:()=>structuredClone(snapshot)};

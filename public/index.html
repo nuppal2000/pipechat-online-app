@@ -10,6 +10,9 @@
   <script defer src="/icons.js"></script>
   <script defer src="/table-schema.js"></script>
   <script defer src="/pipeline-core.js"></script>
+  <script defer src="/inspector-core.js"></script>
+  <script defer src="/inspector-ui.js"></script>
+  <link rel="stylesheet" href="/inspector.css">
   <script defer src="/todo-core.js"></script>
   <script defer src="/todo-ui.js"></script>
   <link rel="stylesheet" href="/todo.css">
@@ -108,5 +111,20 @@
   <dialog id="todoDialog" class="field-dialog" aria-labelledby="todoDialogTitle"><form id="todoForm"><h2 id="todoDialogTitle">New To Do card</h2><div class="todo-form-grid"><label>Linked record<select id="todoRecord" required></select></label><label>Board status<select id="todoStatus"></select></label><label>Next action source<select id="todoNextSource"></select></label><p id="todoNextLinked"></p><label id="todoNextLabel">Next action<input id="todoNext" maxlength="500"></label><label>Due date source<select id="todoDueSource"></select></label><p id="todoDueLinked"></p><label id="todoDueLabel">Due date<input id="todoDue" type="date"></label><label>Owner / contact field<select id="todoOwnerSource"></select></label></div><p id="todoFormError" class="error" role="alert"></p><div class="dialog-actions"><button id="todoCancel" type="button" class="secondary">Cancel</button><button type="submit" class="primary">Preview card</button></div></form></dialog>
   <div id="columnMenu" class="column-menu" role="menu" aria-label="Column actions" hidden><button id="renameColumnBtn" role="menuitem" type="button">Rename column</button></div>
   <div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button id="undoBtn" class="text-btn"><i data-icon="Undo2"></i>Undo</button><button id="dismissToast" class="icon-btn" title="Dismiss" aria-label="Dismiss"><i data-icon="X"></i></button></div>
+  <dialog id="inspectorDialog" class="inspector-dialog" aria-labelledby="inspectorTitle">
+    <div class="inspector-shell">
+      <header class="inspector-header"><div><span id="inspectorRecordType">Record</span><h2 id="inspectorTitle" tabindex="-1"></h2></div><button id="inspectorClose" class="icon-btn" type="button" title="Close inspector" aria-label="Close inspector"><i data-icon="X"></i></button></header>
+      <div class="inspector-scroll">
+        <h2>History</h2>
+        <form id="inspectorForm" class="inspector-composer">
+          <label class="sr-only" for="inspectorNote">New note</label><textarea id="inspectorNote" rows="4" maxlength="6000" placeholder="Enter a note"></textarea>
+          <div class="inspector-note-actions"><button id="inspectorSave" class="primary" type="submit">Save note</button><span id="inspectorNoteStatus" role="status"></span></div>
+          <p id="inspectorError" class="error" role="alert"></p><button id="inspectorReload" type="button" class="secondary" hidden>Reload latest history</button>
+        </form>
+        <div class="inspector-filters"><label>From<input id="inspectorFrom" type="date"></label><label>To<input id="inspectorTo" type="date"></label><label>Show<select id="inspectorKind"><option value="all">All activity</option><option value="note">Notes</option><option value="activity">Changes</option></select></label><button id="inspectorClearDates" type="button" class="icon-btn" title="Clear dates" aria-label="Clear dates"><i data-icon="X"></i></button></div>
+        <span id="inspectorCount" class="inspector-count" role="status"></span><div id="inspectorTimeline"></div><button id="inspectorMore" type="button" class="secondary" hidden>Load older entries</button>
+      </div>
+    </div>
+  </dialog>
 </body>
 </html>

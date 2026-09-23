@@ -12,6 +12,7 @@
   let chart=null, toastTimer;
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];let todoUI=null;
+  let inspectorUI=null;
   S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sort=null;S.fieldDialog=null;
   let spreadsheetPicker=null;
   S.settingsOpen=false;S.resetConfirmation=null;S.resetting=false;
@@ -118,7 +119,7 @@
     header.innerHTML=['account','stage','value','close','owner',...S.customFields.map(f=>f.id)].map(field=>fieldHeader({id:field,name:labels()[field]})).join('')+'<th scope="col"><span class="sr-only">Actions</span></th>';
     $('pipelineTable').style.minWidth=`${660+S.customFields.length*170}px`;
     $('dealRows').innerHTML=rows.length?rows.map(record=>`<tr data-id="${record.id}">
-      <td>${textCell('account',record.account,'Company for '+rowName(record),'account-input')}</td>
+      <td>${primaryCell(record,{id:'account',name:'Company for '+rowName(record)})}</td>
       <td><select class="cell-input stage-select ${stageClass(record.stage)}" data-field="stage" aria-label="Stage for ${esc(rowName(record))}">${stageOptions(record.stage)}</select></td>
       <td><input class="cell-input" data-field="value" inputmode="decimal" aria-label="Value for ${esc(rowName(record))}" value="${esc(currency(record.value))}"></td>
       <td><input class="cell-input" data-field="close" aria-label="Close date for ${esc(rowName(record))}" title="Use YYYY-MM-DD or a full date" value="${esc(display('close',record.close)==='Not set'?'':display('close',record.close))}"></td>
@@ -166,6 +167,7 @@
     $('shareBtn').hidden=S.tab==='todo';$('addTodoBtn').hidden=S.tab!=='todo';
     if(S.tab==='todo'){$('recordCount').textContent=`${S.todoCards.length} cards`;$('viewSummary').textContent=`${S.todoCards.length} linked cards`;$('clearSearchBtn').hidden=true;}
     todoUI?.draw();
+    inspectorUI?.draw();
     $('addAccountBtn').disabled=S.saving||Boolean(S.failedEdit);$('importCsvBtn').disabled=S.saving||S.busy||Boolean(S.failedEdit);
     $('addFieldBtn').disabled=S.saving||S.busy||Boolean(S.failedEdit);
     ['importCsvBtn','addFieldBtn','addAccountBtn'].forEach(id=>$(id).hidden=S.tab!=='table');
@@ -199,7 +201,7 @@
       if(generation!==S.generation)return;
       if(!Array.isArray(saved.deals)||saved.deals.length||!Array.isArray(saved.customFields)||saved.customFields.length||saved.tableSchema?.status!=='pending'||typeof saved.updatedAt!=='string'||saved.updatedAt===confirmation.updatedAt)throw new Error('The server did not confirm an empty workspace.');
       useSchema(saved.tableSchema);S.records=[];S.customFields=[];S.updatedAt=saved.updatedAt;S.revision++;
-      S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();
+      S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();
       S.history=[];S.pending=null;S.clarification=null;S.sourceAction=null;S.undo=null;S.failedEdit=null;keepFailedEdit();
       S.scope='all';S.search='';S.filter=null;S.sort=null;S.expanded=null;S.report=defaultReport();S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.tab='table';
       if(chart){chart.destroy();chart=null;}
@@ -272,8 +274,8 @@
     $('reportCanvas').setAttribute('aria-label',`${$('reportTitle').textContent}. ${result.data.map(d=>`${d.label}: ${showValue(d.value)}`).join('; ')||'No data'}`);
   }
   function renderActivity() {
-    const entries=S.records.flatMap(record=>(record.history||[]).map(text=>({account:rowName(record),text:String(text)}))).sort((a,b)=>b.text.localeCompare(a.text));
-    $('activityList').innerHTML=entries.slice(0,150).map(item=>`<div class="activity-item"><strong>${esc(item.account)}</strong>${esc(item.text)}</div>`).join('')||'<p class="empty-table">No recorded changes yet.</p>';
+    const entries=S.records.flatMap(record=>window.PipeChatInspector.entries(record.history).map(entry=>({...entry,id:record.id,account:rowName(record)}))).sort((a,b)=>(b.time??-Infinity)-(a.time??-Infinity));
+    $('activityList').innerHTML=entries.slice(0,150).map(item=>`<div class="activity-item"><button class="record-link" data-inspect="${item.id}">${esc(item.account)}</button>${item.at?`<time datetime="${esc(item.at)}">${esc(new Date(item.at).toLocaleString())}</time>`:''}<p>${esc(item.type==='note'?`${item.actor}: Note added. ${item.text}`:item.text)}</p></div>`).join('')||'<p class="empty-table">No recorded changes yet.</p>';
   }
   function focusTrust() {if(innerWidth<1200)document.querySelector('.trust-pane').scrollIntoView({behavior:'smooth',block:'start'});}
   function renderTrust() {
@@ -396,15 +398,17 @@
     for(const field of Object.keys(defaults))record[field]=(imported?C.validateStoredValue:C.validateValue)(field,input[field]??defaults[field]);
     return {...record,...C.customValues(input,S.customFields)};
   }
-  async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema,exactRecords=false,todoCards=null}={}) {
+  async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema,exactRecords=false,todoCards=null,verifyHistory=false}={}) {
     if(S.saving||S.resetting||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
     S.saving=true;const before=C.clone(S.records), beforeFields=C.clone(S.customFields),beforeSchema=C.clone(S.tableSchema||(tableSchema?.legacy?window.PipeChatSchema.legacySchema():null)),generation=S.generation,oldPrimary=C.role('primary'),oldOwner=C.role('owner');
     const beforeCards=C.clone(S.todoCards);
     $('saveStatus').textContent='Saving...';$('saveStatus').classList.remove('failed');render();
     try{
+      next=window.PipeChatInspector.reconcile(before,next,C.definitions(S.customFields),window.PipelineCore.create(tableSchema).definitions(customFields),S.user.name||S.user.email);
       const cards=window.PipeChatTodo.reconcile(todoCards??S.todoCards,next,tableSchema,customFields);
       const saved=await api('/api/crm-data',{method:'PUT',body:JSON.stringify({deals:next,customFields,todoCards:cards,...(tableSchema?{tableSchema}:{}),expectedUpdatedAt:S.updatedAt})});
       if(generation!==S.generation)return false;
+      if(verifyHistory&&next.some(row=>JSON.stringify(saved.deals?.find(r=>r.id===row.id)?.history)!==JSON.stringify(row.history)))throw new Error('Storage did not confirm the note history. Reload before retrying.');
       if(JSON.stringify(saved.todoCards||[])!==JSON.stringify(cards))throw new Error('Storage did not confirm the To Do board. Reload before retrying.');
       if(customFields.length&&JSON.stringify(saved.customFields)!==JSON.stringify(customFields))throw new Error('The storage service did not confirm the custom fields. Reload before trying again.');
       if(tableSchema&&JSON.stringify(saved.tableSchema)!==JSON.stringify(tableSchema))throw new Error('Storage did not confirm the table schema. Reload before retrying.');
@@ -476,6 +480,14 @@
     }catch(error){say(error.message,'assistant',true);toast(error.message);}
   }
   async function undo() {if(S.undo&&!S.saving)await persist(C.clone(S.undo.records),'Last change undone',{undo:false,customFields:C.clone(S.undo.customFields||[]),tableSchema:C.clone(S.undo.tableSchema||null),todoCards:C.clone(S.undo.todoCards||[])});}
+  async function refreshInspector(){
+    if(S.saving||S.failedEdit)throw new Error('Finish recovering the current edit first.');
+    const generation=S.generation;S.saving=true;render();
+    try{
+      const saved=await api('/api/crm-data');if(generation!==S.generation)return;
+      useSchema(saved.tableSchema);S.records=saved.deals;S.customFields=C.validateCustomFields(saved.customFields);S.todoCards=window.PipeChatTodo.validate(saved.todoCards,S.records,S.tableSchema,S.customFields);S.updatedAt=saved.updatedAt;S.revision++;S.undo=null;S.pending=null;S.clarification=null;S.sourceAction=null;
+    }finally{if(generation===S.generation){S.saving=false;render();}}
+  }
   async function manualEdit(el) {
     const record=S.records.find(r=>r.id===Number(el.closest('[data-id]')?.dataset.id));if(!record||S.saving||S.failedEdit)return;
     const failedEdit={id:record.id,account:rowName(record),field:el.dataset.field,raw:el.value,before:record[el.dataset.field],reviewed:false};
@@ -739,7 +751,7 @@
   async function logout() {
     if(S.saving||S.resetting){toast('Wait for the current save to finish.');return;}
     if(S.failedEdit&&!window.confirm('Sign out and discard the unsaved edit in this tab?'))return;
-    try{await api('/api/auth/logout',{method:'POST'});S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();S.customFields=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
+    try{await api('/api/auth/logout',{method:'POST'});S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();S.customFields=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
   }
   function deleteFieldButton(id){return `<button class="icon-btn" data-delete-field="${id}" aria-label="Delete ${esc(labels()[id])} column" title="Delete column" ${S.saving||S.busy||S.failedEdit?'disabled':''}>${icon('Trash2')}</button>`;}
   function fieldHeader(field){
@@ -787,6 +799,9 @@
   function textCell(id,value,label,extraClass=''){
     return `<textarea class="cell-input expandable-text ${extraClass}" data-field="${id}" data-expand-text rows="1" maxlength="12000" aria-label="${esc(label)}" ${S.saving||S.failedEdit?'disabled':''}>${esc(value??'')}</textarea>`;
   }
+  function primaryCell(record,field){
+    return `<div class="primary-name"><button type="button" class="record-link" data-inspect="${record.id}" aria-label="Open inspector for ${esc(rowName(record))}">${esc(rowName(record))}</button><button type="button" class="icon-btn" data-edit-primary title="Edit ${esc(field.name)}" aria-label="Edit ${esc(rowName(record))}" ${S.saving||S.failedEdit?'disabled':''}>${icon('Pencil')}</button></div><div class="primary-editor" hidden>${fieldInput(field,record[field.id])}</div>`;
+  }
   function resizeTextCell(el,expanded){
     if(!el?.hasAttribute('data-expand-text'))return;
     el.style.height='34px';
@@ -802,7 +817,7 @@
     const fields=C.definitions(S.customFields);
     $('dealHeaders').innerHTML=fields.map(fieldHeader).join('')+'<th scope="col"><span class="sr-only">Actions</span></th>';
     $('pipelineTable').style.minWidth=`${Math.max(660,fields.length*175+85)}px`;
-    $('dealRows').innerHTML=rows.map(record=>`<tr data-id="${record.id}">${fields.map(f=>`<td>${fieldInput(f,record[f.id])}</td>`).join('')}<td><button class="icon-btn" data-delete="${record.id}" title="Delete record" aria-label="Delete ${esc(rowName(record))}" ${S.saving||S.failedEdit?'disabled':''}>${icon('Trash2')}</button></td></tr>`).join('')||`<tr><td colspan="${fields.length+1}" class="empty-table">No records yet.</td></tr>`;
+    $('dealRows').innerHTML=rows.map(record=>`<tr data-id="${record.id}">${fields.map(f=>`<td>${f.id===C.role('primary')?primaryCell(record,f):fieldInput(f,record[f.id])}</td>`).join('')}<td><button class="icon-btn" data-delete="${record.id}" title="Delete record" aria-label="Delete ${esc(rowName(record))}" ${S.saving||S.failedEdit?'disabled':''}>${icon('Trash2')}</button></td></tr>`).join('')||`<tr><td colspan="${fields.length+1}" class="empty-table">No records yet.</td></tr>`;
   }
   function syncShareFields(){
     const box=document.querySelector('.field-checks');if(!box)return;
@@ -898,6 +913,9 @@
   function wire() {
     const addTodo=document.createElement('button');addTodo.id='addTodoBtn';addTodo.className='icon-btn';addTodo.title='Add To Do card';addTodo.setAttribute('aria-label','Add To Do card');addTodo.innerHTML=icon('Plus');addTodo.hidden=true;$('shareBtn').after(addTodo);
     todoUI=window.PipeChatTodoUI.create({S,esc,icon,fieldInput,manualEdit,persist,prepare,render,toast,localDate});
+    inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast});
+    document.addEventListener('click',event=>{const target=event.target.closest('[data-inspect]');if(target)inspectorUI.open(Number(target.dataset.inspect),target);});
+    $('dealRows').addEventListener('click',event=>{const edit=event.target.closest('[data-edit-primary]');if(!edit||S.saving||S.failedEdit)return;const cell=edit.closest('td');cell.querySelector('.primary-name').hidden=true;cell.querySelector('.primary-editor').hidden=false;cell.querySelector('[data-field]').focus();});
     $('dealHeaders').oncontextmenu=openColumnMenu;
     $('dealHeaders').onkeydown=event=>{if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey)openColumnMenu(event);};
     $('renameColumnBtn').onclick=()=>{const id=$('columnMenu').dataset.field;closeColumnMenu();try{openFieldDialog('rename',id);}catch(error){toast(error.message);}};

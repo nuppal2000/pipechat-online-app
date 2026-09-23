@@ -83,7 +83,7 @@ function harness(table=schema,records=[row]){
   const nodes=new Map(),calls=[],messages=[];
   function node(id){if(!nodes.has(id))nodes.set(id,{value:'',dataset:{},style:{},innerHTML:'',textContent:'',hidden:false,open:false,elements:{replacementMode:{value:'existing'}},classList:{add(){},remove(){},toggle(){}},setAttribute(){},focus(){},querySelectorAll:()=>[],showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);}
   let fail=false,snapshot={deals:structuredClone(records),customFields:[],tableSchema:table,updatedAt:'v1'},action=null;
-  const context={crypto,AbortSignal,innerWidth:1400,window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore:Core,PipeChatSchema:Schema,PipeChatIcons:{},messages},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
+  const context={crypto,AbortSignal,innerWidth:1400,window:{PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:Core,PipeChatSchema:Schema,PipeChatIcons:{},messages},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
     const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
     if(url==='/api/pipechat-ai')return {ok:true,json:async()=>({crmAction:action,usage:{used:1,remaining:9}})};
     if(fail)return {ok:false,status:503,json:async()=>({error:'Synthetic outage'})};
@@ -142,5 +142,5 @@ test('all field headers include accessible sort state and deletion, including pr
 test('legacy primary replacement and undo retain original records and compatible schema',async()=>{
   const h=harness(null,[legacy]);h.prepare({action:'delete_field',field:'account',replacementName:'Candidate'},'replace');await h.confirmDraft();
   assert(h.S.tableSchema.legacy);assert.equal(h.S.records[0].account,undefined);await h.undo();
-  assert.deepEqual(plain(h.S.records),[legacy]);assert.equal(Core.create(h.S.tableSchema).role('primary'),'account');
+  assert.deepEqual(plain(h.S.records).map(r=>({...r,history:[]})),[legacy]);assert.equal(h.S.records[0].history.length,2);assert.equal(Core.create(h.S.tableSchema).role('primary'),'account');
 });

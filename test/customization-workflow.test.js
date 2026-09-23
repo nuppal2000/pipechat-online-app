@@ -5,7 +5,7 @@ const records=[{id:1,f_name:'A',f_score:0,f_status:'Warm',history:[]},{id:2,f_na
 function harness(){
   const nodes=new Map(),calls=[],messages=[];let action=null,fail=false,saved={deals:structuredClone(records),customFields:[],tableSchema:schema,updatedAt:'v1'};
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',textContent:'',hidden:false,open:false,dataset:{},style:{},elements:{},classList:{add(){},remove(){},toggle(){}},focus(){},setAttribute(){},querySelectorAll:()=>[],showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);};
-  const context={crypto,AbortSignal,innerWidth:1400,innerHeight:900,window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore:Core,PipeChatSchema:Schema,PipeChatCustomize:Customize,PipeChatIcons:{}},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
+  const context={crypto,AbortSignal,innerWidth:1400,innerHeight:900,window:{PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:Core,PipeChatSchema:Schema,PipeChatCustomize:Customize,PipeChatIcons:{}},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
     const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
     if(url==='/api/pipechat-ai')return {ok:true,json:async()=>({crmAction:action,usage:{used:1,remaining:20}})};
     if(fail)return {ok:false,status:503,json:async()=>({error:'Synthetic failure'})};
@@ -45,7 +45,7 @@ test('missing dropdown options clarify in context; reply proposes blanks; confir
   assert.match(h.node('trustBody').innerHTML,/Row #2.*d.*left blank/);assert.equal(h.S.records[1].f_status,'d');
   h.fail(true);await h.confirmDraft();assert.equal(h.S.records[1].f_status,'d');assert.equal(h.S.pending.kind,'convert-field');
   h.fail(false);await h.confirmDraft();assert.equal(h.S.records[1].f_status,'');assert.equal(h.S.records[1].f_score,20);h.renderTable(h.S.records);assert.match(h.node('dealRows').innerHTML,/<select/);
-  await h.undo();assert.deepEqual(plain(h.S.records),records);assert.equal(h.S.tableSchema.fields[2].type,'text');
+  await h.undo();assert.deepEqual(plain(h.S.records).map(r=>({...r,history:[]})),records);assert.equal(h.S.records[1].history.length,2);assert.equal(h.S.tableSchema.fields[2].type,'text');
 });
 test('KPI AI proposal changes only a card after confirmation and survives stored-schema reloading',async()=>{
   const h=harness();h.reply({action:'configure_kpi',kpiId:'kpi_f_score',kpi:{title:'Average score',metric:'average',field:'f_score',conditions:[]}});await h.send('Make total score an average');
