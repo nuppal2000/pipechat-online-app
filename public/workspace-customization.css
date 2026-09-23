@@ -1,0 +1,6 @@
+.column-menu{position:fixed;z-index:1000;min-width:170px;max-width:calc(100vw - 16px);padding:4px;background:#fff;border:1px solid #dddfea;border-radius:6px;box-shadow:0 8px 24px #151a2520}
+.column-menu button{display:block;width:100%;padding:10px 12px;text-align:left;border:0;background:transparent;color:#202334;font:inherit;border-radius:4px}
+.column-menu button:hover,.column-menu button:focus-visible{background:#eef2f7;outline:2px solid #536acc}
+.conversion-issues{max-height:300px;overflow:auto;overflow-wrap:anywhere}
+.conversion-issues p{padding:8px 0;border-bottom:1px solid #eceef3}
+.metrics [data-kpi-id]{min-width:0;overflow-wrap:anywhere}
