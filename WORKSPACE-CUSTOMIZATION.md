@@ -9,3 +9,11 @@
 - Cards calculate from the current visible table rows and current date; chart-specific selections remain separate. A KPI change does not change rows or the chart definition. Existing saved overrides are supplied to the model for subsequent refinements.
 
 No authentication, quota, signup, provider or model settings change. AI actions use the normal metered endpoint; manual rename remains available at the chat cap. See `SUPABASE-DEPLOYMENT.md` for migration order and rollback constraints.
+
+## Text, Sorting and KPI Lifecycle
+
+- Text cells expand and wrap on click or keyboard focus, including single-line long notes. They collapse on blur. Editing still uses normal save, undo and failed-draft recovery; simply reading a note does not save anything.
+- Dropdowns whose complete option set represents recognized timing labels or dates sort by time instead of alphabetically. Today, Tomorrow, Next week and Next month are supported, as are Yesterday, Overdue, This week/month, In N days/weeks/months, and complete supported dates. Next week starts Monday; Next month starts on the first. This week/month begin at today for forward-looking sorting. Blank or unscheduled choices stay last in either direction. Ordinary or mixed non-temporal dropdowns remain alphabetical, with stable ties.
+- Import CSV, Add field and Add record controls appear only on Pipeline. Existing chat, dashboard, activity and shared-view behavior remains available.
+- Ask chat to add a dashboard KPI to append a card without replacing another. Ask to delete a named dashboard KPI to remove only that card. Both require preview confirmation and support undo. Default-card deletions are stored separately so generated defaults do not return on reload; no rows or fields are deleted. Up to 120 visible cards are supported. A new card needs a distinct title and valid existing field references.
+- Example: `Add dashboard KPI called Total number of follow-ups` counts records with a populated follow-up field. The assistant should clarify when multiple columns or meanings are plausible. `Delete dashboard KPI Total number of follow-ups` removes that card only.

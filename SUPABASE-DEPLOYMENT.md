@@ -40,3 +40,6 @@ The local test suite covers typed custom fields, primary replacement, onboarding
 ## Rollback
 
 Retain the previous release and existing Xano environment settings until live acceptance passes. Reverting to Xano does not carry Supabase writes back into Xano. Stop new writes and preserve Supabase data before any rollback; never alternate providers while users edit. Preserve the original Xano workspace/disk and private backups. Retiring credentials or deleting old infrastructure requires a separate decision.
+# KPI Lifecycle Update
+
+Apply `db/migrations/005-kpi-lifecycle.sql` after migrations 001-004 and before deploying KPI add/delete controls. It preserves validated `hiddenKpis` metadata for removed default cards, without modifying account data or grants. Reverting the app to a version that strips this metadata can restore deleted default cards on a later save; keep the matching app/schema contract when rolling back.

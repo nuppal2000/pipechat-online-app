@@ -29,6 +29,7 @@ test('Supabase migration executes on real embedded PostgreSQL', { timeout: 12000
   await db.exec(await fs.readFile(path.join(__dirname, '../db/migrations/001-supabase.sql'), 'utf8'));
   await db.exec(await fs.readFile(path.join(__dirname, '../db/migrations/003-spreadsheet-setup.sql'), 'utf8'));
   await db.exec(await fs.readFile(path.join(__dirname, '../db/migrations/004-column-and-kpi-customization.sql'), 'utf8'));
+  await db.exec(await fs.readFile(path.join(__dirname, '../db/migrations/005-kpi-lifecycle.sql'), 'utf8'));
 
   async function user(metadata = {}) {
     const result = { id: randomUUID(), session: randomUUID() };

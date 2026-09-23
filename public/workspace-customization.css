@@ -4,3 +4,6 @@
 .conversion-issues{max-height:300px;overflow:auto;overflow-wrap:anywhere}
 .conversion-issues p{padding:8px 0;border-bottom:1px solid #eceef3}
 .metrics [data-kpi-id]{min-width:0;overflow-wrap:anywhere}
+#pipelineTable .cell-input.expandable-text{display:block;box-sizing:border-box;height:34px;min-height:34px;resize:none;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;line-height:20px}
+#pipelineTable .cell-input.expandable-text:focus{white-space:pre-wrap;overflow-wrap:anywhere;text-overflow:clip;max-height:none}
+.metrics{grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr))}
