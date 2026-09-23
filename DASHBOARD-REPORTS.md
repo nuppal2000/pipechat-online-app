@@ -37,6 +37,8 @@ The dashboard also provides searchable Owners and Accounts checkbox menus, an Ac
 
 ## Verification
 
+The dashboard-only Download button exports the currently rendered KPI cards, chart (or chart-mode KPI values), filters and complete report summary table to a paginated PDF. Generation happens locally in the browser using pinned pdfmake 0.3.11 and embedded Roboto fonts, loaded only when exporting. No CRM write, AI request or external document upload occurs. The report is a snapshot at click time; a sign-out during generation cancels the download. This exports the current chart, not every possible report or raw CRM record.
+
 Core tests cover subsets, case normalization, duplicate account names, zero/unknown values, filter/date intersections, empty/missing names and invalid selection lists. Workflow tests cover chart datasets, context preservation, read-only behavior, reset, escaping and unknown-value rendering. The server mock validates the strict output schema and forwarded selection context.
 
 For hosted browser QA, use `scripts/Start-SupabaseBrowserQA.ps1` with approved disposable accounts. It uses simulated AI and real test-account storage; credentials must remain private. Pure chart and AI contract tests run offline through `npm test`. See `WORKSPACE-CUSTOMIZATION.md` for persistent KPI add, edit and delete behavior.

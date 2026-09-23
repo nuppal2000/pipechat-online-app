@@ -1,0 +1,7 @@
+pdfmake 0.3.11
+Source: https://www.npmjs.com/package/pdfmake/v/0.3.11
+Project: https://github.com/bpampuch/pdfmake
+License: MIT (pdfmake-LICENSE.txt)
+Official browser build and bundled Roboto font VFS, copied without modification.
+Package SHA-512: Uc49J9hUMyuqJk+U+PxlpBpPr96A4HOOfesGx609EPr2ue82+5/Smq/KTAkEqh0/jUGSi1fumvqZ5yAWijJTJg==
+Used only in the browser for local dashboard PDF export; loaded on demand.
