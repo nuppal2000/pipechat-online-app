@@ -10,7 +10,7 @@ test('spreadsheet onboarding is atomic, exact, isolated, cap-independent and gua
   const write=(u,rows,schema,version)=>rpc(u,'select public.pipechat_write_crm($1::jsonb,$2::jsonb,$3::jsonb,$4) result',[JSON.stringify(rows),'[]',JSON.stringify(schema),version]);
   const a=await user(),b=await user(),before=await read(a),bBefore=await read(b);
   await db.query('update pipechat.usage_counters set used=1,quota_limit=1 where user_id=$1',[a.id]);
-  const built=Sheets.build([[' ID ','Owner','Value','Value','', ' Notes\nfull '],['001','Ravi','100',' $1.00 ','false','  line one\nline two  '],['','','0','','',''],['002','Sarah','25','N/A','','']],{useCase:'Sales'});
+  const built=Sheets.build([[' ID ','Owner','Value','Value','', ' Notes\nfull '],['001','Ravi','100',' $1.00 ','false','  line one\nline two  '],['003','','0','','',''],['002','Sarah','25','N/A','','']],{useCase:'Sales'});
   await db.exec("create function pipechat.qa_import_fail() returns trigger language plpgsql as $$ begin raise exception 'QA late write failure'; end $$; create trigger qa_import_fail before update on pipechat.workspace_metadata for each row execute function pipechat.qa_import_fail();");
   await assert.rejects(()=>write(a,built.records,built.schema,null),e=>e.code==='P0001');assert.deepEqual(await read(a),before);
   await db.exec('drop trigger qa_import_fail on pipechat.workspace_metadata; drop function pipechat.qa_import_fail();');
