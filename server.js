@@ -880,6 +880,27 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, usage);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/crm-reset") {
+      const user = await requireUser(req, res);
+      if (!user) return;
+      const payload = await readPayload(req);
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.confirm !== true || !Object.hasOwn(payload, 'expectedUpdatedAt') ||
+          Object.keys(payload).some(key => !['confirm', 'expectedUpdatedAt'].includes(key)) ||
+          !(payload.expectedUpdatedAt === null || typeof payload.expectedUpdatedAt === 'string' && payload.expectedUpdatedAt.length > 0 && payload.expectedUpdatedAt.length <= 256 && !/[\x00-\x1f\x7f]/.test(payload.expectedUpdatedAt))) {
+        return sendJson(res, 400, { error: 'Confirm the reset and reload the latest workspace before continuing.' });
+      }
+      const backend = req.backend;
+      if (backend) {
+        if (!backend.resetCrm) return sendJson(res, 501, { error: 'Reset is not supported by this storage provider.' });
+        return sendJson(res, 200, await backend.resetCrm(backendToken(req), payload.expectedUpdatedAt));
+      }
+      return await userLock(`crm:${user.id}`, async () => {
+        const current = await readCrmData(user.id);
+        if (payload.expectedUpdatedAt !== current.updatedAt) return sendJson(res, 409, { error: 'This CRM changed in another window. Refresh before resetting.' });
+        return sendJson(res, 200, await writeCrmData(user.id, [], [], { status: 'pending' }));
+      });
+    }
+
     if (req.method === "PUT" && url.pathname === "/api/crm-data") {
       const user = await requireUser(req, res);
       if (!user) return;

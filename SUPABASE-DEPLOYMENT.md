@@ -23,6 +23,8 @@ The reviewed schema is in `db/migrations/001-supabase.sql`. Apply it only during
 
 ## Acceptance
 
+For profile settings/reset support, apply `db/migrations/002-reset-workspace.sql` once after migration 001 and before deploying the reset UI. It adds one owner-only, authenticated, version-checked RPC; applying the migration does not delete data. A confirmed reset removes the current workspace's records (including their history), custom fields and table definition, then returns it to pending onboarding. It does not recreate the Auth account, change sessions or memberships, refund chats, or reset the usage limit. Standard saves still cannot return a configured table to onboarding. Reset cannot be undone in the app; historical private backups and previously exported files are unaffected.
+
 Run `npm run check` and `npm test` on the exact release. Confirm `/api/health` reports Supabase and closed signup, `/api/ready` and `/api/monitor-status` return healthy, and anonymous CRM/usage requests are denied. Verify public signup is disabled both at the application boundary and in the provider settings.
 
 Use only approved disposable accounts for hosted smoke tests. Verify private sign-in, existing table/schema read-back, one reversible manual edit, saving, full refresh, and restoration of the original field value. Check the second account cannot see the first account's workspace. Manual edits must not consume chat allowance. Do not run a paid AI request without separate approval. No production debug or QA-simulation flags are required.
