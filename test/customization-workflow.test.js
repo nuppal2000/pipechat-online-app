@@ -14,7 +14,7 @@ function harness(){
   }};
   context.window.messages=messages;
   const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
-  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,useSchema,prepare,send,confirmDraft,undo,cancelDraft,openFieldDialog,submitFieldDialog,openColumnMenu,renderTrust,renderTable,renderDashboardKpis,fieldInput,resizeTextCell};`),context);
+  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,useSchema,prepare,send,confirmDraft,undo,cancelDraft,openFieldDialog,submitFieldDialog,openColumnMenu,renderTrust,renderTable,renderDashboardKpis,fieldInput,resizeTextCell,moveColumn,selectScope,visible,fieldHeader};`),context);
   const h=context.window.test;h.useSchema(schema);Object.assign(h.S,{records:structuredClone(records),customFields:[],updatedAt:'v1',loaded:true,user:{id:1,name:'QA'},usage:{remaining:20},health:{aiConfigured:true}});
   return {...h,node,calls,messages,reply:a=>action=a,fail:v=>fail=v};
 }
@@ -70,4 +70,31 @@ test('AI can add and delete KPI cards with previews, cancel, undo, reload and un
   await h.send('Delete Tracked statuses');await h.confirmDraft();assert.equal(Customize.kpis(h.S.tableSchema).length,2);await h.undo();assert.equal(Customize.kpis(h.S.tableSchema).length,3);
   h.reply({action:'delete_kpi',kpiId:'kpi_records'});await h.send('Delete Records');await h.confirmDraft();h.useSchema(plain(h.S.tableSchema));assert(!Customize.kpis(h.S.tableSchema).some(k=>k.id==='kpi_records'));assert.deepEqual(plain(h.S.records),records);
   await h.undo();assert(Customize.kpis(h.S.tableSchema).some(k=>k.id==='kpi_records'));
+});
+test('All records clears AI filters, search and owner scope without editing or charging',()=>{
+  const h=harness();h.S.scope='mine';h.S.search='nothing';h.S.filter={field:'f_status',operator:'equals',value:'Warm'};h.node('dealSearch').value='nothing';
+  assert.equal(h.visible().length,0);h.selectScope('all');assert.equal(h.visible().length,2);assert.equal(h.S.filter,null);assert.equal(h.S.search,'');assert.equal(h.node('dealSearch').value,'');assert.equal(h.calls.length,0);
+});
+test('header reorder persists whole columns, does not sort rows or alter cells, and supports undo and failed saves',async()=>{
+  const h=harness();h.S.usage={remaining:0};assert.equal(await h.moveColumn('f_name','f_status'),true);
+  assert.deepEqual(plain(h.S.tableSchema.columnOrder),['f_score','f_status','f_name']);assert.deepEqual(plain(h.S.records),records);
+  h.renderTable(h.S.records);const html=h.node('dealHeaders').innerHTML;assert(html.indexOf('f_status')<html.indexOf('f_name'));assert.equal(h.S.sort,null);
+  await h.undo();assert.equal(h.S.tableSchema.columnOrder,undefined);assert.deepEqual(plain(h.S.records),records);
+  h.fail(true);assert.equal(await h.moveColumn('f_status','f_name'),false);assert.equal(h.S.tableSchema.columnOrder,undefined);
+  h.fail(false);const count=h.calls.length;for(const flag of ['saving','busy','failedEdit','pending','clarification']){h.S[flag]=true;assert.equal(await h.moveColumn('f_status','f_name'),false);h.S[flag]=false;}assert.equal(h.calls.length,count);
+  assert.equal(await h.moveColumn('f_status','f_name',h.S.revision-1),false);assert.equal(await h.moveColumn('f_status','f_name',h.S.revision,h.S.generation-1),false);
+});
+test('AI calendar conversion previews without options, confirms a native date input, and undo restores original strings',async()=>{
+  const h=harness();h.S.records[0].f_status='oct 5 2026';h.S.records[1].f_status='';
+  h.reply({action:'convert_field',field:'f_status',targetType:'date',dropdownOptions:null});await h.send('Make Status a calendar date field');
+  assert.equal(h.S.pending.kind,'convert-field');assert.match(h.node('trustBody').innerHTML,/Calendar date field/);assert.equal(h.S.records[0].f_status,'oct 5 2026');
+  await h.confirmDraft();assert.equal(h.S.records[0].f_status,'2026-10-05');h.renderTable(h.S.records);assert.match(h.node('dealRows').innerHTML,/type="date"/);
+  await h.undo();assert.equal(h.S.records[0].f_status,'oct 5 2026');assert.equal(h.S.tableSchema.fields[2].type,'text');
+});
+test('ambiguous dates ask clarification with no pending write; dropdown-to-text keeps selections and previews',async()=>{
+  const h=harness();h.S.records[0].f_status='10/5/2026';h.reply({action:'convert_field',field:'f_status',targetType:'date',dropdownOptions:null});await h.send('Make Status a date field');
+  assert.equal(h.S.pending,null);assert.match(h.S.clarification.question,/clarify these dates/);assert.equal(h.S.clarification.previousAction.targetType,'date');assert.equal(h.calls.filter(c=>c.url==='/api/crm-data').length,0);
+  h.cancelDraft();h.S.records[0].f_status='Warm';h.S.records[1].f_status='Won';h.useSchema({...schema,fields:schema.fields.map(f=>f.id==='f_status'?{...f,type:'choice',options:['Warm','Won']}:f)});
+  h.reply({action:'convert_field',field:'f_status',targetType:'text',dropdownOptions:null});await h.send('Make Status plain text');assert.match(h.node('trustBody').innerHTML,/preserved as text/);
+  await h.confirmDraft();assert.deepEqual(plain(h.S.records.map(r=>r.f_status)),['Warm','Won']);assert.equal(h.S.tableSchema.fields[2].type,'text');
 });

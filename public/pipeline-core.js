@@ -14,10 +14,10 @@
   const normalize = value => String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/\s+/g, ' ');
   const clone = value => JSON.parse(JSON.stringify(value));
   function validateCustomFields(input = []) {
-    if (!Array.isArray(input) || input.length > 20) throw new Error('A CRM supports up to 20 custom text fields.');
+    if (!Array.isArray(input) || input.length > 20) throw new Error('A CRM supports up to 20 custom fields.');
     const ids = new Set(), names = new Set(Object.values(fields).map(normalize));
     return input.map(field => {
-      if (!field || typeof field.id !== 'string' || !/^cf_[a-z0-9_]{1,60}$/.test(field.id) || ids.has(field.id) || Object.hasOwn(fields,field.id) || !['text','choice'].includes(field.type)) throw new Error('Invalid custom field definition.');
+      if (!field || typeof field.id !== 'string' || !/^cf_[a-z0-9_]{1,60}$/.test(field.id) || ids.has(field.id) || Object.hasOwn(fields,field.id) || !['text','choice','date'].includes(field.type)) throw new Error('Invalid custom field definition.');
       if (typeof field.name !== 'string') throw new Error('Enter a field name.');
       const name = field.name.trim(), key = normalize(name);
       if (!name || name.length > 60 || /[\x00-\x1f\x7f]/.test(name)) throw new Error('Field names must contain 1 to 60 readable characters.');
@@ -28,7 +28,7 @@
         if(!Array.isArray(options)||!options.length||options.length>30||options.some(v=>typeof v!=='string'||!v.trim()||v.trim().length>80||/[\x00-\x1f\x7f]/.test(v))||new Set(options.map(normalize)).size!==options.length)throw new Error('Provide 1 to 30 distinct dropdown options of at most 80 characters.');
         return {id:field.id,name,type:'choice',options:options.map(v=>v.trim())};
       }
-      return {id:field.id,name,type:'text'};
+      return {id:field.id,name,type:field.type};
     });
   }
   function fieldsFor(customFields = []) {
@@ -79,6 +79,7 @@
     }
     if (value === null || value === undefined) throw new Error(`Specify a value for ${labels[field]}.`);
     const customChoice=customFields.find(f=>f.id===field&&f.type==='choice');
+    if(customFields.some(f=>f.id===field&&f.type==='date')){if(value==='')return '';const parsed=date(value);if(!parsed)throw new Error('Enter a complete, valid date.');return parsed.toISOString().slice(0,10);}
     if(customChoice){if(value==='')return '';const option=customChoice.options.find(v=>normalize(v)===normalize(value));if(!option)throw new Error('Choose one of this field\'s options.');return option;}
     if (field.startsWith('cf_') && typeof value !== 'string') throw new Error('Custom text fields require text.');
     if (field === 'value') {

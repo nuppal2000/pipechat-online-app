@@ -2,7 +2,7 @@
 
 Cards use fixed To Do, In Progress and Done lanes. Their status, To Do text, notes and due date are independent of CRM cells. Linked cards display their record's current primary value; deleting that record removes its cards after the existing deletion preview warning.
 
-The New To Do card dialog has a searchable record selector and a Custom title option. Choosing Custom title creates a standalone task with no CRM record. Search is case-insensitive, keeps record IDs distinct for duplicate names, and retains an explicitly selected record while filtering. A custom title is required and limited to 500 characters. All additions use the existing proposal and confirmation flow.
+The New To Do card dialog starts with the linked-record selector and its Custom title option, without a separate search box. Record IDs distinguish duplicate names. Choosing Custom title creates a standalone task with no CRM record. A custom title is required and limited to 500 characters. All additions use the existing proposal and confirmation flow.
 
 Standalone cards survive CRM edits and unrelated record deletions. Reset PipeChat clears all cards, including standalone tasks. AI can edit or delete existing standalone cards by their card ID without touching CRM rows. Custom-title creation is currently through the Add To Do card dialog.
 
