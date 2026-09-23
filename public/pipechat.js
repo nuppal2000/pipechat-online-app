@@ -320,6 +320,10 @@
       const intro=p.kind==='delete'?'These deals will be removed after confirmation.':p.kind==='add'?'These rows will be added. Existing deals are kept.':'Review the exact changes before saving.';
       const patches=p.kind==='update'?p.patches:p.records.map(record=>({account:rowName(record),before:{},after:Object.fromEntries(Object.keys(labels()).map(f=>[f,record[f]]))}));
       panel.innerHTML=`<p class="proposal-intro">${intro}${p.note?` ${esc(p.note)}`:''}</p>${patches.map(patch=>`<section class="proposal-record"><h3>${esc(patch.account)}</h3>${p.kind==='delete'?'<p class="error">Delete entire record</p>':Object.entries(patch.after).map(([field,value])=>`<div class="field-diff"><span>${esc(labels()[field])}</span><div class="diff-values">${p.kind==='update'?`<span class="diff-before">${esc(display(field,patch.before[field]))}</span>${icon('ArrowRight')}`:''}<span class="diff-after">${esc(display(field,value))}</span></div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':p.kind==='delete'?'Confirm deletion':p.kind==='add'?'Confirm additions':'Confirm changes'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+      if(p.kind==='delete'){
+        const linked=S.todoCards.filter(card=>p.records.some(record=>record.id===card.recordId)).length;
+        panel.insertAdjacentHTML('afterbegin',`<p class="error" role="alert">Deleting these CRM records will also delete all ${linked} associated Kanban ${linked===1?'card':'cards'}.</p>`);
+      }
       if(p.importReview){
         const review=p.importReview;
         const details=`<details class="import-review"><summary>Import review: ${review.issues.length} uncertain cells, ${review.ignored.length} unused columns</summary><p>${esc(review.ignored.length?'Unused columns: '+review.ignored.join(', '):'All source columns mapped.')}</p>${review.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}${review.issues.slice(0,100).map(issue=>`<p>Row ${issue.row} / ${esc(labels()[issue.field])}: <q>${esc(issue.raw.slice(0,200))}</q> left blank.</p>`).join('')}${review.issues.length>100?'<p>First 100 uncertain cells shown.</p>':''}</details>`;
@@ -334,6 +338,7 @@
   function clearDraft() {S.pending=null;S.clarification=null;S.sourceAction=null;renderTrust();}
   function cancelDraft() {if(S.saving)return;clearDraft();say('Cancelled. No changes were made to the table.');}
   function prepare(action, originalCommand) {
+    if(S.tab==='todo'&&!['add_todo','update_todo','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action))throw new Error('To Do edits cannot change CRM cells. Switch to Pipeline to edit the table.');
     let proposal;
     if(['add_todo','update_todo','delete_todo'].includes(action.action)){
       proposal=window.PipeChatTodo.plan(S.todoCards,S.records,S.tableSchema,S.customFields,action,'todo_'+crypto.randomUUID().replaceAll('-',''));
@@ -415,7 +420,7 @@
       if(exactRecords&&(saved.deals?.length!==next.length||next.some((row,i)=>row.id!==saved.deals[i]?.id||tableSchema.fields.some(f=>row[f.id]!==saved.deals[i]?.[f.id]))))throw new Error('Storage did not confirm every imported cell. Reload before retrying.');
       useSchema(saved.tableSchema);S.records=saved.deals;S.customFields=C.validateCustomFields(saved.customFields);S.updatedAt=saved.updatedAt;S.revision++;
       S.todoCards=window.PipeChatTodo.validate(saved.todoCards,S.records,S.tableSchema,S.customFields);
-      S.todoSuggestions=[...new Set([...S.todoSuggestions,...(undo?window.PipeChatTodo.urgentChanges(before,S.records,S.todoCards,S.tableSchema,S.customFields):[])])];
+      S.todoSuggestions=[];
       if(oldPrimary!==C.role('primary')){if(S.report.groupBy===oldPrimary)S.report.groupBy=C.role('primary');S.report.accounts=null;if(S.sort?.field===oldPrimary)S.sort.field=C.role('primary');}
       if(oldOwner!==C.role('owner'))S.report.owners=null;
       if(S.sort&&!Object.hasOwn(labels(),S.sort.field))S.sort=null;
@@ -442,7 +447,7 @@
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
       if(p.kind==='todo'){
         if(p.revision!==S.revision)throw new Error('The workspace changed. Prepare this card preview again.');
-        if(await persist(S.records,p.after?p.before?'To Do card updated':'To Do card added':'To Do card deleted',{todoCards:p.cards}))say('Saved. The To Do board is updated; the linked CRM record is unchanged.');
+        if(await persistTodo(p.cards,p.after?p.before?'To Do card updated':'To Do card added':'To Do card deleted'))say('Saved. The To Do board is updated; the linked CRM record is unchanged.');
         return;
       }
       if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(p.kind)){
@@ -479,7 +484,21 @@
       if(await persist(next,`${p.count} ${p.count===1?'deal':'deals'} ${p.kind==='delete'?'deleted':p.kind==='add'?'added':'updated'}`))say(`Saved. ${p.count} ${p.count===1?'deal':'deals'} ${p.kind==='delete'?'deleted':p.kind==='add'?'added':'updated'}.`);
     }catch(error){say(error.message,'assistant',true);toast(error.message);}
   }
-  async function undo() {if(S.undo&&!S.saving)await persist(C.clone(S.undo.records),'Last change undone',{undo:false,customFields:C.clone(S.undo.customFields||[]),tableSchema:C.clone(S.undo.tableSchema||null),todoCards:C.clone(S.undo.todoCards||[])});}
+  async function persistTodo(cards,label,{undo=true}={}){
+    if(S.saving||S.resetting||!S.loaded||S.failedEdit)return false;
+    const generation=S.generation,before=C.clone(S.todoCards),records=C.clone(S.records),schema=C.clone(S.tableSchema),fields=C.clone(S.customFields);
+    S.saving=true;$('saveStatus').textContent='Saving card...';render();
+    try{
+      cards=window.PipeChatTodo.validate(cards,S.records);
+      const saved=await api('/api/todo-cards',{method:'PUT',body:JSON.stringify({todoCards:cards,expectedUpdatedAt:S.updatedAt})});
+      if(generation!==S.generation)return false;
+      if(JSON.stringify(saved.todoCards)!==JSON.stringify(cards)||JSON.stringify(saved.deals)!==JSON.stringify(records)||JSON.stringify(saved.tableSchema||null)!==JSON.stringify(schema)||JSON.stringify(saved.customFields||[])!==JSON.stringify(fields))throw new Error('The card-only save was not confirmed. Reload before retrying.');
+      S.todoCards=cards;S.updatedAt=saved.updatedAt;S.revision++;S.undo=undo?{kind:'todo',todoCards:before,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;
+      $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');toast(label,undo);return true;
+    }catch(error){if(generation===S.generation){$('saveStatus').textContent='Card save not confirmed';$('saveStatus').classList.add('failed');toast(error.message);}return false;}
+    finally{if(generation===S.generation){S.saving=false;render();}}
+  }
+  async function undo() {if(!S.undo||S.saving)return;if(S.undo.kind==='todo')return persistTodo(C.clone(S.undo.todoCards),'Last card change undone',{undo:false});await persist(C.clone(S.undo.records),'Last change undone',{undo:false,customFields:C.clone(S.undo.customFields||[]),tableSchema:C.clone(S.undo.tableSchema||null),todoCards:C.clone(S.undo.todoCards||[])});}
   async function refreshInspector(){
     if(S.saving||S.failedEdit)throw new Error('Finish recovering the current edit first.');
     const generation=S.generation;S.saving=true;render();
@@ -912,7 +931,7 @@
   }
   function wire() {
     const addTodo=document.createElement('button');addTodo.id='addTodoBtn';addTodo.className='icon-btn';addTodo.title='Add To Do card';addTodo.setAttribute('aria-label','Add To Do card');addTodo.innerHTML=icon('Plus');addTodo.hidden=true;$('shareBtn').after(addTodo);
-    todoUI=window.PipeChatTodoUI.create({S,esc,icon,fieldInput,manualEdit,persist,prepare,render,toast,localDate});
+    todoUI=window.PipeChatTodoUI.create({S,esc,icon,persistTodo,prepare,render,toast,localDate});
     inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast});
     document.addEventListener('click',event=>{const target=event.target.closest('[data-inspect]');if(target)inspectorUI.open(Number(target.dataset.inspect),target);});
     $('dealRows').addEventListener('click',event=>{const edit=event.target.closest('[data-edit-primary]');if(!edit||S.saving||S.failedEdit)return;const cell=edit.closest('td');cell.querySelector('.primary-name').hidden=true;cell.querySelector('.primary-editor').hidden=false;cell.querySelector('[data-field]').focus();});
