@@ -9,7 +9,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: PIPECHAT_MODEL
-        value: gpt-4.1-mini
+        value: gpt-5.2
       - key: PIPECHAT_FREE_CHAT_LIMIT
         value: "1000"
       - key: PIPECHAT_DATA_DIR

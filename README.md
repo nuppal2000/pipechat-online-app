@@ -42,7 +42,7 @@ npm run check
 npm test
 $env:PIPECHAT_STORAGE_PROVIDER = "json"
 $env:PIPECHAT_HOST = "127.0.0.1"
-$env:PIPECHAT_MODEL = "gpt-5.5"
+$env:PIPECHAT_MODEL = "gpt-5.2"
 npm start
 ```
 
