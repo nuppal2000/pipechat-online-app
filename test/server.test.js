@@ -76,6 +76,18 @@ test('server isolation, validation, persistence, schema/context, and usage lock'
     assert.equal(customChat.status,200,JSON.stringify(customChat.body));assert.equal(customChat.body.crmAction.action,'add_field');
     assert.equal((await request('/api/pipechat-ai','POST',{userCommand:'Clean schema test',pipeline:{customFields:[]}},d.cookie)).status,200);
     const css=await fetch(root+'/pipechat.css');assert.match(css.headers.get('content-type'),/text\/css/);
+    const e=await request('/api/auth/signup','POST',{name:'Typed Sheet QA',email:'sheet@example.test',password:'testing-only-123'});
+    const Types=require('../public/spreadsheet-types.js'),matrix=[['Company','Score'],['A','0'],['B','12']],options={useCase:'Sales',primary:0,idPrefix:'qa'};
+    const spreadsheetBuild=Types.describe(matrix,options);
+    assert.equal((await request('/api/pipechat-ai','POST',{spreadsheetBuild:{...spreadsheetBuild,primary:99}},e.cookie)).status,400);
+    assert.equal((await request('/api/pipechat-ai','POST',{spreadsheetBuild,tableBuild:{useCase:'Sales',description:''}},e.cookie)).status,400);
+    assert.equal((await request('/api/chat-usage','GET',null,e.cookie)).body.used,0);
+    const typed=await request('/api/pipechat-ai','POST',{spreadsheetBuild},e.cookie);assert.equal(typed.status,200,JSON.stringify(typed.body));assert.equal(typed.body.usage.used,1);
+    assert.equal((await request('/api/crm-data','GET',null,e.cookie)).body.deals.length,0);
+    const built=Types.build(matrix,options,typed.body.spreadsheetTypes);
+    const typedSave=await request('/api/crm-data','PUT',{deals:built.records,tableSchema:built.schema,customFields:[],expectedUpdatedAt:null},e.cookie);assert.equal(typedSave.status,200,JSON.stringify(typedSave.body));
+    assert.equal((await request('/api/crm-data','GET',null,e.cookie)).body.deals[0].f_qa_1,0);
+    assert.equal((await request('/api/pipechat-ai','POST',{spreadsheetBuild},e.cookie)).status,409);
   } finally {
     child.kill();await once(child,'exit').catch(()=>{});
     // This exact temporary directory was created by this test under its own test folder.

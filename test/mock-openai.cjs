@@ -14,6 +14,10 @@ global.fetch = async (url, options) => {
   }
   check(request.text.format.schema);
   const data = JSON.parse(request.input[0].content[0].text);
+  if(data.columns&&!data.headers){
+    assert.match(request.instructions,/untrusted data/);assert.match(request.instructions,/primary column must remain text/);
+    return {ok:true,json:async()=>({output_text:JSON.stringify({columns:data.columns.map(column=>({index:column.index,type:column.index===0?'text':'number',reason:'Synthetic classification'}))})})};
+  }
   if(['Custom schema test','Clean schema test'].includes(data.userCommand)){
     const action=request.text.format.schema.properties.crmAction.anyOf[1];
     assert(action.properties.action.enum.includes('add_field'));assert(action.required.includes('newFieldName'));
