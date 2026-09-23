@@ -2,14 +2,16 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const Sheets=require('../public/spreadsheet-import.js'),Schema=require('../public/table-schema.js'),Core=require('../public/pipeline-core.js'),Papa=require('../public/vendor/papaparse.min.js'),XLSX=require('../public/vendor/xlsx.full.min.js');
 const grid=[[' ID ','Owner','Amount','Amount','','Notes'],['001','Ravi','100','0','','  keep\nall whitespace  '],['002','Sarah','0','$1,200.00','FALSE','=literal text'],['','','','','',''],['003','','-2','N/A','','']];
 test('spreadsheet setup preserves headers, order, blanks, zeroes, duplicate labels and exact text',()=>{
-  const {schema,records}=Sheets.build(grid,{useCase:'Sales'});
-  assert.deepEqual(schema.fields.map(f=>f.name),grid[0]);assert.equal(records.length,4);
+  assert.throws(()=>Sheets.build(grid,{useCase:'Sales'}),/blank names/);
+  const named=grid.filter((r,i)=>i===0||r[0]);
+  const {schema,records}=Sheets.build(named,{useCase:'Sales'});
+  assert.deepEqual(schema.fields.map(f=>f.name),grid[0]);assert.equal(records.length,3);
   const core=Core.create(schema);
-  for(const [index,row] of records.entries())assert.deepEqual(schema.fields.map(f=>String(core.tableValues(row)[f.id]??'')),grid[index+1]);
+  for(const [index,row] of records.entries())assert.deepEqual(schema.fields.map(f=>String(core.tableValues(row)[f.id]??'')),named[index+1]);
   assert.equal(schema.fields[2].type,'number');assert.equal(schema.fields[3].type,'text');assert.equal(core.role('owner'),schema.fields[1].id);
   assert.throws(()=>core.fieldName('Amount'),/More than one/);assert.equal(core.fieldName(schema.fields[2].id),schema.fields[2].id);
   assert.equal(core.report(records,{metric:'sum',field:schema.fields[2].id,groupBy:core.role('owner'),chart:'bar'}).data.find(r=>r.label==='Ravi').value,100);
-  assert.equal(core.sortRecords(records,{field:schema.fields[2].id,direction:'asc'})[0].id,4);
+  assert.equal(core.sortRecords(records,{field:schema.fields[2].id,direction:'asc'})[0].id,3);
 });
 test('CSV source keeps literal values, quoted newlines and interior empty rows',()=>{
   const csv=Papa.unparse(grid);assert.deepEqual(Sheets.fromCsv('\ufeff'+csv+'\r\n',Papa),grid);

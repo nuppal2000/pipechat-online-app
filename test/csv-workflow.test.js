@@ -13,8 +13,8 @@ function harness(handler) {
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',classList:{add(){},remove(){}},insertAdjacentHTML(){}});return nodes.get(id);};
   const context={window:{PipeChatImportDuplicates:require('../public/import-duplicates.js'),PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatCsv:I,PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},Papa,AbortSignal,
     sessionStorage:{removeItem(){}},fetch:async(url,options)=>{calls.push({url,options});return handler(url,options);}};
-  const ctx={...context,window:{PipeChatInspector:require('../public/inspector-core.js'),...context.window,messages}};
-  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};renderTrust=()=>{};focusTrust=()=>{};updateUsage=()=>{};toast=()=>{};say=(text)=>window.messages.push(text);window.test={S,importCsv,analyzeCsvImport,basicCsvImport,confirmDraft,cancelDraft,chooseImportDuplicates,undo,display};`),ctx);
+  const ctx={...context,window:{PipeChatSchema:require('../public/table-schema.js'),PipeChatInspector:require('../public/inspector-core.js'),...context.window,messages}};
+  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`const actualTrust=renderTrust;render=()=>{};renderTrust=()=>{};focusTrust=()=>{};updateUsage=()=>{};toast=()=>{};say=(text)=>window.messages.push(text);window.test={S,importCsv,analyzeCsvImport,basicCsvImport,confirmDraft,cancelDraft,chooseImportDuplicates,chooseImportPrimary,useSchema,send,handleAction,actualTrust,undo,display};`),ctx);
   const h=ctx.window.test;Object.assign(h.S,{records:[structuredClone(original)],user:{id:1,name:'QA'},loaded:true,updatedAt:'v1',usage:{used:0,remaining:10},health:{aiConfigured:true}});
   return {...h,calls,messages,node,import:csv=>h.importCsv({name:'synthetic.csv',size:csv.length,text:async()=>csv})};
 }
@@ -55,11 +55,34 @@ test('late analysis cannot overwrite another user, newer table, or an active dra
   assert.equal(h.S.pending,null);assert.equal(h.S.usage.used,0);
   const h2=harness(()=>{h2.S.revision++;return response(200,{crmAction:mapping});});await h2.import(csv);assert.equal(h2.S.pending,null);assert.equal(h2.S.records.length,1);
 });
-test('short rows retain known cells, entirely unrelated rows are not fabricated, failed save preserves preview',async()=>{
+test('unnamed imported records are blocked; choosing an identity source recovers the preview',async()=>{
   const h=harness(()=>response(429,{error:'Synthetic throttle'}));h.S.health.aiConfigured=false;
-  await h.import('Owner,Value,Close date\nSarah');assert.equal(h.calls.length,0);assert.equal(h.S.pending.kind,'csv-import');h.basicCsvImport();assert.equal(h.S.pending.records[0].account,'');assert.equal(h.S.pending.records[0].value,null);
+  await h.import('Owner,Value,Close date\nSarah');assert.equal(h.calls.length,0);assert.equal(h.S.pending.kind,'csv-import');h.basicCsvImport();assert.equal(h.S.pending.kind,'csv-import');assert.equal(h.S.pending.missingPrimary,true);
+  await h.confirmDraft();assert.equal(h.S.records.length,1);assert.equal(h.calls.length,0);
+  h.node('importPrimarySource').value='0';h.chooseImportPrimary();assert.equal(h.S.pending.records[0].account,'Sarah');assert.equal(h.S.pending.records[0].owner,'');
   await h.confirmDraft();assert.equal(h.S.records.length,1);assert.equal(h.S.pending.records.length,1);
   h.cancelDraft();await h.import('Color\nred');h.basicCsvImport();assert.equal(h.S.pending.kind,'csv-import');assert.equal(h.S.pending.records,undefined);assert(h.messages.some(m=>m.includes('No CRM fields')));
+});
+
+test('F04 exact cancellation clears the pending question without a model call or mutation',async()=>{
+  const h=harness(()=>{throw Error('Unexpected request');});
+  h.handleAction({crmAction:{action:'clarify',question:'Which Deal Stage?'}},'Set its Deal Stage to banana.');
+  h.actualTrust();assert.match(h.node('trustStatus').textContent,/Waiting for your reply/);
+  await h.send('No, leave it unchanged.');h.actualTrust();
+  assert.equal(h.S.clarification,null);assert.equal(h.S.pending,null);assert.equal(h.S.sourceAction,null);
+  assert.doesNotMatch(h.node('trustBody').innerHTML,/Which Deal Stage/);assert.doesNotMatch(h.node('trustStatus').textContent,/Waiting/);
+  assert.equal(h.calls.length,0);assert.deepEqual(h.S.records,[original]);
+});
+
+test('F04 conversational replies and failed AI turns retire obsolete clarifications',async()=>{
+  for(const mode of ['conversation','unreadable','validation']){
+    const h=harness(()=>mode==='unreadable'?response(502,{error:'Upstream failed'}):response(200,{assistantMessage:'Nothing will change.',crmAction:mode==='validation'?{action:'update_record',recordMatch:'Existing',field:'close',value:'not a date'}:null}));
+    h.S.clarification={originalCommand:'Book an appointment',question:'Deposit Status?'};
+    h.S.sourceAction={action:'add_record'};
+    await h.send('Paid.');h.actualTrust();
+    assert.equal(h.S.clarification,null,mode);assert.equal(h.S.pending,null,mode);assert.equal(h.S.sourceAction,null,mode);
+    assert.doesNotMatch(h.node('trustStatus').textContent,/Waiting/);assert.deepEqual(h.S.records,[original]);
+  }
 });
 
 test('missing usage and health do not bypass semantic AI header matching',async()=>{

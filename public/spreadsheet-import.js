@@ -42,6 +42,8 @@
   function build(matrix,{useCase,description='',name='Imported table',primary=0,idPrefix='import'}={}){
     const grid=checkMatrix(matrix),headers=grid[0],rows=grid.slice(1);
     if(!Number.isInteger(primary)||primary<0||primary>=headers.length)throw new Error('Choose the primary column.');
+    const unnamed=rows.flatMap((row,index)=>!row[primary].trim()?[index+2]:[]);
+    if(unnamed.length)throw new Error(`The primary column has blank names on spreadsheet rows ${unnamed.slice(0,20).join(', ')}${unnamed.length>20?' and more':''}. Choose a populated identifying column or fill these names before importing.`);
     const used=new Set();
     const fields=headers.map((header,i)=>{
       const nonblank=rows.map(r=>r[i]).filter(v=>v!=='');

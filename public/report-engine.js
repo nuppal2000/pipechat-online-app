@@ -73,7 +73,10 @@
     const selections=[['owners',core.role('owner')],['accounts',core.role('primary')]].map(([key,field])=>{
       const values=spec[key];if(values!=null&&(!field||!Array.isArray(values)||values.length>2000||values.some(v=>typeof v!=='string')))fail('Choose valid record or owner selections.');return {field,values:values==null?null:new Set(values.map(norm))};
     });
-    const rows=records.filter(r=>(spec.scope==='all'||visible.has(r.id))&&matches(r)&&selections.every(s=>s.values===null||s.values.has(norm(r[s.field]))));
+    // Shared non-percentage filters describe the report cohort, not empty categories.
+    // Keep percentage denominators and intentionally different measure cohorts intact.
+    const sharedMeasureFilter=measures.every(m=>m.metric!=='percentage'&&m.where.length&&JSON.stringify(m.where)===JSON.stringify(measures[0].where))?measures[0].matches:()=>true;
+    const rows=records.filter(r=>(spec.scope==='all'||visible.has(r.id))&&matches(r)&&sharedMeasureFilter(r)&&selections.every(s=>s.values===null||s.values.has(norm(r[s.field]))));
     const groups=new Map(),series=new Map();let undated=0;
     for(const row of rows){
       const bucket=spec.bucket!=='none'?dateBucket(row[spec.groupBy],spec.bucket,core):null;
