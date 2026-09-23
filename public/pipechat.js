@@ -7,7 +7,7 @@
   const icon = name => window.PipeChatIcons[name] || '';
   const currency = value => value === null || value === undefined || value === '' ? '' : new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:Number(value)%1 ? 2 : 0}).format(Number(value)||0);
   const localDate = () => {const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
-  const defaultReport = () => ({metric:'sum',field:'value',groupBy:'owner',chart:'bar',filter:null,owners:null,accounts:null,from:null,to:null});
+  const defaultReport = () => ({metric:'sum',field:'value',groupBy:C.role('primary')||'account',chart:'bar',filter:null,owners:null,accounts:null,from:null,to:null});
   const S = {user:null,records:[],updatedAt:null,usage:null,health:null,history:[],pending:null,clarification:null,sourceAction:null,tab:'table',scope:'all',search:'',filter:null,report:defaultReport(),expanded:null,undo:null,saving:false,busy:false,generation:0,revision:0,signup:false,loaded:false};
   let chart=null, toastTimer;
   S.customFields=[];
@@ -249,6 +249,20 @@
     renderReport(visible());
   }
   function renderReport(rows) {
+    S.reportError=false;$('exportDashboardBtn').disabled=false;
+    if(S.report.version===1){
+      try{
+        const result=smartReportResult(S.report);
+        renderDashboardKpis(rows);renderReportSelections();
+        if(chart){chart.destroy();chart=null;}
+        chart=window.PipeChatReportsUI.draw({spec:S.report,result,core:C,custom:S.customFields,document,esc,Chart:window.Chart});
+      }catch(error){
+        S.reportError=true;$('exportDashboardBtn').disabled=true;
+        if(chart){chart.destroy();chart=null;}$('chartContainer').hidden=true;$('reportKpis').hidden=true;
+        $('reportRows').innerHTML='';$('reportCaption').textContent='Report needs clarification: '+error.message;
+      }
+      return;
+    }
     if(tailored()){renderContextualReport(rows);return;}
     renderDashboardKpis(rows);
     $('reportMetric').innerHTML='<option value="sum">Total value</option><option value="count">Deal count</option><option value="average">Average value</option>';
@@ -273,6 +287,12 @@
     $('chartContainer').style.height=`${S.report.chart==='bar'?Math.min(2400,Math.max(260,result.data.length*36+45)):260}px`;
     chart=new Chart($('reportCanvas'),{type:S.report.chart==='stage'?'doughnut':S.report.chart==='line'?'line':'bar',data:{labels:result.data.map(d=>d.label),datasets:[{label:metricLabels[S.report.metric],data:result.data.map(d=>d.value),backgroundColor:S.report.chart==='line'?'#8b7bea22':colors,borderColor:S.report.chart==='line'?'#8471e8':'#fff',borderWidth:S.report.chart==='stage'?3:0,borderRadius:S.report.chart==='bar'?4:0,maxBarThickness:35,tension:0,pointRadius:4,fill:S.report.chart==='line'}]},options:{responsive:true,maintainAspectRatio:false,animation:false,indexAxis:S.report.chart==='bar'?'y':'x',plugins:{legend:{display:S.report.chart==='stage',position:'bottom',labels:{boxWidth:10,padding:15,font:{size:10}}},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${showValue(ctx.raw)}`}}},...(S.report.chart==='stage'?{cutout:'66%'}:{scales:{x:{grid:{color:'#f0f1f7'},ticks:{font:{size:10}},beginAtZero:true},y:{grid:{display:S.report.chart==='line'},ticks:{font:{size:10},precision:0},beginAtZero:true}}})}});
     $('reportCanvas').setAttribute('aria-label',`${$('reportTitle').textContent}. ${result.data.map(d=>`${d.label}: ${showValue(d.value)}`).join('; ')||'No data'}`);
+  }
+  function smartReportResult(spec){return window.PipeChatReports.execute(S.records,spec,C,S.customFields,{today:localDate(),visibleIds:visible().map(r=>r.id)});}
+  function changeSmartReport(id,value){
+    try{const next=window.PipeChatReportsUI.control(S.report,id,value,C,S.customFields);smartReportResult(next);S.report=next;}
+    catch(error){toast(error.message);}
+    renderReport(visible());
   }
   function clearActivity(){
     $('activityFrom').value='';$('activityTo').value='';activityLimit=150;$('activityList').innerHTML='';$('activityCount').textContent='';$('activityMore').hidden=true;
@@ -579,6 +599,17 @@
     }
     if(action.action==='clear_view'){S.filter=null;S.search='';S.scope='all';$('dealSearch').value='';S.tab='table';render();say(`Showing all ${S.records.length} deals.`);return;}
     if(action.action==='show_report'){
+      if(action.smartReport){
+        try{
+          smartReportResult(action.smartReport);
+          const next=window.PipeChatReports.selections(action.smartReport,C),result=smartReportResult(next);
+          S.report=next;S.tab='dashboard';S.clarification=null;render();
+          say(`${result.title}: ${result.count} matching records from ${next.scope==='all'?'the full table':'the current pipeline view'}. Calculated from saved table data. ${result.count?'':'No matching records; the requested filters were kept.'}`);
+        }catch(error){
+          S.clarification={originalCommand:command,question:error.message,previousAction:action};say('Quick clarification. '+error.message);renderTrust();
+        }
+        return;
+      }
       const result=C.report(visible(),action.report,S.customFields);S.report=C.clone(action.report);S.tab='dashboard';S.clarification=null;render();say(`${$('reportTitle').textContent}, based on ${result.count} matching deals. The chart and values are calculated from your table.`);return;
     }
     if(action.action==='share_view'){
@@ -731,7 +762,7 @@
       // Publish one complete snapshot only while this login still owns the load.
       useSchema(data.tableSchema);S.records=data.deals;S.customFields=C.validateCustomFields(data.customFields);S.updatedAt=data.updatedAt;S.usage=usage;S.health=health;
       S.todoCards=window.PipeChatTodo.validate(data.todoCards,S.records,S.tableSchema,S.customFields);
-      S.report=C.reconcileReport(S.report,S.customFields);syncShareFields();
+      S.report=C.reconcileReport(defaultReport(),S.customFields);syncShareFields();
       S.loaded=true;document.body.classList.remove('auth-locked');$('authScreen').hidden=true;
       $('accountPill').textContent=user.name||user.email;$('userAvatar').textContent=(user.name||user.email).split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
       $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');
@@ -930,7 +961,8 @@
     if(chart){chart.destroy();chart=null;}
     if(S.report.chart==='kpi'||typeof Chart==='undefined')return;
     const colors=['#287e76','#5564ce','#d29235','#b76588','#5b8bab'];
-    chart=new Chart($('reportCanvas'),{type:S.report.chart==='line'?'line':S.report.chart==='stage'?'doughnut':'bar',data:{labels:result.data.map(item=>item.label),datasets:[{label:title,data:result.data.map(item=>item.value),backgroundColor:colors,borderColor:'#287e76',borderWidth:1}]},options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:S.report.chart==='stage'}},...(S.report.chart!=='stage'?{scales:{y:{beginAtZero:true}}}:{})}});
+    $('chartContainer').style.height=(S.report.chart==='bar'?Math.min(12000,Math.max(280,result.data.length*34+60)):360)+'px';
+    chart=new Chart($('reportCanvas'),{type:S.report.chart==='line'?'line':S.report.chart==='stage'?'doughnut':'bar',data:{labels:result.data.map(item=>item.label),datasets:[{label:title,data:result.data.map(item=>item.value),backgroundColor:colors,borderColor:'#287e76',borderWidth:1}]},options:{responsive:true,maintainAspectRatio:false,animation:false,indexAxis:S.report.chart==='bar'?'y':'x',plugins:{legend:{display:S.report.chart==='stage'}},...(S.report.chart!=='stage'?{scales:{x:{beginAtZero:true},y:{beginAtZero:true,ticks:{autoSkip:false}}}}:{})}});
     $('reportCanvas').setAttribute('aria-label',$('reportTitle').textContent);
   }
   function renderDashboardKpis(rows){
@@ -945,7 +977,7 @@
   function wire() {
     const exportDashboard=document.createElement('button');exportDashboard.id='exportDashboardBtn';exportDashboard.className='icon-btn';exportDashboard.title='Export dashboard as PDF';exportDashboard.setAttribute('aria-label','Export dashboard as PDF');exportDashboard.innerHTML=icon('Download');exportDashboard.hidden=true;$('shareBtn').after(exportDashboard);
     exportDashboard.onclick=async()=>{
-      if(!S.loaded||S.tab!=='dashboard'||exportDashboard.disabled)return;
+      if(!S.loaded||S.tab!=='dashboard'||exportDashboard.disabled||S.reportError)return;
       const generation=S.generation;exportDashboard.disabled=true;exportDashboard.setAttribute('aria-busy','true');
       try{
         const filters=[document.querySelector('[data-scope].active')?.textContent||'All records'];
@@ -954,6 +986,7 @@
         if(S.report.owners)filters.push('Owners: '+S.report.owners.join(', '));
         if(S.report.accounts)filters.push('Records: '+S.report.accounts.join(', '));
         if(S.report.from||S.report.to)filters.push(`Dates: ${S.report.from||'Any'} to ${S.report.to||'Any'}`);
+        if(S.report.version===1){filters.splice(0,filters.length,window.PipeChatReports.describe(S.report,C,S.customFields));filters.push('Top KPI cards: '+(document.querySelector('[data-scope].active')?.textContent||'All records')+(S.search?' / search: '+S.search:'')+(S.filter?' / '+labels()[S.filter.field]+' '+S.filter.operator+' '+(S.filter.value??''):''));}
         const snapshot=window.PipeChatDashboardPDF.capture(document,filters);
         if(await window.PipeChatDashboardPDF.download(snapshot,()=>S.generation===generation&&Boolean(S.user)))toast('Dashboard PDF exported.');
       }catch(error){if(S.generation===generation)toast('Could not export dashboard: '+error.message);}
@@ -979,7 +1012,7 @@
     $('fieldDialogForm').onsubmit=submitFieldDialog;
     $('fieldDialogForm').onchange=event=>{if(event.target.name!=='replacementMode')return;const existing=event.target.value==='existing';$('replacementField').disabled=!existing;$('replacementField').required=existing;$('replacementName').disabled=existing;$('replacementName').required=!existing;};
     $('fieldDialogCancel').onclick=closeFieldDialog;$('fieldDialog').onclose=()=>{S.fieldDialog=null;};
-    $('reportField').onchange=()=>{S.report.field=$('reportField').value;renderReport(visible());};
+    $('reportField').onchange=()=>{if(S.report.version===1){changeSmartReport('reportField',$('reportField').value);return;}S.report.field=$('reportField').value;renderReport(visible());};
     icons();$('authForm').addEventListener('submit',authSubmit);
     $('authRetryBtn').onclick=async()=>{if($('authRetryBtn').disabled)return;$('authRetryBtn').disabled=true;$('authRetryBtn').hidden=true;$('authMessage').textContent='Connecting...';try{await restoreSession();if(!$('authScreen').hidden&&$('authRetryBtn').hidden)$('authMessage').textContent='Please sign in to continue.';}finally{$('authRetryBtn').disabled=false;}};
     $('authToggleBtn').onclick=toggleAuthMode;
@@ -1015,7 +1048,7 @@
     document.querySelectorAll('.field-checks input').forEach(input=>input.onchange=()=>renderTrust());
     $('previewInviteBtn').onclick=()=>{if(!$('shareRecipient').value.trim()){toast('Enter a recipient for the preview.');$('shareRecipient').focus();return;}$('inviteStatus').textContent=`Invitation preview prepared for ${$('shareRecipient').value}. No invitation was sent.`;renderTrust();focusTrust();};
     $('exportPreviewBtn').onclick=exportShare;
-    ['reportMetric','reportGroup','reportChart'].forEach(id=>$(id).onchange=()=>{S.report.metric=$('reportMetric').value;S.report.groupBy=$('reportGroup').value;S.report.chart=$('reportChart').value;if(!tailored()&&id==='reportChart'&&S.report.chart==='line')S.report.groupBy='close_month';if(!tailored()&&id==='reportChart'&&S.report.chart==='stage')S.report.groupBy='stage';renderReport(visible());});
+    ['reportMetric','reportGroup','reportChart'].forEach(id=>$(id).onchange=()=>{if(S.report.version===1){changeSmartReport(id,$(id).value);return;}S.report.metric=$('reportMetric').value;S.report.groupBy=$('reportGroup').value;S.report.chart=$('reportChart').value;if(!tailored()&&id==='reportChart'&&S.report.chart==='line')S.report.groupBy='close_month';if(!tailored()&&id==='reportChart'&&S.report.chart==='stage')S.report.groupBy='stage';renderReport(visible());});
     $('reportSelections').addEventListener('change',event=>changeReportSelection(event.target));
     $('reportSelections').addEventListener('input',event=>{if(event.target.dataset.reportSearch)filterReportOptions(event.target.dataset.reportSearch);});
     $('reportSelections').addEventListener('keydown',event=>{if(event.key==='Escape'){const detail=event.target.closest('details');if(detail){detail.open=false;detail.querySelector('summary').focus();}}});
