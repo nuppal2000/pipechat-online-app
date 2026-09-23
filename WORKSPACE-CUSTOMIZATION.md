@@ -2,6 +2,11 @@
 
 ## Column Layout And Types
 
+- Chat supports `move_record` (for example, "Move Uppal Co to row 2" or "Move row 4 to row 1") and `move_field` ("Move Owner to column 2"). Both preview before saving and support Undo. Row IDs, cell values, history, linked cards and allowance accounting are unchanged by confirmation. No new database migration is needed; the existing record position and column-order storage are used.
+- Row positions are one-based in the current visible, sorted view by default. Hidden records keep their slots. Confirmation clears sorting to reveal the manual order. An explicitly requested full-table move uses saved order and shows all rows afterward. Changed views, revisions or sessions invalidate old move previews. Duplicate names require selection; missing or invalid positions need clarification.
+- `sort_table` applies the existing typed ascending/descending sort to the current view without saving a new row order. Clearing sorting returns to saved order. The model receives full records, visible row IDs, sort/filter context, displayed field order and an explicit supported-action list.
+- AI uses validated, allowlisted actions, not arbitrary database commands. Unsupported requests receive a conversational explanation; multi-action requests are handled one confirmed step at a time. Normal chat styling is used for failures. Unreadable responses (including HTTP 200) fail closed; uncertain saves retain the existing reload/recovery warning. No automatic paid retries are made.
+
 - Drag a column header onto another header to move the entire column. Alt+Left/Right on a focused header also moves it. Stable field IDs, record values, row sorting and the primary-field role are unchanged. Order is stored per workspace, survives reload, and supports Undo.
 - All records clears the pipeline's search, AI filter and owner scope without changing saved records or dashboard report definitions.
 - Ask chat to convert a text column to a calendar/date field. Complete month-name dates and year-first dates are converted to YYYY-MM-DD, with blanks kept blank. Ambiguous numeric dates, missing years and invalid dates require clarification; nothing is silently discarded. The primary field must remain text/choice.
