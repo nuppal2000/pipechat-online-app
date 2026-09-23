@@ -44,10 +44,18 @@ Retain a known-good Supabase-compatible release. Stop new writes and preserve cu
 
 Apply `db/migrations/005-kpi-lifecycle.sql` after migrations 001-004 and before deploying KPI add/delete controls. It preserves validated `hiddenKpis` metadata for removed default cards, without modifying account data or grants. Reverting the app to a version that strips this metadata can restore deleted default cards on a later save; keep the matching app/schema contract when rolling back.
 
-## Linked To Do Board
+## Linked To Do Board (Historical Migration 006)
 
 Apply `db/migrations/006-todo-board.sql` after 001-005 and before deploying the board UI. Existing boards start empty; no CRM rows or allowances change. Cards are private workspace metadata, linked by record ID and stable field IDs. Titles, owner/contact, next actions and follow-ups project from the current CRM. Card-only next actions/dates are explicit overrides. The fixed lanes do not edit CRM status fields.
 
 The authenticated `pipechat_write_workspace` RPC atomically saves rows, schema and cards under the existing workspace lock/version check. Direct table access stays denied, and all writes verify the live Supabase session. The older four-argument write RPC preserves valid cards and prunes deleted-record/field links. Reset clears cards but preserves identity and usage. Card deletion leaves the CRM record; record deletion removes its cards, and workspace Undo restores both. No paid AI calls are required for manual operations. Common urgent note phrases prompt for opt-in card creation, never automatic insertion.
 
 Run `npm test` and `npm run check` before deployment. Local tests include forced late rollback, stale saves, revoked sessions, caller isolation and old-client pruning. Backups must include `workspace_metadata.todo_cards` and migration 006 functions/triggers. Keep migration 006 when rolling back only the app; never drop metadata containing user cards. A live read-only smoke test must not manufacture or delete cards in an existing account.
+
+## Independent To Do Cards (Current)
+
+Apply `db/migrations/007-independent-todo.sql` once after 006 and immediately before deploying the matching app. It freezes each card's displayed To Do and due information in private `todo_cards_v2` metadata. Valid calendar dates remain dates; relative or ambiguous due text is retained in Notes without inventing a date. Original v1 card metadata is retained as an archive. CRM cells, history, schema, users and allowances are unchanged by migration.
+
+Cards now contain only a linked record ID, board status, To Do text, Notes and a due date. Only the displayed primary record name follows table edits. No owner, next-action, notes or follow-up cell is bound to a card. Notes appear only in the expanded editor and change preview. Creating, editing, dragging, deleting or undoing a card uses `PUT /api/todo-cards` and the authenticated `pipechat_write_todo` RPC, which cannot write CRM rows or consume chat allowance. Expanded cards expose no CRM cell editors.
+
+Deleting a record warns that all its linked cards will also be removed. The versioned full-workspace save removes them atomically; workspace Undo restores the row and its cards. The new read/write RPCs are `pipechat_read_workspace` and `pipechat_write_workspace_v2`. Legacy five-argument linked-card writes fail with a reload conflict to prevent old tabs from reverting independent tasks. Refresh open tabs after deployment. Backups must retain both card metadata columns and migration 007 functions/triggers. Do not roll back to a linked-card app after independent card edits; prefer a forward fix.
