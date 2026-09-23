@@ -251,9 +251,10 @@
   function renderReport(rows) {
     S.reportError=false;$('exportDashboardBtn').disabled=false;
     if(S.report.version===1){
+      renderDashboardKpis(rows);
       try{
         const result=smartReportResult(S.report);
-        renderDashboardKpis(rows);renderReportSelections();
+        renderReportSelections();
         if(chart){chart.destroy();chart=null;}
         chart=window.PipeChatReportsUI.draw({spec:S.report,result,core:C,custom:S.customFields,document,esc,Chart:window.Chart});
       }catch(error){
