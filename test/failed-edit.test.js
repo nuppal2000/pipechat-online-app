@@ -13,7 +13,7 @@ function harness(handler, storage = new Map()) {
       classList: { add() {}, remove() {} } });
     return nodes.get(id);
   };
-  const context = { window: { PipelineCore: core, PipeChatIcons: {}, confirm: () => true },
+  const context = { window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore: core, PipeChatIcons: {}, confirm: () => true },
     document: { getElementById: node, querySelectorAll: () => [], querySelector:()=>null, body: { classList: { add() {}, remove() {} } } },
     sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     fetch: async (url, options) => { calls.push({ url, options }); return handler(url, options); } };

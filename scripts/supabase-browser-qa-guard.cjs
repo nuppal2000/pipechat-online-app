@@ -108,7 +108,7 @@ function restrictedFetch(nativeFetch, { runId, publishableKey, access, signal, r
     let allowed = false;
     if (path === '/rest/v1/rpc/pipechat_health') {
       allowed = ['GET', 'POST'].includes(method) && !url.search;
-    } else if (/^\/rest\/v1\/rpc\/pipechat_(read_crm|write_crm|read_usage|reserve_usage|finish_usage)$/.test(path)) {
+    } else if (/^\/rest\/v1\/rpc\/pipechat_(read_crm|write_crm|write_workspace|read_usage|reserve_usage|finish_usage)$/.test(path)) {
       allowed = method === 'POST' && !url.search && context?.kind === 'data' &&
         (!restoreOnly || path === '/rest/v1/rpc/pipechat_read_crm');
     } else if (auth && context) {

@@ -5,7 +5,7 @@ const records=[{id:1,f_name:'A',f_score:0,f_status:'Warm',history:[]},{id:2,f_na
 function harness(){
   const nodes=new Map(),calls=[],messages=[];let action=null,fail=false,saved={deals:structuredClone(records),customFields:[],tableSchema:schema,updatedAt:'v1'};
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',textContent:'',hidden:false,open:false,dataset:{},style:{},elements:{},classList:{add(){},remove(){},toggle(){}},focus(){},setAttribute(){},querySelectorAll:()=>[],showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);};
-  const context={crypto,AbortSignal,innerWidth:1400,innerHeight:900,window:{PipelineCore:Core,PipeChatSchema:Schema,PipeChatCustomize:Customize,PipeChatIcons:{}},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
+  const context={crypto,AbortSignal,innerWidth:1400,innerHeight:900,window:{PipeChatTodo:require('../public/todo-core.js'),PipelineCore:Core,PipeChatSchema:Schema,PipeChatCustomize:Customize,PipeChatIcons:{}},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
     const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
     if(url==='/api/pipechat-ai')return {ok:true,json:async()=>({crmAction:action,usage:{used:1,remaining:20}})};
     if(fail)return {ok:false,status:503,json:async()=>({error:'Synthetic failure'})};

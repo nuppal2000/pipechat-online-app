@@ -43,3 +43,11 @@ Retain a known-good Supabase-compatible release. Stop new writes and preserve cu
 # KPI Lifecycle Update
 
 Apply `db/migrations/005-kpi-lifecycle.sql` after migrations 001-004 and before deploying KPI add/delete controls. It preserves validated `hiddenKpis` metadata for removed default cards, without modifying account data or grants. Reverting the app to a version that strips this metadata can restore deleted default cards on a later save; keep the matching app/schema contract when rolling back.
+
+## Linked To Do Board
+
+Apply `db/migrations/006-todo-board.sql` after 001-005 and before deploying the board UI. Existing boards start empty; no CRM rows or allowances change. Cards are private workspace metadata, linked by record ID and stable field IDs. Titles, owner/contact, next actions and follow-ups project from the current CRM. Card-only next actions/dates are explicit overrides. The fixed lanes do not edit CRM status fields.
+
+The authenticated `pipechat_write_workspace` RPC atomically saves rows, schema and cards under the existing workspace lock/version check. Direct table access stays denied, and all writes verify the live Supabase session. The older four-argument write RPC preserves valid cards and prunes deleted-record/field links. Reset clears cards but preserves identity and usage. Card deletion leaves the CRM record; record deletion removes its cards, and workspace Undo restores both. No paid AI calls are required for manual operations. Common urgent note phrases prompt for opt-in card creation, never automatic insertion.
+
+Run `npm test` and `npm run check` before deployment. Local tests include forced late rollback, stale saves, revoked sessions, caller isolation and old-client pruning. Backups must include `workspace_metadata.todo_cards` and migration 006 functions/triggers. Keep migration 006 when rolling back only the app; never drop metadata containing user cards. A live read-only smoke test must not manufacture or delete cards in an existing account.
