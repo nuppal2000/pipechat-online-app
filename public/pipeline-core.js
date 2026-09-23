@@ -35,7 +35,7 @@
     return Object.fromEntries(definitions.map(field=>[field.id,validateStoredValue(field.id,record[field.id]??'',definitions)]));
   }
   function fieldName(value, customFields = []) {
-    if(schema){const found=definitions(customFields).find(f=>f.id===value||normalize(f.name)===normalize(value));return found?.id||String(value);}
+    if(schema){const defs=definitions(customFields),byId=defs.find(f=>f.id===value);if(byId)return byId.id;const matches=defs.filter(f=>normalize(f.name)===normalize(value));if(matches.length>1)throw new Error('More than one column has that label. Specify its field ID.');return matches[0]?.id||String(value);}
     const custom = customFields.find(field=>field.id===value || normalize(field.name)===normalize(value));
     if (custom) return custom.id;
     const key = normalize(value).replace(/[\s-]+/g, '_');
@@ -70,7 +70,7 @@
       const text=value.trim();
       if(def.type==='date'){const parsed=date(text);if(!parsed)throw new Error('Enter a complete, valid date.');return parsed.toISOString().slice(0,10);}
       if(def.type==='choice'){const option=def.options.find(v=>normalize(v)===normalize(text));if(!option)throw new Error('Choose one of this field\'s options.');return option;}
-      return text;
+      return schema.source==='spreadsheet'?value:text;
     }
     if (value === null || value === undefined) throw new Error(`Specify a value for ${labels[field]}.`);
     if (field.startsWith('cf_') && typeof value !== 'string') throw new Error('Custom text fields require text.');

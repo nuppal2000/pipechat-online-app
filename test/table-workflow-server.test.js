@@ -12,6 +12,10 @@ test('new-user setup, AI metering, empty confirmation, persistence, isolation, s
     }
     const a=await req('/api/auth/signup','POST',{email:'setup-a@example.invalid',name:'QA',password:'local-only-123'}),b=await req('/api/auth/signup','POST',{email:'setup-b@example.invalid',name:'QA',password:'local-only-123'});
     const initial=await req('/api/crm-data','GET',null,a.cookie);assert.deepEqual(initial.data.deals,[]);assert.deepEqual(initial.data.tableSchema,{status:'pending'});assert.equal(initial.data.seedDemoData,false);
+    assert.equal((await req('/api/import/google-sheet','POST',{url:'https://example.invalid/'})).status,401);
+    assert.equal((await req('/api/import/google-sheet','POST',{url:'https://example.invalid/'},a.cookie)).status,400);
+    assert.equal((await req('/api/import/google-sheet','POST',{url:'https://docs.google.com/spreadsheets/d/synthetic_test_sheet/edit',userId:b.data.user.id},a.cookie)).status,400);
+    const crossOrigin=await fetch(root+'/api/import/google-sheet',{method:'POST',headers:{'Content-Type':'application/json',Cookie:a.cookie,Origin:'https://untrusted.example.invalid'},body:JSON.stringify({url:'https://docs.google.com/spreadsheets/d/synthetic_test_sheet/edit'})});assert.equal(crossOrigin.status,403);
     assert.equal((await req('/api/pipechat-ai','POST',{tableBuild:{useCase:'Other',description:''}},a.cookie)).status,400);
     assert.equal((await req('/api/chat-usage','GET',null,a.cookie)).data.used,0);
     const build=await req('/api/pipechat-ai','POST',{tableBuild:{useCase:'Recruiting',description:''}},a.cookie);assert.equal(build.status,200);assert.equal(build.data.usage.used,1);

@@ -6,10 +6,13 @@
   <title>PipeChat - Sales Pipeline</title>
   <script>if(location.protocol==='file:')location.replace('http://127.0.0.1:8787/');</script>
   <link rel="stylesheet" href="/pipechat.css?v=2">
+  <link rel="stylesheet" href="/spreadsheet.css">
   <script defer src="/icons.js"></script>
   <script defer src="/table-schema.js"></script>
   <script defer src="/pipeline-core.js"></script>
   <script defer src="/csv-import.js"></script>
+  <script defer src="/spreadsheet-import.js"></script>
+  <script defer src="/spreadsheet-ui.js"></script>
   <script defer src="/vendor/chart.umd.min.js"></script>
   <script defer src="/vendor/papaparse.min.js"></script>
   <script defer src="/pipechat.js?v=2"></script>
@@ -43,12 +46,19 @@
       <label id="workflowLabel" hidden>Describe your business or workflow and what you want to track<textarea id="workflowDescription" rows="4" maxlength="2000"></textarea></label>
       <section id="buildChoices" hidden><h2>How would you like to build your table?</h2><div class="setup-methods">
         <button id="buildAiBtn" class="primary">Build Pipechat Table using AI</button>
-        <button class="secondary" disabled title="Coming later">Build Pipechat Table from Scratch <small>Coming later</small></button>
-        <button class="secondary" disabled title="Coming later">Use Default Pipechat Table <small>Coming later</small></button>
-        <button class="secondary" disabled title="Coming later">Build Pipechat Table using existing Microsoft Excel or Google Sheets Doc <small>Coming later</small></button>
+        <button id="buildSheetBtn" class="secondary">Build Pipechat Table using Microsoft Excel or Google Sheets Doc</button>
       </div></section>
       <p id="setupStatus" role="status"></p><section id="schemaPreview" hidden></section>
     </section>
+    <dialog id="spreadsheetDialog" class="field-dialog spreadsheet-dialog" aria-labelledby="spreadsheetTitle">
+      <div class="spreadsheet-heading"><h2 id="spreadsheetTitle">Choose a spreadsheet</h2><button id="sheetCloseBtn" class="icon-btn" aria-label="Close spreadsheet import" title="Close"><i data-icon="X"></i></button></div>
+      <div class="segmented" aria-label="Spreadsheet source"><button id="sheetFileTab" class="active" aria-pressed="true">File upload</button><button id="sheetLinkTab" aria-pressed="false">Google Sheets link</button></div>
+      <section id="sheetFilePane"><label>Excel or CSV file<input id="spreadsheetFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></label></section>
+      <form id="sheetLinkForm" hidden><label>Google Sheets link<input id="googleSheetUrl" type="url" maxlength="2048" placeholder="https://docs.google.com/spreadsheets/d/..." required></label><button id="sheetLoadBtn" class="secondary" type="submit"><i data-icon="Download"></i>Load sheet</button></form>
+      <p id="sheetStatus" role="status"></p>
+      <section id="sheetReview" hidden><div class="sheet-controls"><label>Worksheet<select id="sheetSelect"></select></label><label id="primaryColumnLabel">Primary column<select id="sheetPrimary"></select></label></div><p id="sheetSummary"></p><div id="sheetPreview" class="sheet-preview" tabindex="0" aria-label="Spreadsheet preview"></div><p class="subtle">Values snapshot. Formula results are copied; formulas and formatting are not linked.</p></section>
+      <div class="proposal-actions"><button id="sheetContinueBtn" class="primary" disabled>Review table</button><button id="sheetCancelBtn" class="secondary">Cancel</button></div>
+    </dialog>
     <div class="workspace-heading"><div><p class="eyebrow">PIPECHAT WORKSPACE</p><h1 id="workspaceTitle">Sales pipeline</h1></div><span id="saveStatus" class="save-status" role="status">Connecting...</span></div>
     <div class="workspace">
       <aside class="chat-pane pane" aria-label="PipeChat conversation">
