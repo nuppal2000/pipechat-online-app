@@ -165,7 +165,8 @@
     $('viewFilters').hidden=['todo','activity','share'].includes(S.tab);
     $('filterStrip').hidden=S.tab==='todo'||!S.filter;
     $('shareBtn').hidden=S.tab==='todo';$('addTodoBtn').hidden=S.tab!=='todo';
-    if(S.tab==='todo'){$('recordCount').textContent=`${S.todoCards.length} cards`;$('viewSummary').textContent=`${S.todoCards.length} linked cards`;$('clearSearchBtn').hidden=true;}
+    $('exportDashboardBtn').hidden=S.tab!=='dashboard';
+    if(S.tab==='todo'){$('recordCount').textContent=`${S.todoCards.length} cards`;$('viewSummary').textContent=`${S.todoCards.length} cards`;$('clearSearchBtn').hidden=true;}
     todoUI?.draw();
     inspectorUI?.draw();
     $('addAccountBtn').disabled=S.saving||Boolean(S.failedEdit);$('importCsvBtn').disabled=S.saving||S.busy||Boolean(S.failedEdit);
@@ -942,6 +943,22 @@
     }).join('');
   }
   function wire() {
+    const exportDashboard=document.createElement('button');exportDashboard.id='exportDashboardBtn';exportDashboard.className='icon-btn';exportDashboard.title='Export dashboard as PDF';exportDashboard.setAttribute('aria-label','Export dashboard as PDF');exportDashboard.innerHTML=icon('Download');exportDashboard.hidden=true;$('shareBtn').after(exportDashboard);
+    exportDashboard.onclick=async()=>{
+      if(!S.loaded||S.tab!=='dashboard'||exportDashboard.disabled)return;
+      const generation=S.generation;exportDashboard.disabled=true;exportDashboard.setAttribute('aria-busy','true');
+      try{
+        const filters=[document.querySelector('[data-scope].active')?.textContent||'All records'];
+        if(S.search)filters.push('Search: '+S.search);
+        for(const f of [S.filter,S.report.filter])if(f)filters.push(`Filter: ${labels()[f.field]||f.field} ${f.operator.replaceAll('_',' ')} ${f.value??''}`);
+        if(S.report.owners)filters.push('Owners: '+S.report.owners.join(', '));
+        if(S.report.accounts)filters.push('Records: '+S.report.accounts.join(', '));
+        if(S.report.from||S.report.to)filters.push(`Dates: ${S.report.from||'Any'} to ${S.report.to||'Any'}`);
+        const snapshot=window.PipeChatDashboardPDF.capture(document,filters);
+        if(await window.PipeChatDashboardPDF.download(snapshot,()=>S.generation===generation&&Boolean(S.user)))toast('Dashboard PDF exported.');
+      }catch(error){if(S.generation===generation)toast('Could not export dashboard: '+error.message);}
+      finally{exportDashboard.disabled=false;exportDashboard.removeAttribute('aria-busy');}
+    };
     const addTodo=document.createElement('button');addTodo.id='addTodoBtn';addTodo.className='icon-btn';addTodo.title='Add To Do card';addTodo.setAttribute('aria-label','Add To Do card');addTodo.innerHTML=icon('Plus');addTodo.hidden=true;$('shareBtn').after(addTodo);
     todoUI=window.PipeChatTodoUI.create({S,esc,icon,persistTodo,prepare,render,toast,localDate});
     inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast,editRecord,clearActivity});

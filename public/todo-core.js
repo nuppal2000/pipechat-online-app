@@ -11,19 +11,25 @@
     if(!Array.isArray(input)||input.length>2000)throw new Error('A To Do board supports up to 2,000 cards.');
     const ids=new Set(),recordIds=new Set(records.map(r=>r.id));
     return input.map(c=>{
-      if(!c||typeof c!=='object'||Array.isArray(c)||Object.keys(c).some(k=>!keys.includes(k))||keys.some(k=>!Object.hasOwn(c,k))||typeof c.id!=='string'||!/^todo_[a-z0-9_]{1,60}$/.test(c.id)||ids.has(c.id)||!Number.isSafeInteger(c.recordId)||!recordIds.has(c.recordId)||!statuses.includes(c.status)||!text(c.nextAction,12000)||!text(c.notes,16000)||!validDate(c.dueDate))throw new Error('Invalid To Do card. Reload the app or check its linked record, text and date.');
-      ids.add(c.id);return Object.fromEntries(keys.map(k=>[k,c[k]]));
+      const standalone=c?.recordId===null,allowed=standalone?[...keys,'customTitle']:keys;
+      if(!c||typeof c!=='object'||Array.isArray(c)||Object.keys(c).some(k=>!allowed.includes(k))||allowed.some(k=>!Object.hasOwn(c,k))||typeof c.id!=='string'||!/^todo_[a-z0-9_]{1,60}$/.test(c.id)||ids.has(c.id)||(standalone?(!text(c.customTitle,500)||!c.customTitle.trim()):(!Number.isSafeInteger(c.recordId)||!recordIds.has(c.recordId)))||!statuses.includes(c.status)||!text(c.nextAction,12000)||!text(c.notes,16000)||!validDate(c.dueDate))throw new Error('Invalid To Do card. Check its title or linked record, text and date.');
+      ids.add(c.id);return Object.fromEntries(allowed.map(k=>[k,c[k]]));
     });
   }
-  function reconcile(cards,records){const ids=new Set(records.map(r=>r.id));return validate((cards||[]).filter(c=>ids.has(c.recordId)),records);}
+  function reconcile(cards,records){const ids=new Set(records.map(r=>r.id));return validate((cards||[]).filter(c=>c.recordId===null||ids.has(c.recordId)),records);}
   // One-time local JSON upgrade. Hosted cards are frozen by migration 007.
   function migrate(cards,records){return reconcile((cards||[]).map(c=>{
     if(Object.hasOwn(c,'notes'))return c;
     const row=records.find(r=>r.id===c.recordId),action=String(c.nextField?row?.[c.nextField]||'':c.nextAction||''),due=String(c.followField?row?.[c.followField]||'':c.dueDate||'');
     return {id:c.id,recordId:c.recordId,status:c.status,nextAction:action,notes:validDate(due)?'':`Previous due information: ${due}`,dueDate:validDate(due)?due:''};
   }),records);}
-  function create(id,recordId){return {id,recordId,status:'To Do',nextAction:'',notes:'',dueDate:''};}
+  function create(id,recordId,customTitle){return {id,recordId,status:'To Do',nextAction:'',notes:'',dueDate:'',...(recordId===null?{customTitle}: {})};}
+  function recordOptions(records,schema,query,selected){
+    const primary=Core.create(schema).role('primary'),normalize=v=>String(v).normalize('NFKC').toLocaleLowerCase().trim(),term=normalize(query);
+    return records.map(r=>({id:r.id,title:String(r[primary]||`Unnamed record #${r.id}`)})).filter(r=>String(r.id)===String(selected)||normalize(r.title).includes(term)||String(r.id)===term);
+  }
   function project(card,records,schema){
+    if(card.recordId===null)return {...card,title:card.customTitle};
     const C=Core.create(schema),record=records.find(r=>r.id===card.recordId);if(!record)throw new Error('The linked record no longer exists.');
     return {...card,title:String(record[C.role('primary')]||`Unnamed record #${record.id}`)};
   }
@@ -47,5 +53,5 @@
     if(after)for(const [key,prop]of [['todoStatus','status'],['todoNextAction','nextAction'],['todoNotes','notes'],['todoDueDate','dueDate']])if(action[key]!=null)after[prop]=action[key];
     return {kind:'todo',cards:validate(next,records),before,after,count:1,recordId:(after||before).recordId};
   }
-  return {statuses,validate,reconcile,migrate,create,project,plan,validDate};
+  return {statuses,validate,reconcile,migrate,create,project,plan,validDate,recordOptions};
 });
