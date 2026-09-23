@@ -576,15 +576,44 @@
       say('What would you like to work on in your pipeline?');render();
     }catch(error){if(generation===S.generation){$('authMessage').textContent=`Could not load the workspace: ${error.message}`;$('authRetryBtn').hidden=false;}}
   }
+  function toggleAuthMode() {
+    if(!S.signupAllowed)return;
+    S.signup=!S.signup;$('nameField').hidden=!S.signup;$('authTitle').textContent=S.signup?'Create your workspace':'Welcome back';$('authSubtitle').textContent=S.signup?'Your CRM data stays in your account.':'Sign in to your sales workspace.';$('authSubmitBtn').textContent=S.signup?'Create account':'Sign in';$('authToggleBtn').textContent=S.signup?'Already have an account? Sign in':'Create an account';$('authPassword').autocomplete=S.signup?'new-password':'current-password';
+  }
+  async function loadAuthPolicy() {
+    let allowed=false;
+    try{allowed=(await api('/api/health')).signupAllowed===true;}catch{}
+    S.signupAllowed=allowed;$('authToggleBtn').hidden=!allowed;
+    if(!allowed){
+      S.signup=false;$('nameField').hidden=true;$('authTitle').textContent='Welcome back';
+      $('authSubtitle').textContent='Existing accounts only.';$('authSubmitBtn').textContent='Sign in';
+      $('authPassword').autocomplete='current-password';
+    }
+  }
   async function authSubmit(event) {
     event.preventDefault();
     if($('authSubmitBtn').disabled)return;
+    if(S.signup&&!S.signupAllowed){$('authMessage').textContent='Public signup is currently closed. Use an existing account.';return;}
     S.generation++;
     $('authSubmitBtn').disabled=true;$('authMessage').textContent='';
-    try{const result=await api(`/api/auth/${S.signup?'signup':'login'}`,{method:'POST',body:JSON.stringify({name:$('authName').value,email:$('authEmail').value,password:$('authPassword').value})});$('authPassword').value='';await loadWorkspace(result.user);}catch(error){$('authMessage').textContent=error.message;}finally{$('authSubmitBtn').disabled=false;}
+    try{
+      const result=await api(`/api/auth/${S.signup?'signup':'login'}`,{method:'POST',body:JSON.stringify({name:$('authName').value,email:$('authEmail').value,password:$('authPassword').value})});
+      $('authPassword').value='';
+      if(result.confirmationRequired){
+        S.signup=false;$('nameField').hidden=true;$('authTitle').textContent='Check your email';
+        $('authSubtitle').textContent='Confirm your email, then sign in.';$('authSubmitBtn').textContent='Sign in';
+        $('authToggleBtn').textContent='Create an account';$('authPassword').autocomplete='current-password';
+        $('authMessage').textContent=result.message||'Check your inbox to confirm your email before signing in.';
+        return;
+      }
+      if(!result.user)throw new Error('Sign-in was not completed. Please try again.');
+      await loadWorkspace(result.user);
+    }catch(error){$('authMessage').textContent=error.message;}finally{$('authSubmitBtn').disabled=false;}
   }
   async function restoreSession() {
     const generation=S.generation;
+    await loadAuthPolicy();
+    if(generation!==S.generation)return;
     try{const result=await api('/api/auth/me');if(generation===S.generation&&result.user)await loadWorkspace(result.user);}
     catch(error){if(generation===S.generation){$('authMessage').textContent=`Server unavailable: ${error.message}`;$('authRetryBtn').hidden=false;}}
   }
@@ -726,7 +755,7 @@
     $('reportField').onchange=()=>{S.report.field=$('reportField').value;renderReport(visible());};
     icons();$('authForm').addEventListener('submit',authSubmit);
     $('authRetryBtn').onclick=async()=>{if($('authRetryBtn').disabled)return;$('authRetryBtn').disabled=true;$('authRetryBtn').hidden=true;$('authMessage').textContent='Connecting...';try{await restoreSession();if(!$('authScreen').hidden&&$('authRetryBtn').hidden)$('authMessage').textContent='Please sign in to continue.';}finally{$('authRetryBtn').disabled=false;}};
-    $('authToggleBtn').onclick=()=>{S.signup=!S.signup;$('nameField').hidden=!S.signup;$('authTitle').textContent=S.signup?'Create your workspace':'Welcome back';$('authSubtitle').textContent=S.signup?'Your CRM data stays in your account.':'Sign in to your sales workspace.';$('authSubmitBtn').textContent=S.signup?'Create account':'Sign in';$('authToggleBtn').textContent=S.signup?'Already have an account? Sign in':'Create an account';$('authPassword').autocomplete=S.signup?'new-password':'current-password';};
+    $('authToggleBtn').onclick=toggleAuthMode;
     $('logoutBtn').onclick=logout;
     document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));
     document.querySelectorAll('[data-scope]').forEach(button=>button.onclick=()=>{S.scope=button.dataset.scope;render();});
