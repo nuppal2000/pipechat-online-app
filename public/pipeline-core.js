@@ -298,6 +298,34 @@
       return direction*order||a.index-b.index;
     }).map(item=>item.record);
   }
+  function moveRecord(records,action,visibleIds=records.map(row=>row.id)){
+    const scope=action.orderScope??'visible';
+    if(!['all','visible'].includes(scope))throw new Error('Choose the visible rows or the full table for this move.');
+    const byId=new Map(records.map(row=>[row.id,row])),ids=scope==='all'?records.map(row=>row.id):visibleIds;
+    if(!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!byId.has(id)))throw new Error('The table view changed. Please prepare the move again.');
+    if(!ids.length)throw new Error('There are no rows in this view to move.');
+    const inRange=value=>Number.isInteger(value)&&value>=1&&value<=ids.length;
+    if(!inRange(action.toPosition))throw new Error(`Which row should it move to? Choose a position from 1 to ${ids.length}.`);
+    if(action.fromPosition!=null&&!inRange(action.fromPosition))throw new Error(`Choose a starting row from 1 to ${ids.length}.`);
+    if(action.filter)throw new Error('Move one record at a time. Please name it or give its row number.');
+    let matches=[];
+    if(action.recordMatch)matches=candidates(records,action.recordMatch);
+    else if(action.ids!=null){
+      if(!Array.isArray(action.ids)||action.ids.length!==1)throw new Error('Choose exactly one record to move.');
+      matches=records.filter(row=>row.id===action.ids[0]);
+    }else if(action.fromPosition!=null)matches=[byId.get(ids[action.fromPosition-1])];
+    else throw new Error('Which record or row number would you like to move?');
+    if(!matches.length)throw new Error('I could not find that record. Which record should I move?');
+    const inView=matches.filter(row=>ids.includes(row.id));
+    if(!inView.length)throw new Error('That record is hidden by the current view. Show all records first, or ask to move it in the full table.');
+    if(inView.length>1)return {clarification:{action:clone(action),changeIndex:null,candidates:clone(inView)}};
+    const record=inView[0],fromPosition=ids.indexOf(record.id)+1;
+    if(action.fromPosition!=null&&action.fromPosition!==fromPosition)throw new Error('The record name and starting row do not match. Which one did you mean?');
+    const reordered=[...ids];reordered.splice(fromPosition-1,1);reordered.splice(action.toPosition-1,0,record.id);
+    // Hidden rows keep their slots; visible rows move as whole records, including history.
+    const slots=new Set(ids);let index=0;
+    return {records:records.map(row=>slots.has(row.id)?byId.get(reordered[index++]):row),record,fromPosition,toPosition:action.toPosition,scope,noChange:fromPosition===action.toPosition};
+  }
   function deleteColumn(records,fieldId,customFields=[],replacement=null){
     const defs=definitions(customFields),field=defs.find(f=>f.id===fieldId);
     if(!field)throw new Error('This column no longer exists.');
@@ -372,5 +400,5 @@
     for(const s of selections)if(s.names)result[s.key==='owners'?'missingOwners':'missingAccounts']=[...s.names].filter(([key])=>!rows.some(row=>normalize(row[s.field])===key)).map(([,name])=>name);
     return result;
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,deleteColumn,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
 });

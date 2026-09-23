@@ -3,11 +3,11 @@ const Core=require('../public/pipeline-core.js'),Schema=require('../public/table
 const schema={status:'ready',useCase:'Sales',title:'Sales',recordLabel:'deal',description:'',fields:[{id:'f_name',name:'Company',type:'text',role:'primary',options:[]},{id:'f_score',name:'Score',type:'number',role:'none',options:[]},{id:'f_status',name:'Status',type:'text',role:'status',options:[]}]};
 const records=[{id:1,f_name:'A',f_score:0,f_status:'Warm',history:[]},{id:2,f_name:'B',f_score:20,f_status:'d',history:[]}];
 function harness(){
-  const nodes=new Map(),calls=[],messages=[];let action=null,fail=false,saved={deals:structuredClone(records),customFields:[],tableSchema:schema,updatedAt:'v1'};
+  const nodes=new Map(),calls=[],messages=[];let action=null,fail=false,aiResponse=null,beforeReply=null,saved={deals:structuredClone(records),customFields:[],tableSchema:schema,updatedAt:'v1'};
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',textContent:'',hidden:false,open:false,dataset:{},style:{},elements:{},classList:{add(){},remove(){},toggle(){}},focus(){},setAttribute(){},querySelectorAll:()=>[],showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);};
   const context={crypto,AbortSignal,innerWidth:1400,innerHeight:900,window:{PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:Core,PipeChatSchema:Schema,PipeChatCustomize:Customize,PipeChatIcons:{}},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
     const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
-    if(url==='/api/pipechat-ai')return {ok:true,json:async()=>({crmAction:action,usage:{used:1,remaining:20}})};
+    if(url==='/api/pipechat-ai'){beforeReply?.();return aiResponse||{ok:true,json:async()=>({crmAction:action,usage:{used:1,remaining:20}})};}
     if(fail)return {ok:false,status:503,json:async()=>({error:'Synthetic failure'})};
     if(options.method==='PUT')saved={deals:body.deals,customFields:body.customFields,tableSchema:body.tableSchema,updatedAt:'v'+calls.length};
     return {ok:true,json:async()=>structuredClone(saved)};
@@ -16,9 +16,36 @@ function harness(){
   const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,useSchema,prepare,send,confirmDraft,undo,cancelDraft,openFieldDialog,submitFieldDialog,openColumnMenu,renderTrust,renderTable,renderDashboardKpis,fieldInput,resizeTextCell,moveColumn,selectScope,visible,fieldHeader};`),context);
   const h=context.window.test;h.useSchema(schema);Object.assign(h.S,{records:structuredClone(records),customFields:[],updatedAt:'v1',loaded:true,user:{id:1,name:'QA'},usage:{remaining:20},health:{aiConfigured:true}});
-  return {...h,node,calls,messages,reply:a=>action=a,fail:v=>fail=v};
+  return {...h,node,calls,messages,reply:a=>action=a,fail:v=>fail=v,response:v=>aiResponse=v,beforeReply:f=>beforeReply=f};
 }
 const plain=v=>JSON.parse(JSON.stringify(v));
+test('AI row move previews, confirms, persists cells/history, restores sorting on undo, and carries table context',async()=>{
+  const h=harness();h.S.sort={field:'f_score',direction:'desc'};h.reply({action:'move_record',recordMatch:'B',toPosition:2});await h.send('Move B to row 2');
+  assert.equal(h.S.pending.kind,'move-record');assert.deepEqual(plain(h.S.records),records);assert.match(h.node('trustBody').innerHTML,/sort will be cleared/);
+  const payload=h.calls[0].body;assert.deepEqual(plain(payload.pipeline.tableView.visibleIds),[2,1]);assert.deepEqual(plain(payload.pipeline.tableView.columnOrder),['f_name','f_score','f_status']);
+  await h.confirmDraft();assert.equal(h.S.sort,null);assert.deepEqual(plain(h.S.records),records);assert.equal(h.messages.at(-1),'Saved. Record moved to position 2. Cell values are unchanged.');
+  await h.undo();assert.equal(h.S.sort.direction,'desc');assert.deepEqual(plain(h.S.records),records);
+  h.S.sort=null;h.reply({action:'move_record',recordMatch:'B',toPosition:1});await h.send('Move B first');await h.confirmDraft();assert.deepEqual(plain(h.S.records.map(r=>r.id)),[2,1]);assert.deepEqual(plain(h.S.records[0]),records[1]);
+  await h.undo();assert.deepEqual(plain(h.S.records),records);
+});
+test('moves reject stale views, revisions, sessions and failed saves; cancel and no-op do not write',async()=>{
+  for(const mutate of [h=>h.S.search='A',h=>h.S.revision++,h=>h.S.generation++]){const h=harness();h.prepare({action:'move_record',fromPosition:2,toPosition:1});mutate(h);await h.confirmDraft();assert.equal(h.calls.length,0);assert.match(h.messages.at(-1),/changed/);}
+  const h=harness();h.prepare({action:'move_record',fromPosition:2,toPosition:1});h.fail(true);await h.confirmDraft();assert.deepEqual(plain(h.S.records),records);assert.equal(h.S.pending.kind,'move-record');assert.match(h.messages.at(-1),/save was not confirmed/);
+  h.cancelDraft();const count=h.calls.length;h.prepare({action:'move_record',fromPosition:2,toPosition:2});assert.equal(h.S.pending,null);assert.equal(h.calls.length,count);
+  const stale=harness();stale.reply({action:'move_record',fromPosition:1,toPosition:2});stale.beforeReply(()=>{stale.S.sort={field:'f_name',direction:'desc'};});await stale.send('Move first last');assert.equal(stale.S.pending,null);assert.match(stale.messages.at(-1),/while I was thinking/);
+});
+test('AI moves columns through preview and undo; typed sorting changes only the view',async()=>{
+  const h=harness();h.reply({action:'move_field',field:'f_status',toPosition:1});await h.send('Move Status to first column');assert.equal(h.S.pending.kind,'move-field');await h.confirmDraft();assert.deepEqual(plain(h.S.tableSchema.columnOrder),['f_status','f_name','f_score']);assert.deepEqual(plain(h.S.records),records);await h.undo();assert.equal(h.S.tableSchema.columnOrder,undefined);
+  const writes=h.calls.filter(c=>c.url==='/api/crm-data').length;h.reply({action:'sort_table',field:'f_score',sortDirection:'desc'});await h.send('Sort score descending');assert.deepEqual(plain(h.visible().map(r=>r.id)),[2,1]);assert.deepEqual(plain(h.S.records),records);
+  h.reply({action:'sort_table',field:null,sortDirection:null});await h.send('Clear sorting');assert.equal(h.S.sort,null);assert.equal(h.calls.filter(c=>c.url==='/api/crm-data').length,writes);
+});
+test('unreadable 200/502, missing response, unsupported action and quota errors are friendly and make no writes',async()=>{
+  for(const status of [200,502]){const h=harness();h.response({ok:status===200,status,json:async()=>{throw new Error('Private server detail');}});await h.send('Please move row 2');assert.match(h.messages.at(-1),/^Sorry, I couldn't complete/);assert(!h.messages.at(-1).includes('Private'));assert.equal(h.S.pending,null);assert.equal(h.calls.length,1);assert.deepEqual(plain(h.S.records),records);}
+  const h=harness();h.response({ok:true,json:async()=>({})});await h.send('Do it');assert.match(h.messages.at(-1),/^Sorry/);
+  h.response(null);h.reply({action:'arbitrary_sql'});await h.send('Unsupported action');assert.match(h.messages.at(-1),/cannot perform that action yet/);assert.equal(h.S.pending,null);
+  h.response({ok:false,status:429,json:async()=>({error:'Limit reached',usage:{remaining:0}})});await h.send('Do it');assert.equal(h.S.usage.remaining,0);assert.match(h.messages.at(-1),/still edit the table manually/);
+  const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8');assert.match(source,/el.className=`chat-message \$\{role\}`/);assert(!source.includes('AI request failed:'));
+});
 test('text cells are compact escaped textareas that expand and collapse without writes',()=>{
   const h=harness(),value='A long single-line note <script> not markup & more text';
   const html=h.fieldInput({id:'f_status',name:'Notes',type:'text'},value);

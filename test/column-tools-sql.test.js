@@ -14,7 +14,12 @@ test('column ordering and text/date conversions persist with CAS, atomic rollbac
   const customFields=[{id:'cf_date',name:'Custom date',type:'text'}];
   let s=await write(a,{...await read(a),tableSchema:schema,customFields,todoCards:[]});
   s=await write(a,{...s,deals:[{id:1,f_name:'Alpha',f_date:'oct 5 2026',f_status:'Warm',cf_date:'2026-11-01',history:[]}],todoCards:[{id:'todo_qa',recordId:1,status:'To Do',nextAction:'Call',notes:'Independent',dueDate:'2026-12-01'}]});
+  s=await write(a,{...s,deals:[...s.deals,{id:2,f_name:'Uppal Co',f_date:'',f_status:'Won',cf_date:'',history:['QA history']}]});
   const original=structuredClone(s);await run('migrations/009-column-order-and-types.sql');await run('tests/security.sql');assert.deepEqual(await read(a),s);assert.deepEqual(await read(b),other);
+  const reordered=require('../public/pipeline-core').create(schema).moveRecord(s.deals,{recordMatch:'Uppal Co',toPosition:1});
+  s=await write(a,{...s,deals:reordered.records});assert.deepEqual((await read(a)).deals,reordered.records);assert.deepEqual(s.todoCards,original.todoCards);
+  await assert.rejects(()=>write(a,original),e=>e.code==='PT409');assert.deepEqual(await read(b),other);
+  s=await write(a,{...original,updatedAt:s.updatedAt});assert.deepEqual((await read(a)).deals,original.deals);
   s=await write(a,{...s,tableSchema:Schema.reorder(s.tableSchema,s.customFields,'cf_date','f_name')});assert.deepEqual(s.tableSchema.columnOrder,['cf_date','f_name','f_date','f_status']);assert.deepEqual(s.deals,original.deals);
   for(const [field,targetType]of [['f_date','date'],['cf_date','date'],['f_status','text']]){
     const c=X.editColumn(s.deals,s.tableSchema,s.customFields,field,{targetType});s=await write(a,{...s,deals:c.records,customFields:c.customFields,tableSchema:c.tableSchema});assert.deepEqual(await read(a),s);
