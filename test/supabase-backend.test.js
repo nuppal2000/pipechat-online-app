@@ -80,6 +80,20 @@ function fixture({ auth = {}, rpc, serverFactory, healthRpc, ...options } = {}) 
 
 test('Supabase shares the existing BackendError identity', () => assert.equal(BackendError, SharedBackendError));
 
+test('reset adapter uses authenticated CAS RPC and rejects incomplete reset acknowledgement', async () => {
+  const reset={deals:[],customFields:[],tableSchema:{status:'pending'},updatedAt:'new-version'};
+  const f=fixture({rpc:()=>ok(reset)});
+  assert.deepEqual(await f.request().adapter.resetCrm(null,'old-version'),reset);
+  assert.deepEqual(f.calls,[{name:'pipechat_reset_crm',args:{p_expected_updated_at:'old-version',p_confirm:true}}]);
+  for(const data of [{...reset,deals:[legacyRow]},{...reset,customFields},{...reset,tableSchema:schema},{...reset,updatedAt:null},{...reset,updatedAt:'old-version'}]){
+    await assert.rejects(fixture({rpc:()=>ok(data)}).request().adapter.resetCrm(null,'old-version'),errorIs(503));
+  }
+  await assert.rejects(f.request().adapter.resetCrm(null,undefined),errorIs(400));
+  const anon=fixture({auth:{getUser:async()=>ok({user:null})}});
+  await assert.rejects(anon.request().adapter.resetCrm(null,'old-version'),errorIs(401));assert.equal(anon.calls.length,0);
+  for(const [code,status] of [['PT403',403],['PT409',409]])await assert.rejects(fixture({rpc:()=>({error:{code,message:secret}})}).request().adapter.resetCrm(null,'old-version'),errorIs(status));
+});
+
 test('configuration accepts hosted publishable/anon keys, rejecting privileged keys and untrusted destinations', async () => {
   const jwt = role => [Buffer.from(JSON.stringify({ alg: 'HS256' })).toString('base64url'),
     Buffer.from(JSON.stringify({ role })).toString('base64url'), 'test_signature'].join('.');

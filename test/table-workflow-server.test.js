@@ -36,6 +36,19 @@ test('new-user setup, AI metering, empty confirmation, persistence, isolation, s
     const loaded=await req('/api/crm-data','GET',null,login.cookie);assert.deepEqual(loaded.data.tableSchema,schema);assert.equal(loaded.data.deals[0][amount.id],125);
     assert.equal((await req('/api/crm-data','PUT',{deals:[],expectedUpdatedAt:loaded.data.updatedAt},login.cookie)).status,409);
     assert.equal((await req('/api/pipechat-ai','POST',{tableBuild:{useCase:'Sales',description:''}},login.cookie)).status,409);
+    assert.equal((await req('/api/crm-reset','POST',{confirm:true,expectedUpdatedAt:loaded.data.updatedAt})).status,401);
+    for(const payload of [{confirm:false,expectedUpdatedAt:loaded.data.updatedAt},{confirm:true},{confirm:true,expectedUpdatedAt:loaded.data.updatedAt,userId:b.data.user.id}])assert.equal((await req('/api/crm-reset','POST',payload,login.cookie)).status,400);
+    assert.equal((await req('/api/crm-reset','POST',{confirm:true,expectedUpdatedAt:added.data.updatedAt},login.cookie)).status,409);
+    const usageBefore=(await req('/api/chat-usage','GET',null,login.cookie)).data;
+    const reset=await req('/api/crm-reset','POST',{confirm:true,expectedUpdatedAt:loaded.data.updatedAt},login.cookie);
+    assert.equal(reset.status,200);assert.deepEqual(reset.data.tableSchema,{status:'pending'});assert.deepEqual(reset.data.deals,[]);assert.deepEqual(reset.data.customFields,[]);
+    assert.notEqual(reset.data.updatedAt,loaded.data.updatedAt);
+    assert.deepEqual((await req('/api/chat-usage','GET',null,login.cookie)).data,usageBefore);
+    assert.equal((await req('/api/crm-reset','POST',{confirm:true,expectedUpdatedAt:loaded.data.updatedAt},login.cookie)).status,409);
+    assert.equal((await req('/api/crm-data','PUT',{deals:loaded.data.deals,tableSchema:schema,expectedUpdatedAt:loaded.data.updatedAt},login.cookie)).status,409);
+    assert.equal((await req('/api/crm-data','GET',null,login.cookie)).data.tableSchema.status,'pending');
+    assert.equal((await req('/api/auth/me','GET',null,login.cookie)).data.user.id,a.data.user.id);
+    assert.equal((await req('/api/pipechat-ai','POST',{tableBuild:{useCase:'Sales',description:''}},login.cookie)).status,402);
     const invalid=await req('/api/pipechat-ai','POST',{tableBuild:{useCase:'Other',description:'invalid-schema-test'}},b.cookie);assert.equal(invalid.status,500);
     assert.equal((await req('/api/chat-usage','GET',null,b.cookie)).data.used,0);
   }finally{child.kill();await once(child,'exit').catch(()=>{});if(path.dirname(dataDir)===__dirname&&path.basename(dataDir).startsWith('test-table-'))await fs.rm(dataDir,{recursive:true,force:true});}

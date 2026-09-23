@@ -14,7 +14,7 @@ function harness(handler) {
   const nodes = new Map(), classes = new Set(['auth-locked']);
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, { value: '', textContent: '', innerHTML: '', hidden: false,
-      disabled: false, classList: { add() {}, remove() {} } });
+      disabled: false, setAttribute() {}, classList: { add() {}, remove() {} } });
     return nodes.get(id);
   };
   const context = { window: { PipelineCore: require('../public/pipeline-core.js'), PipeChatIcons: {} },
