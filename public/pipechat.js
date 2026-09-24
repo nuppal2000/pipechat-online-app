@@ -135,7 +135,7 @@
   }
   const icons = (node=document) => node.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));
   const stageClass = value => `stage-${C.normalize(value).replace(/[^a-z0-9]+/g,'-')}`;
-  const rowName = record => record[C.role('primary')] || `Unnamed record #${record.id}`;
+  const rowName = record => String(record[C.role('primary')]??'').trim() || `Unnamed record #${record.id}`;
   const display = (field,value) => tailored()?value==null||value===''?'Not set':C.definitions(S.customFields).find(f=>f.id===field)?.type==='currency'?currency(value):String(value):field==='value'?currency(value)||'Not set':field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
   const stageOptions = selected => `<option value="" ${!selected?'selected':''}>Not set</option>`+C.stages.map(stage=>`<option ${stage===selected?'selected':''}>${esc(stage)}</option>`).join('');
   function say(text, role='assistant', error=false) {
@@ -223,7 +223,7 @@
     $('viewSummary').textContent=`${rows.length} of ${S.records.length} ${tailored()?'records':'deals'}`;
     $('workspaceTitle').textContent=tailored()?S.tableSchema.title:'Sales pipeline';
     document.querySelector('.workspace-label').textContent=tailored()?S.tableSchema.useCase+' workspace':'Sales workspace';
-    $('addAccountBtn').innerHTML=icon('Plus')+(tailored()?'Add '+esc(S.tableSchema.recordLabel):'Add deal');
+    $('addAccountBtn').innerHTML=icon('Plus')+(tailored()?'Add '+esc(S.tableSchema.columnOrder?.length?labels()[C.role('primary')]:S.tableSchema.recordLabel):'Add deal');
     $('chatSuggestions').hidden=tailored();
     $('dealSearch').placeholder=tailored()?'Search records...':'Search deals...';
     $('dealSearch').setAttribute('aria-label',tailored()?'Search records':'Search deals');
@@ -233,7 +233,7 @@
     document.querySelector('[data-scope="open"]').hidden=tailored()&&(!S.tableSchema.legacy||!C.fields.stage);
     $('clearSearchBtn').hidden=!S.filter&&!S.search&&S.scope==='all';
     $('filterStrip').hidden=!S.filter;$('filterText').textContent=S.filter?`${labels()[S.filter.field]||S.filter.field} ${S.filter.operator.replaceAll('_',' ')} ${S.filter.value??''}`:'';
-    $('undoStrip').hidden=!S.undo;$('undoText').textContent=S.undo?.label||'';
+    $('undoStrip').hidden=!S.undo||Boolean(S.undo.dismissed);$('undoText').textContent=S.undo?.label||'';
     $('quickUndoBtn').disabled=S.saving||Boolean(S.failedEdit);$('undoBtn').disabled=S.saving||Boolean(S.failedEdit);
     document.querySelectorAll('[data-scope]').forEach(button=>button.classList.toggle('active',button.dataset.scope===S.scope));
     document.querySelectorAll('[data-tab]').forEach(button=>{button.classList.toggle('active',button.dataset.tab===S.tab);button.setAttribute('aria-current',button.dataset.tab===S.tab?'page':'false');});
@@ -418,8 +418,9 @@
       panel.innerHTML=`<h3>${esc(p.field.name)}</h3><p class="error">Delete this entire field and its values from ${S.records.length} records.</p>${replacement?`<div class="field-diff"><span>Primary field</span><div class="diff-values"><span class="diff-before">${esc(p.field.name)}</span>${icon('ArrowRight')}<span class="diff-after">${esc(replacement.name)}</span></div></div><p>${p.change.replacementIsNew?'New text field. All cells will start blank.':'Existing text field. Its values will be preserved.'}</p><p>Record action: Add ${esc(replacement.name)}</p>`:''}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${replacement?'Confirm replacement':'Confirm column deletion'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;return;
     }
     if(S.pending?.kind==='add-field'){
-      $('trustTitle').textContent='Add field';$('trustStatus').textContent='No column added yet. Review and confirm.';
+      $('trustTitle').textContent=S.pending.suggested?'Proposed new field':'Add field';$('trustStatus').textContent='No column added yet. Review and confirm.';
       panel.innerHTML=`<h3>${esc(S.pending.field.name)}</h3><p class="proposal-intro">Text field / ${S.records.length} existing records</p><p class="subtle">Every record will have a blank cell in this new column. Existing values stay unchanged.</p><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':'Confirm new field'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+      if(S.pending.suggested)panel.insertAdjacentHTML('afterbegin',`<p class="proposal-intro">${esc(S.pending.reason)}</p>`);
       return;
     }
     if(S.pending?.kind==='import-duplicates'){
@@ -500,16 +501,16 @@
       const change=C.deleteColumn(S.records,id,S.customFields,replacement);
       proposal={kind:'delete-field',field,change,count:S.records.length,createdAt:Date.now(),revision:S.revision};
     }
-    else if(action.action==='add_field'){
+    else if(['add_field','propose_field'].includes(action.action)){
       const field={id:'cf_'+crypto.randomUUID().replaceAll('-',''),name:action.newFieldName,type:'text'};
       C.validateCustomFields([...S.customFields,field]);
-      proposal={kind:'add-field',field,count:S.records.length,createdAt:Date.now(),beforeFields:C.clone(S.customFields),revision:S.revision};
+      if(action.action==='propose_field'&&(typeof action.summary!=='string'||!action.summary.trim()||action.summary.length>1000))throw new Error('Please explain why this new field would be useful before proposing it.');
+      proposal={kind:'add-field',field,suggested:action.action==='propose_field',reason:action.summary,count:S.records.length,createdAt:Date.now(),beforeFields:C.clone(S.customFields),revision:S.revision};
     }
     else if(['update_record','bulk_update','update_records'].includes(action.action))proposal=C.plan(S.records,action,S.customFields);
-    else if(action.action==='delete_record'){
-      const selected=C.targets(S.records,action,Boolean(action.filter),S.customFields);
-      if(selected.candidates)proposal={clarification:{action:C.clone(action),changeIndex:null,candidates:selected.candidates}};
-      else {if(!selected.records.length)throw new Error('No matching records to delete.');proposal={kind:'delete',records:C.clone(selected.records),count:selected.records.length,createdAt:Date.now()};}
+    else if(['delete_record','delete_records'].includes(action.action)){
+      proposal=C.deletion(S.records,action,S.customFields);
+      if(!proposal.clarification){proposal.revision=S.revision;proposal.generation=S.generation;}
     } else if(['add_record','import_records'].includes(action.action)){
       const source=action.action==='add_record'?[action.record]:action.records;
       if(!Array.isArray(source)||!source.length||source.length>2000)throw new Error('Provide between 1 and 2,000 new records.');
@@ -622,6 +623,7 @@
       let next;
       if(p.kind==='update')next=C.apply(S.records,p,S.user.name||S.user.email,new Date(),S.customFields);
       if(p.kind==='delete'){
+        if(p.revision!==S.revision||p.generation!==S.generation)throw new Error('The table changed. Prepare a new deletion preview.');
         if(p.records.some(record=>JSON.stringify(S.records.find(r=>r.id===record.id))!==JSON.stringify(record)))throw new Error('A selected deal changed. Prepare a new deletion preview.');
         const ids=new Set(p.records.map(r=>r.id));next=S.records.filter(r=>!ids.has(r.id));
       }
@@ -647,6 +649,7 @@
     }catch(error){if(generation===S.generation){$('saveStatus').textContent='Card save not confirmed';$('saveStatus').classList.add('failed');toast(error.message);}return false;}
     finally{if(generation===S.generation){S.saving=false;render();}}
   }
+  function dismissUndo(){if(S.undo)S.undo.dismissed=true;$('undoStrip').hidden=true;$('toast').hidden=true;}
   async function undo() {if(!S.undo||S.saving)return;if(S.undo.kind==='todo')return persistTodo(C.clone(S.undo.todoCards),'Last card change undone',{undo:false});const previous=S.undo;if(await persist(C.clone(previous.records),'Last change undone',{undo:false,customFields:C.clone(previous.customFields||[]),tableSchema:C.clone(previous.tableSchema||null),todoCards:C.clone(previous.todoCards||[])})){if(previous.view){for(const key of ['scope','search','filter','sort'])S[key]=C.clone(previous.view[key]);$('dealSearch').value=S.search;render();}}}
   async function refreshInspector(){
     if(S.saving||S.failedEdit)throw new Error('Finish recovering the current edit first.');
@@ -706,10 +709,11 @@
   }
   function handleAction(response,command) {
     const action=response.crmAction;
+    if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
     if(['add_todo','update_todo','delete_todo'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your To Do board is open.');return;}
-    if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','import_records'].includes(action.action)){prepare(action,command);return;}
+    if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){
       const field=C.fieldName(action.field,S.customFields);
       if(action.sortDirection!=null&&(!['asc','desc'].includes(action.sortDirection)||!C.definitions(S.customFields).some(f=>f.id===field)))throw new Error('Which column should I sort, and in ascending or descending order?');
@@ -1276,6 +1280,7 @@
     $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
     $('addAccountBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}S.pending={kind:'editor'};renderTrust();focusTrust();$('dealEditor').elements[C.role('primary')].focus();};
     $('undoBtn').onclick=undo;$('quickUndoBtn').onclick=undo;$('dismissToast').onclick=()=>$('toast').hidden=true;
+    $('dismissUndo').onclick=dismissUndo;
     $('importCsvBtn').title='Import CSV, Excel or Google Sheets';$('importCsvBtn').onclick=()=>openSpreadsheet('append');$('csvFileInput').onchange=()=>importCsv($('csvFileInput').files[0]);
     $('shareBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}setTab('share');};
     ['shareRecipient','shareMessage','shareAccess'].forEach(id=>$(id).addEventListener('input',()=>{if(!S.pending)renderTrust();}));
