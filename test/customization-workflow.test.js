@@ -20,6 +20,20 @@ function harness(){
 }
 const plain=v=>JSON.parse(JSON.stringify(v));
 const additionsFixture=require('./fixtures/record-additions.cjs');
+const assistantFixture=require('./fixtures/assistant-actions.cjs');
+test('exact new-dropdown request previews choices and persists editable blank dropdowns, preserving rows and Undo',async()=>{
+  const h=harness(),before=plain(h.S.records);h.S.tab='todo';h.reply(assistantFixture.dropdown);await h.send(assistantFixture.dropdownPrompt);
+  assert.equal(h.S.tab,'table');assert.equal(h.S.pending.field.type,'choice');assert.deepEqual(plain(h.S.pending.field.options),['hot','medium','cold']);assert.match(h.node('trustBody').innerHTML,/Dropdown options: hot, medium, cold/);assert.equal(h.S.customFields.length,0);assert.deepEqual(plain(h.S.records),before);
+  h.cancelDraft();assert.equal(h.calls.length,1);h.reply(assistantFixture.dropdown);await h.send(assistantFixture.dropdownPrompt);const id=h.S.pending.field.id;await h.confirmDraft();assert.equal(h.S.customFields[0].type,'choice');assert(h.S.records.every(r=>r[id]===''));h.renderTable(h.S.records);assert.match(h.node('dealRows').innerHTML,/<option[^>]*>hot<\/option>/);
+  const stored=h.calls.filter(c=>c.url==='/api/crm-data').at(-1).body;assert.deepEqual(stored.customFields[0].options,['hot','medium','cold']);await h.undo();assert.equal(h.S.customFields.length,0);assert.deepEqual(plain(h.S.records),before);
+});
+test('new dropdown without options asks in context; invalid choices, failure and stale previews never add a text fallback',async()=>{
+  const h=harness();h.reply({...assistantFixture.dropdown,dropdownOptions:null});await h.send('Add a dropdown called test');assert.equal(h.S.pending,null);assert.equal(h.S.clarification.question,'What options would you like the dropdown menu to have?');assert.equal(h.S.sourceAction.newFieldName,'test');
+  h.reply(assistantFixture.dropdown);await h.send('hot medium cold');assert.equal(h.calls.at(-1).body.pendingAction.targetType,'choice');assert.equal(h.S.pending.field.type,'choice');h.fail(true);await h.confirmDraft();assert.equal(h.S.customFields.length,0);assert.equal(h.S.pending.field.type,'choice');
+  h.fail(false);h.S.revision++;await h.confirmDraft();assert.equal(h.S.customFields.length,0);h.cancelDraft();
+  for(const options of [['hot','HOT'],[''],Array.from({length:31},(_,i)=>String(i))])assert.throws(()=>h.prepare({...assistantFixture.dropdown,dropdownOptions:options}),/dropdown options/);
+  assert.equal(h.S.customFields.length,0);h.prepare({action:'add_field',newFieldName:'Plain'});assert.equal(h.S.pending.field.type,'text');h.cancelDraft();h.prepare({action:'add_field',newFieldName:'Date',targetType:'date'});assert.equal(h.S.pending.field.type,'date');
+});
 function additionHarness(){const h=harness();h.useSchema(additionsFixture.schema);h.S.records=[];return h;}
 test('original three-deal prompt previews all rows, cancel writes nothing, confirm saves once, and Undo restores',async()=>{
   const h=additionHarness(),action={action:'add_records',record:null,records:additionsFixture.records};h.reply(action);await h.send(additionsFixture.prompt);

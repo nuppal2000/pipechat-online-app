@@ -25,7 +25,8 @@ global.fetch = async (url, options) => {
     assert.equal(action.properties.field.enum.includes('cf_contact'),hasCustom);
     assert.equal(action.properties.changes.anyOf[1].items.properties.field.enum.includes('cf_contact'),hasCustom);
     assert.equal(action.properties.filter.anyOf[1].properties.field.enum.includes('cf_contact'),hasCustom);
-    assert.match(request.instructions,/EVERY account/);assert.match(request.instructions,/initially blank/);
+    assert.match(request.instructions,/blank column for EVERY record/);
+    assert.match(request.instructions,/targetType choice, dropdownOptions/);
     return {ok:true,json:async()=>({output_text:JSON.stringify({assistantMessage:'Review the new column',crmAction:{action:'add_field',newFieldName:'Contact'},memoryNote:null})})};
   }
   if (data.headers) {
