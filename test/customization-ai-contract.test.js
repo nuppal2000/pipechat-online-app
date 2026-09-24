@@ -5,7 +5,7 @@ const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCo
 vm.runInNewContext(source.slice(source.indexOf('const actionSchema ='),source.indexOf('function sendJson('))+'\nthis.getSchema=responseSchema;',context);
 test('new AI actions retain strict schema and per-request KPI/field IDs without cross-user mutation',()=>{
   const schema=tableSchemaCore.legacySchema(),request=context.getSchema([],schema),action=request.properties.crmAction.anyOf[1];
-  for(const name of ['rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','move_record','move_field','sort_table','delete_records','propose_field','add_records'])assert(action.properties.action.enum.includes(name));
+  for(const name of ['rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','move_record','move_field','sort_table','delete_records','propose_field','add_records','add_todos'])assert(action.properties.action.enum.includes(name));
   for(const name of ['fromPosition','toPosition','orderScope','sortDirection'])assert(action.required.includes(name));
   assert.deepEqual([...action.properties.orderScope.enum],['visible','all',null]);
   assert(action.properties.kpiId.enum.includes('kpi_value'));assert(action.required.includes('dropdownOptions'));assert(action.required.includes('kpi'));
@@ -13,6 +13,14 @@ test('new AI actions retain strict schema and per-request KPI/field IDs without 
   const visit=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual([...node.required].sort(),Object.keys(node.properties).sort());}for(const value of Object.values(node))if(value&&typeof value==='object')visit(value);};visit(request);
   const other={...schema,fields:schema.fields.map(f=>f.id==='value'?{...f,id:'f_score',name:'Score',type:'number'}:f)};
   const second=context.getSchema([],other).properties.crmAction.anyOf[1];assert(second.properties.kpiId.enum.includes('kpi_f_score'));assert(!second.properties.kpiId.enum.includes('kpi_value'));assert(action.properties.kpiId.enum.includes('kpi_value'));
+});
+
+test('AI guidance creates typed fields, complete task batches and CRM previews independent of current view',()=>{
+  const action=context.getSchema([],null).properties.crmAction.anyOf[1];assert(action.required.includes('todos'));
+  const todos=action.properties.todos.anyOf[1];assert.equal(todos.maxItems,200);assert.equal(todos.items.additionalProperties,false);assert(todos.items.required.includes('recordMatch'));assert(todos.items.required.includes('todoDueDate'));
+  assert.match(source,/targetType choice, dropdownOptions \[hot, medium, cold\]/);assert.match(source,/Never downgrade an explicitly requested dropdown/);
+  assert.match(source,/TWO OR MORE cards use add_todos/);assert.match(source,/containing EVERY requested task/);assert.match(source,/current local date/);
+  assert.match(source,/currentView is navigation context, NOT a restriction/);assert.match(source,/automatically opens Pipeline/);assert(!source.includes('While currentView is todo, only propose card changes'));
 });
 
 test('creation contract describes real field labels/types and includes custom fields in single and batch records',()=>{

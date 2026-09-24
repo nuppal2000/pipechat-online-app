@@ -419,7 +419,8 @@
     }
     if(S.pending?.kind==='add-field'){
       $('trustTitle').textContent=S.pending.suggested?'Proposed new field':'Add field';$('trustStatus').textContent='No column added yet. Review and confirm.';
-      panel.innerHTML=`<h3>${esc(S.pending.field.name)}</h3><p class="proposal-intro">Text field / ${S.records.length} existing records</p><p class="subtle">Every record will have a blank cell in this new column. Existing values stay unchanged.</p><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':'Confirm new field'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+      const field=S.pending.field;
+      panel.innerHTML=`<h3>${esc(field.name)}</h3><p class="proposal-intro">${({choice:'Dropdown',date:'Date',text:'Text'})[field.type]} field / ${S.records.length} existing records</p>${field.type==='choice'?`<p>Dropdown options: ${field.options.map(esc).join(', ')}</p>`:''}<p class="subtle">Every record will have a blank cell in this new column. Existing values stay unchanged.</p><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':'Confirm new field'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
       if(S.pending.suggested)panel.insertAdjacentHTML('afterbegin',`<p class="proposal-intro">${esc(S.pending.reason)}</p>`);
       return;
     }
@@ -462,7 +463,7 @@
   function clearClarification(){S.clarification=null;if(!S.pending)S.sourceAction=null;renderTrust();}
   function cancelDraft() {if(S.saving)return;clearDraft();say('Cancelled. No changes were made to the table.');}
   function prepare(action, originalCommand) {
-    if(S.tab==='todo'&&!['add_todo','update_todo','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action))throw new Error('To Do edits cannot change CRM cells. Switch to Pipeline to edit the table.');
+    if(!['add_todo','add_todos','update_todo','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
     let proposal;
     if(action.action==='move_record'){
       const change=C.moveRecord(S.records,action,visible().map(row=>row.id));
@@ -476,9 +477,15 @@
       if(fromPosition===action.toPosition){clearDraft();say('That column is already in the requested position.');return;}
       const tableSchema=Schema.reorder(S.tableSchema,S.customFields,field.id,columns[action.toPosition-1].id);
       proposal={kind:'move-field',change:{field,fromPosition,toPosition:action.toPosition,tableSchema},count:0,createdAt:Date.now(),revision:S.revision,generation:S.generation};
-    }else if(['add_todo','update_todo','delete_todo'].includes(action.action)){
-      proposal=window.PipeChatTodo.plan(S.todoCards,S.records,S.tableSchema,S.customFields,action,'todo_'+crypto.randomUUID().replaceAll('-',''));
-      if(!proposal.clarification){proposal.createdAt=Date.now();proposal.revision=S.revision;S.tab='todo';}
+    }else if(['add_todo','add_todos','update_todo','delete_todo'].includes(action.action)){
+      S.tab='todo';S.settingsOpen=false;
+      try{proposal=window.PipeChatTodo.plan(S.todoCards,S.records,S.tableSchema,S.customFields,action,'todo_'+crypto.randomUUID().replaceAll('-',''));}
+      catch(error){
+        if(!error.clarification)throw error;
+        S.pending=null;S.sourceAction=C.clone(action);S.clarification={originalCommand:S.clarification?.originalCommand||originalCommand,question:error.message,previousAction:C.clone(action)};
+        say('Quick clarification. '+error.message);render();focusTrust();return;
+      }
+      if(!proposal.clarification){proposal.createdAt=Date.now();proposal.revision=S.revision;proposal.generation=S.generation;}
     }else if(['rename_field','convert_field'].includes(action.action)){
       const id=C.fieldName(action.field,S.customFields);
       if(action.action==='convert_field'&&(action.targetType==null||action.targetType==='choice')&&(!Array.isArray(action.dropdownOptions)||!action.dropdownOptions.length)){
@@ -502,8 +509,14 @@
       proposal={kind:'delete-field',field,change,count:S.records.length,createdAt:Date.now(),revision:S.revision};
     }
     else if(['add_field','propose_field'].includes(action.action)){
-      const field={id:'cf_'+crypto.randomUUID().replaceAll('-',''),name:action.newFieldName,type:'text'};
-      C.validateCustomFields([...S.customFields,field]);
+      const type=action.targetType??(action.dropdownOptions!=null?'choice':'text');
+      if(!['text','choice','date'].includes(type))throw new Error('Choose a text, dropdown or date field.');
+      if(type==='choice'&&(!Array.isArray(action.dropdownOptions)||!action.dropdownOptions.length)){
+        S.pending=null;S.sourceAction=C.clone({...action,targetType:'choice'});S.clarification={originalCommand:S.clarification?.originalCommand||originalCommand,question:'What options would you like the dropdown menu to have?',previousAction:S.sourceAction};
+        say(S.clarification.question);renderTrust();focusTrust();return;
+      }
+      if(type!=='choice'&&action.dropdownOptions!=null)throw new Error('Dropdown options need a dropdown field. Please clarify the field type.');
+      const field=C.validateCustomFields([...S.customFields,{id:'cf_'+crypto.randomUUID().replaceAll('-',''),name:action.newFieldName,type,...(type==='choice'?{options:action.dropdownOptions}:{})}]).at(-1);
       if(action.action==='propose_field'&&(typeof action.summary!=='string'||!action.summary.trim()||action.summary.length>1000))throw new Error('Please explain why this new field would be useful before proposing it.');
       proposal={kind:'add-field',field,suggested:action.action==='propose_field',reason:action.summary,count:S.records.length,createdAt:Date.now(),beforeFields:C.clone(S.customFields),revision:S.revision};
     }
@@ -520,17 +533,17 @@
         say('Quick clarification. '+error.message);renderTrust();focusTrust();return;
       }
     } else throw new Error('This request is not an editable table action.');
-    if(proposal.clarification){S.pending=null;S.clarification={...proposal.clarification,originalCommand};say('I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
+    if(proposal.clarification){S.pending=null;S.sourceAction=C.clone(action);S.clarification={...proposal.clarification,originalCommand:S.clarification?.originalCommand||originalCommand};say(proposal.clarification.question||'I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
     else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(['move-record','move-field'].includes(proposal.kind)?`Review the move to ${proposal.kind==='move-record'?'row':'column'} ${proposal.change.toPosition} before confirming. Cell values will stay unchanged.`:proposal.kind==='todo'?'Review the To Do card change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
-    if(proposal?.kind==='todo'||proposal?.kind?.endsWith('-kpi'))render();else renderTrust();focusTrust();
+    if(S.tab==='todo'||proposal?.kind?.endsWith('-kpi'))render();else renderTrust();focusTrust();
   }
   function chooseCandidate(id) {
     const q=S.clarification;if(!q?.candidates?.some(c=>c.id===id))return;
-    const action=C.clone(q.action), target=q.changeIndex===null?action:action.changes[q.changeIndex];
+    const action=C.clone(q.action), target=q.changeIndex===null?action:(q.collection==='todos'?action.todos:action.changes)[q.changeIndex];
     const originalRef=target.recordMatch;
     // Resolve all fields referring to this same ambiguous company, retaining unrelated changes.
-    const changes=action.action==='update_records'?action.changes:[action];
-    for(const change of changes)if(change===target||(originalRef&&C.normalize(change.recordMatch)===C.normalize(originalRef))){change.recordMatch=null;change.ids=[id];change.filter=null;}
+    const changes=q.collection==='todos'?action.todos:action.action==='update_records'?action.changes:[action];
+    for(const change of changes)if(change===target||(originalRef&&C.normalize(change.recordMatch)===C.normalize(originalRef))){change.recordMatch=null;change.ids=[id];if(q.collection!=='todos')change.filter=null;}
     say(`Use ${rowName(q.candidates.find(c=>c.id===id))}.`,'user');
     try{prepare(action,q.originalCommand);}catch(error){say(error.message,'assistant',true);}
   }
@@ -596,8 +609,8 @@
         return;
       }
       if(p.kind==='todo'){
-        if(p.revision!==S.revision)throw new Error('The workspace changed. Prepare this card preview again.');
-        if(await persistTodo(p.cards,p.after?p.before?'To Do card updated':'To Do card added':'To Do card deleted'))say('Saved. The To Do board is updated; the linked CRM record is unchanged.');
+        if(p.revision!==S.revision||p.generation!==undefined&&p.generation!==S.generation)throw new Error('The workspace changed. Prepare this card preview again.');
+        if(await persistTodo(p.cards,p.additions?`${p.count} To Do cards added`:p.after?p.before?'To Do card updated':'To Do card added':'To Do card deleted'))say(p.additions?`Saved. ${p.count} To Do cards added. Linked CRM records are unchanged.`:'Saved. The To Do board is updated; the linked CRM record is unchanged.');
         return;
       }
       if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(p.kind)){
@@ -712,7 +725,7 @@
     const action=response.crmAction;
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
-    if(['add_todo','update_todo','delete_todo'].includes(action.action)){prepare(action,command);return;}
+    if(['add_todo','add_todos','update_todo','delete_todo'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your To Do board is open.');return;}
     if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','add_records','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){

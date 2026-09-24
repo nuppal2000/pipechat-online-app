@@ -34,6 +34,29 @@
     return {...card,title:String(record[C.role('primary')]??'').trim()||`Unnamed record #${record.id}`};
   }
   function plan(cards,records,schema,custom,action,newId){
+    const adding=['add_todo','add_todos'].includes(action.action);
+    try{
+      if(!adding||action.todos==null){
+        if(action.action==='add_todos')throw new Error('Please provide all the To Do items to add.');
+        return planOne(cards,records,schema,custom,action,newId);
+      }
+      if(!Array.isArray(action.todos)||!action.todos.length||action.todos.length>200)throw new Error('Add between 1 and 200 To Do items in one request.');
+      const allowed=['recordMatch','ids','todoStatus','todoNextAction','todoNotes','todoDueDate'];
+      if([...allowed,'todoId','filter'].some(k=>action[k]!=null))throw new Error('Should I add the batch or the separate single card? Please clarify; no cards have been added.');
+      let next=validate(cards,records);const additions=[];
+      if(next.length+action.todos.length>2000)throw new Error('This batch would exceed the 2,000-card board limit.');
+      for(const [index,item]of action.todos.entries()){
+        if(!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(k=>!allowed.includes(k)))throw new Error(`To Do item ${index+1} must contain only a linked record and card fields.`);
+        let proposed;
+        try{proposed=planOne(next,records,schema,custom,{...item,action:'add_todo'},newId+'_'+index);}
+        catch(error){throw new Error(`For To Do item ${index+1}, ${error.message} I have kept the entire batch.`);}
+        if(proposed.clarification)return {clarification:{...proposed.clarification,action:Core.clone(action),collection:'todos',changeIndex:index,question:`Which record should To Do item ${index+1} (${item.todoNextAction||'new task'}) link to? The entire batch is kept.`}};
+        additions.push(proposed.after);next=proposed.cards;
+      }
+      return {kind:'todo',cards:next,additions,before:null,after:null,count:additions.length,recordId:null};
+    }catch(error){if(adding)error.clarification=true;throw error;}
+  }
+  function planOne(cards,records,schema,custom,action,newId){
     let next=validate(cards,records),before=null,after=null;
     if(action.action==='add_todo'){
       const selected=Core.create(schema).targets(records,action,false,custom);
