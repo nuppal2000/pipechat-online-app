@@ -15,6 +15,10 @@
 
 ## Bulk Actions and Suggestions
 
+- Chat uses `add_record` for one new row and `add_records` for a batch. Every requested row appears in one preview, then saves atomically after confirmation. Cancel writes nothing; Undo removes the confirmed additions together. Old singular actions carrying a records array remain compatible instead of requiring a missing single-record object.
+- Creation uses the current column IDs and labels, including custom fields. Company/account/deal/client/business name aliases can resolve a single equivalent column such as Deal / Account Name; exact labels take precedence. Distinct plausible columns, conflicting values, missing primary values, invalid choices/dates and unrecognized supplied details trigger a clarification that retains the complete request. Values are never invented or silently dropped to complete a batch.
+- New-record previews are invalidated when the workspace changes. No migration is required; the existing versioned save RPC preserves the full batch and per-user isolation. Automated/browser tests use simulated AI; a paid live model call is a separate check.
+
 - Chat can propose `delete_records` for all records matching a condition, including blank or whitespace-only client names. Conditions apply to the full saved table, not just a selected row or a filtered view. The preview lists every match and warns about associated To Do cards; nothing is deleted until confirmation. Stale previews are rejected, and Undo restores records and linked cards together. Ambiguous single-record requests still require clarification.
 - When a workflow concept recurs and has no equivalent field, chat can return `propose_field`. The panel shows Proposed new field, the reason and a blank text column for review. It does not add or populate anything automatically, interrupt an existing proposal, or repeatedly suggest a declined field unless the user revisits it.
 - The X on the Undo notification dismisses the notice without reverting the saved change. A subsequent change displays a fresh Undo notification.
