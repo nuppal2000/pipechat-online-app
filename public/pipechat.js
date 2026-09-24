@@ -511,14 +511,14 @@
     else if(['delete_record','delete_records'].includes(action.action)){
       proposal=C.deletion(S.records,action,S.customFields);
       if(!proposal.clarification){proposal.revision=S.revision;proposal.generation=S.generation;}
-    } else if(['add_record','import_records'].includes(action.action)){
-      const source=action.action==='add_record'?[action.record]:action.records;
-      if(!Array.isArray(source)||!source.length||source.length>2000)throw new Error('Provide between 1 and 2,000 new records.');
-      if(S.records.length+source.length>2000)throw new Error('The CRM can contain at most 2,000 deals. Existing deals are unchanged.');
-      const max=Math.max(0,...S.records.map(r=>r.id));
-      const records=source.map((record,index)=>newRecord(record,max+index+1,action.action==='import_records'));
-      if(records.some(record=>!String(record[C.role('primary')]??'').trim()))throw new Error(`Every new record needs a ${labels()[C.role('primary')]} name. No records were added.`);
-      proposal={kind:'add',records,count:records.length,createdAt:Date.now(),note:tailored()||action.action==='import_records'?'Unspecified values stay blank.':'Unspecified values default to Discovery, $0, and blank fields.'};
+    } else if(['add_record','add_records','import_records'].includes(action.action)){
+      try{proposal={...C.additions(S.records,action,S.customFields),revision:S.revision,generation:S.generation};}
+      catch(error){
+        if(!error.clarification)throw error;
+        const original=S.clarification?.originalCommand||originalCommand;
+        S.pending=null;S.sourceAction=C.clone(action);S.clarification={originalCommand:original,question:error.message,previousAction:C.clone(action)};
+        say('Quick clarification. '+error.message);renderTrust();focusTrust();return;
+      }
     } else throw new Error('This request is not an editable table action.');
     if(proposal.clarification){S.pending=null;S.clarification={...proposal.clarification,originalCommand};say('I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
     else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(['move-record','move-field'].includes(proposal.kind)?`Review the move to ${proposal.kind==='move-record'?'row':'column'} ${proposal.change.toPosition} before confirming. Cell values will stay unchanged.`:proposal.kind==='todo'?'Review the To Do card change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
@@ -535,7 +535,7 @@
     try{prepare(action,q.originalCommand);}catch(error){say(error.message,'assistant',true);}
   }
   function newRecord(input,id,imported=false) {
-    if(!input||typeof input!=='object')throw new Error('A new deal needs a company name.');
+    if(!input||typeof input!=='object'||Array.isArray(input))throw new Error(`Provide the new record's ${labels()[C.role('primary')]} and field values.`);
     if(tailored())return {id,activity:'just now',health:'updated',history:[],...C.tableValues(input,S.customFields)};
     const defaults={account:'',stage:imported?'':'Discovery',value:imported?null:0,close:'',owner:'',next:'',follow:'',notes:''};
     const record={id,activity:'just now',health:'updated',history:[]};
@@ -628,6 +628,7 @@
         const ids=new Set(p.records.map(r=>r.id));next=S.records.filter(r=>!ids.has(r.id));
       }
       if(p.kind==='add'){
+        if(p.revision!==undefined&&(p.revision!==S.revision||p.generation!==S.generation))throw new Error('The table changed. Prepare these additions again.');
         if(p.records.some(record=>S.records.some(r=>r.id===record.id)))throw new Error('The table changed. Prepare these additions again.');
         next=[...S.records,...p.records.map(record=>({...record,history:[`${new Date().toISOString()} | ${S.user.name||S.user.email}: Deal added.`]}))];
       }
@@ -713,7 +714,7 @@
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
     if(['add_todo','update_todo','delete_todo'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your To Do board is open.');return;}
-    if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
+    if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','add_records','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){
       const field=C.fieldName(action.field,S.customFields);
       if(action.sortDirection!=null&&(!['asc','desc'].includes(action.sortDirection)||!C.definitions(S.customFields).some(f=>f.id===field)))throw new Error('Which column should I sort, and in ascending or descending order?');
