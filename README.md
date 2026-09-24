@@ -14,8 +14,9 @@ there is no automatic fallback between providers.
 - Authenticated per-user data and transactional usage accounting. Manual editing remains available at the chat cap.
 - Read-only sharing previews and HTML exports, not secure live collaboration links.
 
-Conversation history and undo are page-session features. Billing, team access,
-public email signup/recovery and durable conversation history remain separate work.
+Conversation history is saved privately per user, with bounded AI context and
+rolling older-message summaries. See [Chat history](CHAT-HISTORY.md). Undo remains
+a page-session feature. Billing, team access and public email signup/recovery remain separate work.
 The current hosted rollout permits existing approved accounts only.
 
 ## Files
