@@ -19,6 +19,30 @@ function harness(){
   return {...h,node,calls,messages,reply:a=>action=a,fail:v=>fail=v,response:v=>aiResponse=v,beforeReply:f=>beforeReply=f};
 }
 const plain=v=>JSON.parse(JSON.stringify(v));
+const additionsFixture=require('./fixtures/record-additions.cjs');
+function additionHarness(){const h=harness();h.useSchema(additionsFixture.schema);h.S.records=[];return h;}
+test('original three-deal prompt previews all rows, cancel writes nothing, confirm saves once, and Undo restores',async()=>{
+  const h=additionHarness(),action={action:'add_records',record:null,records:additionsFixture.records};h.reply(action);await h.send(additionsFixture.prompt);
+  assert.equal(h.S.pending.count,3);assert.equal(h.S.records.length,0);assert.equal(h.calls.filter(c=>c.url==='/api/crm-data').length,0);
+  for(const record of additionsFixture.records)assert(h.node('trustBody').innerHTML.includes(record.f_deal));
+  h.cancelDraft();assert.equal(h.S.pending,null);assert.equal(h.calls.length,1);
+  h.reply({...action,action:'add_record'});await h.send(additionsFixture.prompt);assert.equal(h.S.pending.count,3);await h.confirmDraft();
+  assert.equal(h.calls.filter(c=>c.url==='/api/crm-data').length,1);assert.equal(h.S.records.length,3);
+  additionsFixture.records.forEach((r,i)=>{for(const [key,value]of Object.entries(r))assert.equal(h.S.records[i][key],value);});
+  await h.undo();assert.equal(h.S.records.length,0);
+});
+test('batch clarification retains the original request and every other record, then resolves or cancels consistently',async()=>{
+  const h=additionHarness(),bad=structuredClone(additionsFixture.records);bad[1].f_stage='banana';h.reply({action:'add_records',records:bad});await h.send(additionsFixture.prompt);
+  assert.equal(h.S.pending,null);assert.match(h.S.clarification.question,/record 2.*Deal Stage/);assert.equal(h.S.clarification.originalCommand,additionsFixture.prompt);assert.equal(h.S.sourceAction.records.length,3);
+  assert(!h.messages.some(m=>/Sorry, I couldn't/.test(m)));assert.match(h.node('trustStatus').textContent,/Waiting for your reply/);
+  h.reply({action:'add_records',records:additionsFixture.records});await h.send('Use Proposal Sent for Greenline Foods.');
+  assert.equal(h.calls[1].body.pendingAction.records.length,3);assert.equal(h.calls[1].body.pendingClarification.originalCommand,additionsFixture.prompt);assert.equal(h.S.pending.count,3);assert.equal(h.S.clarification,null);
+  await h.send('no');assert.equal(h.S.pending,null);assert.equal(h.S.clarification,null);assert.equal(h.S.records.length,0);assert.equal(h.calls.filter(c=>c.url==='/api/crm-data').length,0);
+});
+test('stale or failed batch confirmation never partially creates rows',async()=>{
+  const h=additionHarness();h.prepare({action:'add_records',records:additionsFixture.records},additionsFixture.prompt);h.S.revision++;await h.confirmDraft();assert.equal(h.calls.length,0);assert.match(h.messages.at(-1),/table changed/);
+  h.prepare({action:'add_records',records:additionsFixture.records},additionsFixture.prompt);h.fail(true);await h.confirmDraft();assert.equal(h.S.records.length,0);assert.equal(h.S.pending.records.length,3);
+});
 test('AI row move previews, confirms, persists cells/history, restores sorting on undo, and carries table context',async()=>{
   const h=harness();h.S.sort={field:'f_score',direction:'desc'};h.reply({action:'move_record',recordMatch:'B',toPosition:2});await h.send('Move B to row 2');
   assert.equal(h.S.pending.kind,'move-record');assert.deepEqual(plain(h.S.records),records);assert.match(h.node('trustBody').innerHTML,/sort will be cleared/);

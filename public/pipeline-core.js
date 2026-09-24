@@ -188,6 +188,54 @@
     if(!selection.records.length)throw new Error('No matching records to delete.');
     return {kind:'delete',records:clone(selection.records),count:selection.records.length,createdAt:Date.now()};
   }
+  function additions(records,action,customFields=[]){
+    const defs=definitions(customFields),primaryDef=defs.find(f=>f.id===primary);
+    const ask=message=>{const error=new Error(message);error.clarification=true;throw error;};
+    const key=value=>normalize(value).replace(/[^\p{L}\p{N}]+/gu,'');
+    const identities=['company','companyname','account','accountname','deal','dealname','client','clientname','business','businessname','dealaccountname','accountdealname'];
+    const groups=[identities,['contact','contactname','contactperson','primarycontact'],['note','notes']];
+    const roles={owner:['owner','rep','representative','assignedrep','assignedowner'],status:['stage','status','dealstage','dealstatus'],followup:['followup','followupdate']};
+    function resolve(label){
+      const exact=defs.find(f=>f.id===label);if(exact)return exact;
+      let matches=defs.filter(f=>normalize(f.name)===normalize(label)||key(label)&&key(f.name)===key(label));
+      if(!matches.length){
+        const group=groups.find(items=>items.includes(key(label)));
+        if(group)matches=defs.filter(f=>group.includes(key(f.name)));
+        if(!matches.length&&['name','primaryname'].includes(key(label))&&['text','choice'].includes(primaryDef?.type))matches=[primaryDef];
+        if(!matches.length){const semantic=Object.keys(roles).find(r=>roles[r].includes(key(label)));if(semantic)matches=defs.filter(f=>f.id===role(semantic));}
+      }
+      if(matches.length>1)ask(`Which column should "${label}" use: ${matches.map(f=>f.name).join(' or ')}? I have kept the other record details.`);
+      if(!matches.length)ask(`There is no unambiguous column for "${label}". Which existing column should hold it, or would you like to add a field first? I have kept the other record details.`);
+      return matches[0];
+    }
+    // Accept the old singular action carrying a batch, but never silently drop
+    // either payload when the model supplies both record and records.
+    if(action.record!=null&&action.records!=null)ask('I received both a single record and a batch. Should I add the single record or the batch? No records have been added.');
+    const source=action.records??(action.record==null?null:[action.record]);
+    if(!Array.isArray(source)||!source.length||source.length>2000)ask('Please provide between 1 and 2,000 records to add, including their primary values.');
+    if(records.length+source.length>2000)ask('This batch exceeds the 2,000-record table limit. Which records would you like to add within the remaining space?');
+    const firstId=Math.max(0,...records.map(r=>r.id))+1;
+    if(!Number.isSafeInteger(firstId+source.length-1))throw new Error('New record IDs cannot be allocated safely.');
+    const created=source.map((input,index)=>{
+      if(!input||typeof input!=='object'||Array.isArray(input))ask(`What are the field values for record ${index+1}? I received an incomplete record.`);
+      const mapped={};
+      for(const [label,value]of Object.entries(input)){
+        if(['__proto__','prototype','constructor','id','history','activity','health'].includes(label))throw new Error('New records can contain only table fields.');
+        const field=resolve(label),previous=mapped[field.id],blank=v=>v==null||typeof v==='string'&&!v.trim();
+        if(Object.hasOwn(mapped,field.id)&&!blank(previous)&&!blank(value)&&previous!==value)ask(`Record ${index+1} has conflicting values for ${field.name}. Which value should I use? I have kept the complete batch.`);
+        if(!Object.hasOwn(mapped,field.id)||!blank(value))mapped[field.id]=value;
+      }
+      if(mapped[primary]==null||String(mapped[primary]).trim()==='')ask(`What should ${primaryDef?.name||'the primary field'} be for record ${index+1}? I have kept the other records and their details.`);
+      const row={id:firstId+index,activity:'just now',health:'updated',history:[]};
+      for(const field of defs){
+        const value=mapped[field.id]??(['number','currency'].includes(field.type)?null:'');
+        try{row[field.id]=validateStoredValue(field.id,value,customFields);}
+        catch(error){ask(`For record ${index+1}, please clarify ${field.name}. ${error.message}${field.type==='choice'?' Available options: '+field.options.join(', ')+'.':''} I have kept the complete batch.`);}
+      }
+      return row;
+    });
+    return {kind:'add',records:created,count:created.length,createdAt:Date.now(),note:'Unspecified values stay blank.'};
+  }
   function plan(records, action, customFields = []) {
     const changes = action.action === 'update_records' ? action.changes : [{ ...action, operation:action.operation || 'set' }];
     if (!Array.isArray(changes) || !changes.length || changes.length > 200) throw new Error('No valid changes were provided.');
@@ -418,5 +466,5 @@
     for(const s of selections)if(s.names)result[s.key==='owners'?'missingOwners':'missingAccounts']=[...s.names].filter(([key])=>!rows.some(row=>normalize(row[s.field])===key)).map(([,name])=>name);
     return result;
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,deletion,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,deletion,additions,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
 });
