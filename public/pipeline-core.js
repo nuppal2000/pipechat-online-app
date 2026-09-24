@@ -6,7 +6,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function factory(schema,schemaApi) {
   'use strict';
   const fields = schema ? Object.fromEntries(schema.fields.map(f=>[f.id,f.name])) : { account: 'Company', stage: 'Stage', value: 'Value', close: 'Close date', owner: 'Owner', next: 'Next step', follow: 'Follow-up', notes: 'Notes' };
-  const role = name => schema ? schema.fields.find(f=>f.role===name)?.id : ({primary:'account',owner:'owner',status:'stage',followup:'follow'})[name];
+  const role = name => schema ? name==='primary'&&schema.columnOrder?.length?schema.columnOrder[0]:schema.fields.find(f=>f.role===name)?.id : ({primary:'account',owner:'owner',status:'stage',followup:'follow'})[name];
   const primary=role('primary');
   const stages = schema ? schema.fields.find(f=>f.role==='status')?.options||[] : ['Discovery', 'Warm', 'Proposal Sent', 'Negotiation', 'At Risk', 'Won', 'Lost'];
   const definitions = customFields => schema ? [...schema.fields,...validateCustomFields(customFields)] : [...Object.entries(fields).map(([id,name])=>({id,name,type:id==='value'?'currency':id==='close'?'date':id==='stage'?'choice':'text',role:Object.entries({primary:'account',owner:'owner',status:'stage',followup:'follow'}).find(([,key])=>key===id)?.[0]||'none',options:id==='stage'?stages:[]})),...validateCustomFields(customFields)];
@@ -40,7 +40,7 @@
     return Object.fromEntries(definitions.map(field=>[field.id,validateStoredValue(field.id,record[field.id]??'',definitions)]));
   }
   function fieldName(value, customFields = []) {
-    if(schema){const defs=definitions(customFields),byId=defs.find(f=>f.id===value);if(byId)return byId.id;const matches=defs.filter(f=>normalize(f.name)===normalize(value));if(matches.length>1)throw new Error('More than one column has that label. Specify its field ID.');return matches[0]?.id||String(value);}
+    if(schema){const defs=[...schema.fields,...customFields],byId=defs.find(f=>f.id===value);if(byId)return byId.id;const matches=defs.filter(f=>normalize(f.name)===normalize(value));if(matches.length>1)throw new Error('More than one column has that label. Specify its field ID.');return matches[0]?.id||String(value);}
     const custom = customFields.find(field=>field.id===value || normalize(field.name)===normalize(value));
     if (custom) return custom.id;
     const key = normalize(value).replace(/[\s-]+/g, '_');
@@ -111,7 +111,7 @@
     if(schema){
       const def=definitions(customFields).find(f=>f.id===field);
       if(!def)throw new Error('Unknown filter field.');
-      if(filter.operator==='is_blank')return row=>row[field]==null||row[field]==='';
+      if(filter.operator==='is_blank')return row=>row[field]==null||typeof row[field]==='string'&&!row[field].trim();
       let expected=value;
       if(def.type==='date'&&normalize(value)==='today'){const d=new Date();expected=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
       if(filter.operator==='equals'){
@@ -123,7 +123,7 @@
       if(['number','currency'].includes(def.type)&&['gt','gte','lt','lte'].includes(filter.operator)&&value!=null&&value!==''&&Number.isFinite(Number(value)))return row=>row[field]!=null&&row[field]!==''&&({gt:row[field]>Number(value),gte:row[field]>=Number(value),lt:row[field]<Number(value),lte:row[field]<=Number(value)})[filter.operator];
       throw new Error('Unsupported filter for this field type.');
     }
-    if (filter.operator === 'is_blank') return record => record[field] === '' || record[field] == null;
+    if (filter.operator === 'is_blank') return record => record[field] == null || typeof record[field] === 'string' && !record[field].trim();
     if (value === null || value === undefined || (filter.operator === 'contains' && !normalize(value))) throw new Error('Specify the filter value.');
     if (filter.operator === 'equals') {
       const expected = normalize(field === 'stage' ? validateValue(field, value) : value);
@@ -173,6 +173,20 @@
       return { records:found };
     }
     throw new Error('Which company should I update?');
+  }
+  function deletion(records,action,customFields=[]){
+    const bulk=action.action==='delete_records';let selection;
+    // A bulk predicate describes the whole set; model-supplied example IDs or
+    // names must not narrow it to just one matching record.
+    if(action.filter)selection={records:records.filter(predicate(action.filter,customFields))};
+    else if(bulk&&action.recordMatch){
+      const exact=records.filter(row=>normalize(row[primary])===normalize(action.recordMatch));
+      selection=exact.length?{records:exact}:targets(records,action,false,customFields);
+    }else if(bulk&&action.mode==='all'&&!action.ids?.length)selection={records};
+    else selection=targets(records,action,bulk,customFields);
+    if(selection.candidates)return {clarification:{action:clone(action),changeIndex:null,candidates:selection.candidates}};
+    if(!selection.records.length)throw new Error('No matching records to delete.');
+    return {kind:'delete',records:clone(selection.records),count:selection.records.length,createdAt:Date.now()};
   }
   function plan(records, action, customFields = []) {
     const changes = action.action === 'update_records' ? action.changes : [{ ...action, operation:action.operation || 'set' }];
@@ -350,11 +364,15 @@
       }
       selected={...selected,role:'primary',options:[]};
       const index=nextSchema.fields.findIndex(f=>f.id===field.id);
-      nextSchema.fields=nextSchema.fields.filter(f=>f.id!==field.id&&f.id!==selected.id);
+      nextSchema.fields=nextSchema.fields.filter(f=>f.id!==field.id&&f.id!==selected.id).map(f=>f.role==='primary'?{...f,role:'none'}:f);
       nextSchema.fields.splice(Math.max(0,index),0,selected);
       nextSchema.recordLabel=selected.name;
       nextFields=nextFields.filter(f=>f.id!==selected.id);
     }else if(nextSchema)nextSchema.fields=nextSchema.fields.filter(f=>f.id!==field.id);
+    if(nextSchema?.columnOrder){
+      const remaining=schemaApi.orderedFields([...nextSchema.fields,...nextFields],nextSchema.columnOrder).map(f=>f.id);
+      nextSchema.columnOrder=selected?[selected.id,...remaining.filter(id=>id!==selected.id)]:remaining;
+    }
     if(nextSchema?.kpis)nextSchema.kpis=nextSchema.kpis.filter(k=>k.field!==field.id&&!k.conditions.some(c=>c.field===field.id));
     nextSchema=schemaApi.transition(schema,nextSchema,next);
     const nextCore=nextSchema?factory(nextSchema,schemaApi):factory(null,schemaApi);
@@ -400,5 +418,5 @@
     for(const s of selections)if(s.names)result[s.key==='owners'?'missingOwners':'missingAccounts']=[...s.names].filter(([key])=>!rows.some(row=>normalize(row[s.field])===key)).map(([,name])=>name);
     return result;
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,deletion,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
 });

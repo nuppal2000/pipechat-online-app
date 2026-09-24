@@ -14,6 +14,8 @@
       nameEdit={id:recordId,field:JSON.stringify(field),before:row[field.id]};
       $('inspectorNameLabel').textContent=field.name;$('inspectorNameLabel').htmlFor=field.type==='choice'?'inspectorNameChoice':'inspectorNameInput';
       $('inspectorNameInput').hidden=field.type==='choice';$('inspectorNameChoice').hidden=field.type!=='choice';
+      $('inspectorNameInput').type=field.type==='date'?'date':['number','currency'].includes(field.type)?'number':'text';
+      $('inspectorNameInput').step=field.type==='currency'?'0.01':'any';
       $('inspectorNameChoice').innerHTML='<option value="">Not set</option>'+(field.options||[]).map(value=>`<option>${esc(value)}</option>`).join('');
       const input=$(field.type==='choice'?'inspectorNameChoice':'inspectorNameInput');input.value=row[field.id]??'';
       $('inspectorNameForm').hidden=false;$('inspectorNameError').textContent='';controls();input.focus();

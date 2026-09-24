@@ -4,17 +4,17 @@ const schema={status:'ready',useCase:'Sales',title:'Sales',recordLabel:'deal',de
 const records=[{id:1,f_name:'A',f_score:0,f_status:'Warm',history:[]},{id:2,f_name:'B',f_score:20,f_status:'d',history:[]}];
 function harness(){
   const nodes=new Map(),calls=[],messages=[];let action=null,fail=false,aiResponse=null,beforeReply=null,saved={deals:structuredClone(records),customFields:[],tableSchema:schema,updatedAt:'v1'};
-  const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',textContent:'',hidden:false,open:false,dataset:{},style:{},elements:{},classList:{add(){},remove(){},toggle(){}},focus(){},setAttribute(){},querySelectorAll:()=>[],showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);};
+  const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',textContent:'',hidden:false,open:false,dataset:{},style:{},elements:{},classList:{add(){},remove(){},toggle(){}},focus(){},setAttribute(){},insertAdjacentHTML(where,text){this.innerHTML=where==='afterbegin'?text+this.innerHTML:this.innerHTML+text;},querySelectorAll:()=>[],showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(id);};
   const context={crypto,AbortSignal,innerWidth:1400,innerHeight:900,window:{PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:Core,PipeChatSchema:Schema,PipeChatCustomize:Customize,PipeChatIcons:{}},document:{getElementById:node,querySelector:node,querySelectorAll:()=>[]},sessionStorage:{removeItem(){},getItem(){return null;}},fetch:async(url,options={})=>{
     const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
     if(url==='/api/pipechat-ai'){beforeReply?.();return aiResponse||{ok:true,json:async()=>({crmAction:action,usage:{used:1,remaining:20}})};}
     if(fail)return {ok:false,status:503,json:async()=>({error:'Synthetic failure'})};
-    if(options.method==='PUT')saved={deals:body.deals,customFields:body.customFields,tableSchema:body.tableSchema,updatedAt:'v'+calls.length};
+    if(options.method==='PUT')saved={deals:body.deals,customFields:body.customFields,tableSchema:body.tableSchema,todoCards:body.todoCards||[],updatedAt:'v'+calls.length};
     return {ok:true,json:async()=>structuredClone(saved)};
   }};
   context.window.messages=messages;
   const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
-  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,useSchema,prepare,send,confirmDraft,undo,cancelDraft,openFieldDialog,submitFieldDialog,openColumnMenu,renderTrust,renderTable,renderDashboardKpis,fieldInput,resizeTextCell,moveColumn,selectScope,visible,fieldHeader};`),context);
+  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,useSchema,prepare,send,confirmDraft,undo,dismissUndo,cancelDraft,openFieldDialog,submitFieldDialog,openColumnMenu,renderTrust,renderTable,renderDashboardKpis,fieldInput,resizeTextCell,moveColumn,selectScope,visible,fieldHeader};`),context);
   const h=context.window.test;h.useSchema(schema);Object.assign(h.S,{records:structuredClone(records),customFields:[],updatedAt:'v1',loaded:true,user:{id:1,name:'QA'},usage:{remaining:20},health:{aiConfigured:true}});
   return {...h,node,calls,messages,reply:a=>action=a,fail:v=>fail=v,response:v=>aiResponse=v,beforeReply:f=>beforeReply=f};
 }
@@ -111,6 +111,45 @@ test('header reorder persists whole columns, does not sort rows or alter cells, 
   h.fail(false);const count=h.calls.length;for(const flag of ['saving','busy','failedEdit','pending','clarification']){h.S[flag]=true;assert.equal(await h.moveColumn('f_status','f_name'),false);h.S[flag]=false;}assert.equal(h.calls.length,count);
   assert.equal(await h.moveColumn('f_status','f_name',h.S.revision-1),false);assert.equal(await h.moveColumn('f_status','f_name',h.S.revision,h.S.generation-1),false);
 });
+test('first displayed column is primary after dragging away or into first; zero values and undo remain intact',async()=>{
+  const h=harness();h.S.report.groupBy='f_name';await h.moveColumn('f_name','f_status');
+  assert.equal(Core.create(h.S.tableSchema).role('primary'),'f_score');assert.equal(h.S.report.groupBy,'f_score');
+  h.renderTable(h.S.records);assert.match(h.node('dealRows').innerHTML,/Open inspector for 0/);assert(!h.node('dealRows').innerHTML.includes('Unnamed record #1'));
+  assert.equal(require('../public/todo-core').project({recordId:1},h.S.records,h.S.tableSchema).title,'0');
+  await h.undo();assert.equal(Core.create(h.S.tableSchema).role('primary'),'f_name');assert.equal(h.S.report.groupBy,'f_name');
+  await h.moveColumn('f_status','f_name');assert.equal(Core.create(h.S.tableSchema).role('primary'),'f_status');assert.equal(Core.create(h.S.tableSchema).role('status'),'f_status');assert.deepEqual(plain(h.S.records),records);
+});
+
+test('bulk blank-client deletion previews every match regardless of guessed IDs, cancels, confirms linked-card deletion and undoes',async()=>{
+  const h=harness();h.S.records=[...records,{id:3,f_name:'C',f_status:' ',f_score:5,history:[]}];h.S.records[0].f_status='';
+  h.S.todoCards=[{id:'todo_a',recordId:1,status:'To Do',nextAction:'Call',notes:'Keep until confirmed',dueDate:''},{id:'todo_b',recordId:2,status:'Done',nextAction:'Done',notes:'',dueDate:''}];
+  const before=plain(h.S.records),cards=plain(h.S.todoCards);h.S.filter={field:'f_name',operator:'equals',value:'B'};
+  h.reply({action:'delete_records',filter:{field:'f_status',operator:'is_blank',value:null},ids:[1],recordMatch:'A'});
+  await h.send('Delete all records without a client name');assert.equal(h.S.pending.count,2);assert.match(h.node('trustBody').innerHTML,/all 1 associated Kanban/);assert.deepEqual(plain(h.S.records),before);h.cancelDraft();assert.equal(h.calls.filter(c=>c.url==='/api/crm-data').length,0);
+  await h.send('Delete all blank clients');await h.confirmDraft();assert.deepEqual(plain(h.S.records.map(r=>r.id)),[2]);assert.deepEqual(plain(h.S.todoCards.map(c=>c.id)),['todo_b']);await h.undo();assert.deepEqual(plain(h.S.records),before);assert.deepEqual(plain(h.S.todoCards),cards);
+});
+
+test('bulk explicit IDs work, single ambiguous name still clarifies, and stale or failed deletions do not apply',async()=>{
+  const h=harness();h.S.records[1].f_name='A';h.prepare({action:'delete_record',recordMatch:'A'});assert.equal(h.S.clarification.candidates.length,2);h.cancelDraft();
+  h.prepare({action:'delete_records',ids:[1,2]});assert.equal(h.S.pending.count,2);h.S.revision++;await h.confirmDraft();assert.equal(h.calls.length,0);
+  h.prepare({action:'delete_records',ids:[1,2]});h.fail(true);await h.confirmDraft();assert.equal(h.S.records.length,2);assert.equal(h.S.pending.count,2);
+  h.fail(false);await h.confirmDraft();assert.equal(h.S.records.length,0);await h.undo();assert.equal(h.S.records.length,2);
+});
+
+test('recurring concept produces a labelled, escaped field suggestion with cancel, confirm, duplicate protection and undo',async()=>{
+  const h=harness();h.S.history=[{role:'user',content:'Track the renewal for A'},{role:'user',content:'B also has a renewal coming up'}];
+  h.reply({action:'propose_field',newFieldName:'Renewal',summary:'Renewals recur across your accounts. <b>Track them separately.</b>'});await h.send('How should I keep track of those?');
+  assert.equal(h.node('trustTitle').textContent,'Proposed new field');assert.match(h.node('trustBody').innerHTML,/&lt;b&gt;/);assert.equal(h.S.customFields.length,0);h.cancelDraft();assert.equal(h.S.customFields.length,0);
+  await h.send('Suggest that field again');await h.confirmDraft();assert.equal(h.S.customFields[0].name,'Renewal');assert(h.S.records.every(r=>r[h.S.customFields[0].id]===''));
+  assert.throws(()=>h.prepare({action:'propose_field',newFieldName:'renewal',summary:'Duplicate'}),/already exists/);await h.undo();assert.equal(h.S.customFields.length,0);assert.deepEqual(plain(h.S.records),records);
+});
+
+test('dismissing the undo notice hides it without reverting data and the next save gets a fresh notice',async()=>{
+  const h=harness();await h.moveColumn('f_status','f_name');h.dismissUndo();assert.equal(h.node('undoStrip').hidden,true);assert.equal(h.S.undo.dismissed,true);assert.equal(Core.create(h.S.tableSchema).role('primary'),'f_status');
+  await h.moveColumn('f_name','f_status');assert.equal(h.S.undo.dismissed,undefined);assert.equal(Core.create(h.S.tableSchema).role('primary'),'f_name');
+  const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8');assert.match(html,/id="dismissUndo"[^>]+aria-label="Dismiss undo notification"/);
+});
+
 test('AI calendar conversion previews without options, confirms a native date input, and undo restores original strings',async()=>{
   const h=harness();h.S.records[0].f_status='oct 5 2026';h.S.records[1].f_status='';
   h.reply({action:'convert_field',field:'f_status',targetType:'date',dropdownOptions:null});await h.send('Make Status a calendar date field');

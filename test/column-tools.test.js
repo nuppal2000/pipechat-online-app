@@ -2,11 +2,11 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const Schema=require('../public/table-schema'),Core=require('../public/pipeline-core'),X=require('../public/workspace-customization');
 const field=(id,type='text',role='none',options=[])=>({id,name:id,type,role,options});
 const schema={status:'ready',useCase:'Other',title:'QA',recordLabel:'record',description:'',fields:[field('f_name','text','primary'),field('f_date'),field('f_status','choice','status',['Warm','Won'])]};
-test('column order preserves identity and fields, supports custom interleaving, deletion and new columns',()=>{
+test('column order assigns first displayed identity and preserves fields and values',()=>{
   const custom=[{id:'cf_notes',name:'Notes',type:'text'}],before=structuredClone(schema);
   const s=Schema.reorder(schema,custom,'cf_notes','f_name');
   assert.deepEqual(s.columnOrder,['cf_notes','f_name','f_date','f_status']);assert.deepEqual(s.fields,schema.fields);assert.deepEqual(schema,before);
-  const moved=Schema.reorder(s,custom,'f_name','f_status');assert.deepEqual(moved.columnOrder,['cf_notes','f_date','f_status','f_name']);assert.equal(Core.create(moved).role('primary'),'f_name');
+  const moved=Schema.reorder(s,custom,'f_name','f_status');assert.deepEqual(moved.columnOrder,['cf_notes','f_date','f_status','f_name']);assert.equal(Core.create(moved).role('primary'),'cf_notes');
   assert.deepEqual(Schema.orderedFields([field('f_name'),field('f_status'),field('f_new')],moved.columnOrder).map(f=>f.id),['f_status','f_name','f_new']);
   assert.deepEqual(Schema.validate(moved),moved);assert.throws(()=>Schema.reorder(s,custom,'missing','f_name'));
   for(const columnOrder of [null,{},['f_name','f_name'],['<bad>'],Array(121).fill('f_name')])assert.throws(()=>Schema.validate({...s,columnOrder}));

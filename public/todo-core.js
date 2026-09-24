@@ -26,12 +26,12 @@
   function create(id,recordId,customTitle){return {id,recordId,status:'To Do',nextAction:'',notes:'',dueDate:'',...(recordId===null?{customTitle}: {})};}
   function recordOptions(records,schema,query,selected){
     const primary=Core.create(schema).role('primary'),normalize=v=>String(v).normalize('NFKC').toLocaleLowerCase().trim(),term=normalize(query);
-    return records.map(r=>({id:r.id,title:String(r[primary]||`Unnamed record #${r.id}`)})).filter(r=>String(r.id)===String(selected)||normalize(r.title).includes(term)||String(r.id)===term);
+    return records.map(r=>({id:r.id,title:String(r[primary]??'').trim()||`Unnamed record #${r.id}`})).filter(r=>String(r.id)===String(selected)||normalize(r.title).includes(term)||String(r.id)===term);
   }
   function project(card,records,schema){
     if(card.recordId===null)return {...card,title:card.customTitle};
     const C=Core.create(schema),record=records.find(r=>r.id===card.recordId);if(!record)throw new Error('The linked record no longer exists.');
-    return {...card,title:String(record[C.role('primary')]||`Unnamed record #${record.id}`)};
+    return {...card,title:String(record[C.role('primary')]??'').trim()||`Unnamed record #${record.id}`};
   }
   function plan(cards,records,schema,custom,action,newId){
     let next=validate(cards,records),before=null,after=null;
