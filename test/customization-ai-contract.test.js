@@ -5,7 +5,7 @@ const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCo
 vm.runInNewContext(source.slice(source.indexOf('const actionSchema ='),source.indexOf('function sendJson('))+'\nthis.getSchema=responseSchema;',context);
 test('new AI actions retain strict schema and per-request KPI/field IDs without cross-user mutation',()=>{
   const schema=tableSchemaCore.legacySchema(),request=context.getSchema([],schema),action=request.properties.crmAction.anyOf[1];
-  for(const name of ['rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','move_record','move_field','sort_table'])assert(action.properties.action.enum.includes(name));
+  for(const name of ['rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','move_record','move_field','sort_table','delete_records','propose_field'])assert(action.properties.action.enum.includes(name));
   for(const name of ['fromPosition','toPosition','orderScope','sortDirection'])assert(action.required.includes(name));
   assert.deepEqual([...action.properties.orderScope.enum],['visible','all',null]);
   assert(action.properties.kpiId.enum.includes('kpi_value'));assert(action.required.includes('dropdownOptions'));assert(action.required.includes('kpi'));
@@ -25,4 +25,9 @@ test('deleted KPI IDs disappear and added IDs are available only in their owning
   const removed=customization.deleteKpi(changed,[],'kpi_records').tableSchema;
   const ids=context.getSchema([],removed).properties.crmAction.anyOf[1].properties.kpiId.enum;
   assert(ids.includes('kpi_user_custom'));assert(!ids.includes('kpi_records'));assert(!context.getSchema([],tableSchemaCore.legacySchema()).properties.crmAction.anyOf[1].properties.kpiId.enum.includes('kpi_user_custom'));
+});
+test('AI contract explicitly requests predicate-wide deletion and relevant recurring-concept proposals without writes',()=>{
+  assert.match(source,/without a client name means is_blank/);assert.match(source,/never only the first match/);assert.match(source,/For an explicit list use ALL matching exact IDs/);
+  assert.match(source,/pipeline.primaryField/);assert.match(source,/tableSchema.columnOrder is set, its FIRST field/);
+  assert.match(source,/return propose_field/);assert.match(source,/no existing field represents it/);assert.match(source,/Do not interrupt an active clarification/);assert.match(source,/never infer or populate values/);
 });
