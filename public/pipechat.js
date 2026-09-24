@@ -11,6 +11,62 @@
   const defaultReport = () => ({metric:'sum',field:'value',groupBy:C.role('primary')||'account',chart:'bar',filter:null,owners:null,accounts:null,from:null,to:null});
   const S = {user:null,records:[],updatedAt:null,usage:null,health:null,history:[],pending:null,clarification:null,sourceAction:null,tab:'table',scope:'all',search:'',filter:null,report:defaultReport(),expanded:null,undo:null,saving:false,busy:false,generation:0,revision:0,signup:false,loaded:false};
   let chart=null, toastTimer;
+  let conversation=null, restoringChat=false, restoredProposal=null;
+  function chatState(){
+    return {clarification:S.clarification,sourceAction:S.sourceAction,
+      originalCommand:S.clarification?.originalCommand||S.pending?.originalCommand||'',
+      workspaceVersion:S.updatedAt,report:S.report,view:S.tab,tableView:tableView()};
+  }
+  function saveChatState(){
+    if(!conversation?.ready||restoringChat||S.resetting)return;
+    const state=restoredProposal||chatState();
+    // Large import previews stay in this tab; they are never silently replayed.
+    conversation.state(new TextEncoder().encode(JSON.stringify(state)).length<=30000?state:null);
+  }
+  function paintMessage(text,role='assistant',prepend=false){
+    const el=document.createElement('article');el.className=`chat-message ${role}`;
+    el.innerHTML=`<div class="message-label">${role==='assistant'?icon('MessagesSquare'):''}${role==='user'?'You':'PipeChat'}</div><div class="message-body">${esc(text)}</div>`;
+    if(prepend)$('chatFeed').prepend(el);else $('chatFeed').append(el);
+  }
+  async function loadChat(){
+    if(!window.PipeChatConversation||!S.health?.conversationPersistence)return false;
+    conversation?.stop();const generation=S.generation;
+    const current=conversation=window.PipeChatConversation.create({api,changed:status=>{
+      if(generation!==S.generation)return;
+      $('conversationStatus').textContent=status.error?'Chat not saved. Retry before leaving.':status.saving||status.dirty?'Saving chat...':'Chat saved';
+      $('chatRetryBtn').hidden=!status.error;$('chatRetryBtn').title='Retry chat save';
+      S.chatReady=status.ready;updateUsage();
+    }});
+    S.chatReady=false;restoredProposal=null;$('conversationStatus').textContent='Loading chat...';
+    try{
+      const page=await current.load();if(generation!==S.generation||conversation!==current||!page)return true;
+      restoringChat=true;$('chatFeed').innerHTML='';S.history=page.messages.map(({role,content})=>({role,content}));
+      page.messages.forEach(message=>paintMessage(message.content,message.role));$('chatEarlierBtn').hidden=!page.before;
+      if(page.state?.workspaceVersion===S.updatedAt){
+        if(page.state.report){try{const report=C.reconcileReport(page.state.report,S.customFields);if(report.version===1)smartReportResult(report);else C.report(S.records,report,S.customFields);S.report=report;}catch{}}
+        if(['table','todo','dashboard','activity','share'].includes(page.state.view))S.tab=page.state.view;
+        if(page.state.clarification){S.clarification=page.state.clarification;S.sourceAction=page.state.sourceAction;}
+        else if(page.state.sourceAction)restoredProposal=page.state;
+      }else if(page.state?.clarification||page.state?.sourceAction){
+        paintMessage('The table changed since our last conversation. Please repeat the pending request so I can review the latest data.');
+      }
+      restoringChat=false;saveChatState();renderTrust();$('chatFeed').scrollTop=$('chatFeed').scrollHeight;
+      return true;
+    }catch(error){
+      if(generation===S.generation){S.chatReady=false;$('conversationStatus').textContent='Saved chat could not be loaded.';$('chatRetryBtn').hidden=false;$('chatRetryBtn').title='Reload chat';updateUsage();}
+      return true;
+    }finally{restoringChat=false;}
+  }
+  async function reviewRestoredProposal(){
+    const state=restoredProposal;if(!state||S.busy||S.saving)return;
+    restoredProposal=null;
+    if(state.workspaceVersion!==S.updatedAt){say('The table changed. Please repeat this request so I can prepare a fresh preview.');saveChatState();renderTrust();return;}
+    try{
+      if(['move_record','move_field'].includes(state.sourceAction.action)&&JSON.stringify(state.tableView)!==JSON.stringify(tableView()))throw new Error('The visible table order changed. Please repeat the move request in this view.');
+      prepare(state.sourceAction,state.originalCommand);
+    }catch(error){clearDraft();say(error.message);}
+    saveChatState();
+  }
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];let todoUI=null;
   let inspectorUI=null,activityLimit=150;
@@ -83,10 +139,10 @@
   const display = (field,value) => tailored()?value==null||value===''?'Not set':C.definitions(S.customFields).find(f=>f.id===field)?.type==='currency'?currency(value):String(value):field==='value'?currency(value)||'Not set':field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
   const stageOptions = selected => `<option value="" ${!selected?'selected':''}>Not set</option>`+C.stages.map(stage=>`<option ${stage===selected?'selected':''}>${esc(stage)}</option>`).join('');
   function say(text, role='assistant', error=false) {
+    if(restoringChat)return;
     S.history.push({role,content:String(text)}); S.history=S.history.slice(-50);
-    const el=document.createElement('article');el.className=`chat-message ${role}`;
-    el.innerHTML=`<div class="message-label">${role==='assistant'?icon('MessagesSquare'):''}${role==='user'?'You':'PipeChat'}</div><div class="message-body">${esc(text)}</div>`;
-    $('chatFeed').append(el);while($('chatFeed').children.length>70)$('chatFeed').firstChild.remove();$('chatFeed').scrollTop=$('chatFeed').scrollHeight;
+    paintMessage(text,role);$('chatFeed').scrollTop=$('chatFeed').scrollHeight;
+    conversation?.add(role,String(text));saveChatState();
   }
   function toast(text, undo=false) {
     clearTimeout(toastTimer);$('toastText').textContent=text;$('toast').hidden=false;$('undoBtn').hidden=!undo;
@@ -116,13 +172,13 @@
   }
   function tableView(){return {scope:S.scope,search:S.search,filter:C.clone(S.filter),sort:C.clone(S.sort),visibleIds:visible().map(row=>row.id),columnOrder:tableColumns().map(f=>f.id)};}
   function updateUsage() {
-    const locked=Boolean(S.usage?.paymentRequired || S.usage?.remaining===0);
+    const locked=Boolean(S.usage?.paymentRequired || S.usage?.remaining===0),chatLoading=Boolean(S.health?.conversationPersistence&&window.PipeChatConversation&&S.chatReady===false);
     $('usageLabel').textContent=S.usage?`${S.usage.used.toLocaleString()} / ${S.usage.limit.toLocaleString()} chats used`:'Usage unavailable';
     $('chatStatus').textContent=S.busy?'Thinking...':locked?'Chat limit reached':S.health?.aiConfigured===false?'API key not configured':'';
-    $('chatInput').disabled=locked||S.busy||!S.loaded;
-    $('sendBtn').disabled=locked||S.busy||!S.loaded;
+    $('chatInput').disabled=locked||S.busy||!S.loaded||chatLoading;
+    $('sendBtn').disabled=locked||S.busy||!S.loaded||chatLoading;
     $('chatInput').placeholder=locked?'Chat limit reached. Manual editing is still available.':'Tell PipeChat what you want to do...';
-    document.querySelectorAll('[data-prompt]').forEach(button=>button.disabled=locked||S.busy||!S.loaded);
+    document.querySelectorAll('[data-prompt]').forEach(button=>button.disabled=locked||S.busy||!S.loaded||chatLoading);
     $('aiModeLabel').textContent=locked?'Paused':S.health?.aiConfigured===false?'Not connected':'AI';
     $('aiModeLabel').classList.toggle('offline',locked||S.health?.aiConfigured===false);
   }
@@ -219,12 +275,14 @@
     if(confirmation.generation!==S.generation||confirmation.revision!==S.revision){$('resetError').textContent='The workspace changed. Cancel and review it before resetting.';return;}
     const generation=S.generation;S.resetting=true;$('resetYesBtn').disabled=true;$('resetNoBtn').disabled=true;$('resetError').textContent='Resetting...';render();
     try{
+      await conversation?.flush();
       const saved=await api('/api/crm-reset',{method:'POST',body:JSON.stringify({confirm:true,expectedUpdatedAt:confirmation.updatedAt})});
       if(generation!==S.generation)return;
       if(!Array.isArray(saved.deals)||saved.deals.length||!Array.isArray(saved.customFields)||saved.customFields.length||saved.tableSchema?.status!=='pending'||typeof saved.updatedAt!=='string'||saved.updatedAt===confirmation.updatedAt)throw new Error('The server did not confirm an empty workspace.');
       useSchema(saved.tableSchema);S.records=[];S.customFields=[];S.updatedAt=saved.updatedAt;S.revision++;
       S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();
       S.history=[];S.pending=null;S.clarification=null;S.sourceAction=null;S.undo=null;S.failedEdit=null;keepFailedEdit();
+      conversation?.stop();conversation=null;restoredProposal=null;
       S.scope='all';S.search='';S.filter=null;S.sort=null;S.expanded=null;S.report=defaultReport();S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.tab='table';
       if(chart){chart.destroy();chart=null;}
       clearTimeout(toastTimer);$('toast').hidden=true;
@@ -232,6 +290,7 @@
       for(const id of ['dealSearch','chatInput','workflowDescription','shareRecipient','shareMessage','csvFileInput'])$(id).value='';
       $('shareAccess').value='viewer';$('inviteStatus').textContent='';$('setupStatus').textContent='';
       $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');
+      await loadChat();if(generation!==S.generation)return;
       S.resetting=false;closeResetDialog();S.settingsOpen=false;render();$('setupQuestion').setAttribute('tabindex','-1');$('setupQuestion').focus();
     }catch(error){if(generation===S.generation)$('resetError').textContent=`Reset not confirmed: ${error.message} Reload the workspace before trying again.`;}
     finally{if(generation===S.generation){S.resetting=false;$('resetYesBtn').disabled=false;$('resetNoBtn').disabled=false;render();}}
@@ -328,9 +387,11 @@
   }
   function focusTrust() {if(innerWidth<1200)document.querySelector('.trust-pane').scrollIntoView({behavior:'smooth',block:'start'});}
   function renderTrust() {
+    saveChatState();
     const panel=$('trustBody');$('changeCount').hidden=true;$('trustTitle').textContent='Proposed changes';
     $('trustStatus').textContent='No changes pending.';
     if(S.failedEdit){renderFailedEdit();return;}
+    if(restoredProposal){panel.innerHTML='<p>A previous proposal was not confirmed.</p><button class="primary" id="reviewRestoredProposal">Review proposal again</button><button class="secondary" data-cancel>Cancel</button>';$('reviewRestoredProposal').onclick=reviewRestoredProposal;$('trustStatus').textContent='Review a fresh preview before confirming.';return;}
     if(S.pending?.kind==='todo'){todoUI.preview(S.pending);return;}
     if(S.clarification?.candidates){
       $('trustTitle').textContent='Choose a record';
@@ -396,7 +457,7 @@
     if(S.tab==='share'){renderShare();return;}
     panel.innerHTML=`<div class="trust-empty"><span class="empty-icon">${icon('ShieldCheck')}</span><h3>You're in control</h3><p>No changes to review.</p></div>`;
   }
-  function clearDraft() {S.pending=null;S.clarification=null;S.sourceAction=null;renderTrust();}
+  function clearDraft() {restoredProposal=null;S.pending=null;S.clarification=null;S.sourceAction=null;renderTrust();}
   function clearClarification(){S.clarification=null;if(!S.pending)S.sourceAction=null;renderTrust();}
   function cancelDraft() {if(S.saving)return;clearDraft();say('Cancelled. No changes were made to the table.');}
   function prepare(action, originalCommand) {
@@ -687,6 +748,8 @@
   }
   async function send(command) {
     command=String(command||'').trim();if(!command||S.busy||S.saving||!S.loaded||S.usage?.paymentRequired||S.usage?.remaining===0)return;
+    if(conversation&&!conversation.ready){toast('Reload saved chat before sending a message.');return;}
+    if(restoredProposal){say('Please review or cancel the previous proposal first.');focusTrust();return;}
     if(S.failedEdit){toast('Review or discard the unsaved edit first.');focusTrust();return;}
     $('chatInput').value='';say(command,'user');const answer=C.normalize(command).replace(/[.!?]+$/,'');
     if((S.pending||S.clarification)&&/^(?:cancel|no|no thanks|never mind|nevermind|(?:no[, ]+)?leave (?:it|that|everything) unchanged|(?:no[, ]+)?(?:do not|don't) change (?:it|that|anything))$/.test(answer)){cancelDraft();return;}
@@ -702,7 +765,7 @@
     if(S.health?.aiConfigured===false){clearClarification();say('Sorry, I cannot connect to the AI service right now. Manual editing is still available. No table changes were made.');return;}
     S.busy=true;updateUsage();const generation=S.generation, revision=S.revision, pending=S.pending,requestView=JSON.stringify(tableView());
     let interpreting=false;
-    try{const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(aiPayload(command)),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);}
+    try{saveChatState();const reference=await conversation?.flush();if(generation!==S.generation)return;const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);saveChatState();}
     catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;if(revision===S.revision&&pending===S.pending)clearClarification();const guidance=interpreting?error.message:error.status===401?'Please sign in again, then try your request.':S.usage?.remaining===0||S.usage?.paymentRequired?'Your chat allowance has been used. You can still edit the table manually.':error.status===429?'The service is busy. Please try again shortly.':'Please try again shortly.';say(`Sorry, I couldn't complete that request. ${guidance} No table changes were made.`);}
     finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);$('addFieldBtn').disabled=S.saving||Boolean(S.failedEdit);}}
   }
@@ -860,6 +923,7 @@
     ].map(([account,stage,value,close,rep,next,follow],i)=>newRecord({account,stage,value,close,owner:rep,next,follow},i+1));
   }
   async function loadWorkspace(user) {
+    conversation?.stop();conversation=null;restoredProposal=null;S.chatReady=false;
     clearActivity();
     closeProfileMenu();S.settingsOpen=false;S.resetting=false;S.resetConfirmation=null;if($('resetDialog')?.open)$('resetDialog').close();
     S.generation++;S.user=user;S.history=[];S.pending=null;S.clarification=null;S.undo=null;S.sourceAction=null;S.loaded=false;S.scope='all';S.search='';S.filter=null;S.tab='table';S.report=defaultReport();S.busy=false;S.expanded=null;
@@ -887,7 +951,8 @@
       $('accountPill').textContent=user.name||user.email;$('userAvatar').textContent=(user.name||user.email).split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
       $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');
       restoreFailedEdit();if(S.failedEdit){$('saveStatus').textContent='Unsaved edit retained';$('saveStatus').classList.add('failed');}
-      say('What would you like to work on in your pipeline?');render();
+      if(!await loadChat())say('What would you like to work on in your pipeline?');
+      if(generation===S.generation)render();
     }catch(error){if(generation===S.generation){$('authMessage').textContent=`Could not load the workspace: ${error.message}`;$('authRetryBtn').hidden=false;}}
   }
   function toggleAuthMode() {
@@ -934,7 +999,7 @@
   async function logout() {
     if(S.saving||S.resetting){toast('Wait for the current save to finish.');return;}
     if(S.failedEdit&&!window.confirm('Sign out and discard the unsaved edit in this tab?'))return;
-    try{await api('/api/auth/logout',{method:'POST'});S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();S.customFields=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
+    try{await conversation?.flush();await api('/api/auth/logout',{method:'POST'});conversation?.stop();conversation=null;restoredProposal=null;S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();S.customFields=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
   }
   function deleteFieldButton(id){return `<button class="icon-btn" data-delete-field="${id}" aria-label="Delete ${esc(labels()[id])} column" title="Delete column" ${S.saving||S.busy||S.failedEdit?'disabled':''}>${icon('Trash2')}</button>`;}
   function fieldHeader(field){
@@ -1222,7 +1287,9 @@
     $('reportSelections').addEventListener('input',event=>{if(event.target.dataset.reportSearch)filterReportOptions(event.target.dataset.reportSearch);});
     $('reportSelections').addEventListener('keydown',event=>{if(event.key==='Escape'){const detail=event.target.closest('details');if(detail){detail.open=false;detail.querySelector('summary').focus();}}});
     $('resetReportBtn').onclick=()=>{S.report=defaultReport();renderReport(visible());};
-    window.addEventListener('beforeunload',event=>{if(S.saving||(S.failedEdit&&!S.failedEditStored)){event.preventDefault();event.returnValue='';}});
+    if($('chatEarlierBtn'))$('chatEarlierBtn').onclick=async()=>{const current=conversation;if(!current)return;const feed=$('chatFeed'),height=feed.scrollHeight;$('chatEarlierBtn').disabled=true;try{const messages=await current.older();if(current!==conversation)return;[...messages].reverse().forEach(message=>paintMessage(message.content,message.role,true));feed.scrollTop+=feed.scrollHeight-height;$('chatEarlierBtn').hidden=!current.before;}catch(error){toast(error.message);}finally{$('chatEarlierBtn').disabled=false;}};
+    if($('chatRetryBtn'))$('chatRetryBtn').onclick=async()=>{try{if(conversation?.ready)await conversation.flush();else await loadChat();}catch(error){if(error.status===409&&window.confirm('Chat changed in another tab. Reload saved chat and discard any unsaved messages or proposals in this tab?')){clearDraft();await loadChat();}else toast(error.message);}};
+    window.addEventListener('beforeunload',event=>{if(S.saving||S.busy||conversation?.dirty||(S.failedEdit&&!S.failedEditStored)){event.preventDefault();event.returnValue='';}});
   }
   wire();
   restoreSession();

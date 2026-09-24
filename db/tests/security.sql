@@ -6,7 +6,8 @@ begin
     where n.nspname = 'public' and p.proname like 'pipechat_%';
   if rpc_count <> 6 + (case when to_regprocedure('public.pipechat_reset_crm(text,boolean)') is null then 0 else 1 end)
     + (case when to_regprocedure('public.pipechat_write_workspace(jsonb,jsonb,jsonb,text,jsonb)') is null then 0 else 1 end)
-    + (case when to_regprocedure('public.pipechat_read_workspace()') is null then 0 else 3 end) then
+    + (case when to_regprocedure('public.pipechat_read_workspace()') is null then 0 else 3 end)
+    + (case when to_regprocedure('public.pipechat_read_conversation(bigint)') is null then 0 else 4 end) then
     raise exception 'Unexpected public PipeChat RPC inventory';
   end if;
   for item in select p.oid, p.proname, p.prosecdef, p.proconfig, n.nspname

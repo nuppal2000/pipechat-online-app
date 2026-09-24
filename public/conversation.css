@@ -1,0 +1,4 @@
+.conversation-tools{display:flex;align-items:center;gap:6px;padding:6px 14px;min-height:32px;flex-wrap:wrap;border-bottom:1px solid var(--border,#e5e7eb)}
+.conversation-tools span[role="status"]{font-size:11px;color:#616674;flex:1;min-width:100px}
+.conversation-tools .secondary{font-size:11px;padding:4px 7px;min-height:26px}
+.conversation-tools .icon-btn{width:28px;height:28px;flex:0 0 28px}
