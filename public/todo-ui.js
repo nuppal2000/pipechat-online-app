@@ -81,6 +81,11 @@
     $('todoView').addEventListener('drop',event=>{const lane=event.target.closest('[data-lane]');event.preventDefault();if(lane&&dragged)move(dragged,lane.dataset.lane);dragged=null;draw();});
     $('todoView').addEventListener('dragend',()=>{dragged=null;draw();});
     function preview(p){
+      if(p.additions){
+        $('trustTitle').textContent='Add To Do cards';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
+        $('trustBody').innerHTML=`<p>${p.count} cards to add. Existing cards will be kept.</p>${p.additions.map(card=>`<section class="proposal-record"><h3>${esc(T.project(card,S.records,S.tableSchema).title)}</h3>${[['Board status',card.status],['To Do',card.nextAction],['Notes',card.notes],['Due date',card.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} cards</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+        return;
+      }
       const after=p.after;
       $('trustTitle').textContent=!after?'Delete To Do card':p.before?'Update To Do card':'Add To Do card';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
       $('trustBody').innerHTML=`<h3>${esc(T.project(after||p.before,S.records,S.tableSchema).title)}</h3>${!after?'<p class="error">Remove this card? No CRM records will be changed.</p>':[['Board status',after.status],['To Do',after.nextAction],['Notes',after.notes],['Due date',after.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}<div class="proposal-actions"><button class="${after?'primary':'danger'}" data-confirm ${S.saving?'disabled':''}>${after?'Confirm card':'Delete card'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
