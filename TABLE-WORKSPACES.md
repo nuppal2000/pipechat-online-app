@@ -19,7 +19,9 @@ the surviving columns, values and stable IDs are preserved.
 
 - `tableSchema` describes typed fields and semantic roles. Field IDs are stable.
 - `null` means legacy; `pending` means setup; `ready` means a tailored table.
-- A primary text field is always required. Deleting it requires choosing another
+- Initial AI setup requires a primary text field. Once columns are explicitly
+  ordered, the first displayed field is the effective primary, retaining its
+  actual type and values. Deleting this first field requires choosing another
   existing text field (preserving its values) or creating a new, blank text field.
   Both choices remove the old primary column and its values only after preview
   confirmation. Undo restores the previous fields and values.

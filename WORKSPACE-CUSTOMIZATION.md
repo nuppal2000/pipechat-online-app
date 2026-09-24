@@ -7,11 +7,17 @@
 - `sort_table` applies the existing typed ascending/descending sort to the current view without saving a new row order. Clearing sorting returns to saved order. The model receives full records, visible row IDs, sort/filter context, displayed field order and an explicit supported-action list.
 - AI uses validated, allowlisted actions, not arbitrary database commands. Unsupported requests receive a conversational explanation; multi-action requests are handled one confirmed step at a time. Normal chat styling is used for failures. Unreadable responses (including HTTP 200) fail closed; uncertain saves retain the existing reload/recovery warning. No automatic paid retries are made.
 
-- Drag a column header onto another header to move the entire column. Alt+Left/Right on a focused header also moves it. Stable field IDs, record values, row sorting and the primary-field role are unchanged. Order is stored per workspace, survives reload, and supports Undo.
+- Drag a column header onto another header to move the entire column. Alt+Left/Right on a focused header also moves it. The first displayed column becomes the effective primary column, including when the previous first column is moved away. Stable field IDs, values, types and semantic roles such as owner/status stay attached to their original fields. Add-record labels, inspector names, linked-card titles and primary-based charts follow the new first column. Order survives reload and supports Undo.
 - All records clears the pipeline's search, AI filter and owner scope without changing saved records or dashboard report definitions.
 - Ask chat to convert a text column to a calendar/date field. Complete month-name dates and year-first dates are converted to YYYY-MM-DD, with blanks kept blank. Ambiguous numeric dates, missing years and invalid dates require clarification; nothing is silently discarded. The primary field must remain text/choice.
 - Ask chat to convert a dropdown to plain text to retain its selections as text. Both conversions use the normal preview, confirmation, save and Undo flow. Incompatible date/owner/status roles and KPI definitions are explained in the preview.
-- Apply migration 009 before deploying the new UI. Manual column moves do not use AI credits. AI conversion requests use the existing chat allowance.
+- Apply migrations through 011 before deploying the current UI. Manual column moves do not use AI credits. AI conversion requests use the existing chat allowance.
+
+## Bulk Actions and Suggestions
+
+- Chat can propose `delete_records` for all records matching a condition, including blank or whitespace-only client names. Conditions apply to the full saved table, not just a selected row or a filtered view. The preview lists every match and warns about associated To Do cards; nothing is deleted until confirmation. Stale previews are rejected, and Undo restores records and linked cards together. Ambiguous single-record requests still require clarification.
+- When a workflow concept recurs and has no equivalent field, chat can return `propose_field`. The panel shows Proposed new field, the reason and a blank text column for review. It does not add or populate anything automatically, interrupt an existing proposal, or repeatedly suggest a declined field unless the user revisits it.
+- The X on the Undo notification dismisses the notice without reverting the saved change. A subsequent change displays a fresh Undo notification.
 
 ## Existing Controls
 
