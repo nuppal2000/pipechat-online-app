@@ -81,6 +81,11 @@ function harness(provider, fetchImpl, { failRelease = false } = {}) {
       if (name === 'node:http') return { createServer(callback) { handler = callback; return {}; } };
       if (name === './lib/request-monitor.js') return { monitorRequest() {} };
       if (name === './lib/supabase-backend.js') return { createSupabaseBackend: () => ({ forRequest: () => backend }) };
+      if (name === './lib/conversation-core.js') {
+        const core = serverRequire(name);
+        // The production server and validator share a realm; this harness uses a VM.
+        return { ...core, contextFor: (page, command, recalled) => core.contextFor(JSON.parse(JSON.stringify(page)), command, JSON.parse(JSON.stringify(recalled))) };
+      }
       return serverRequire(name);
     }
   };
