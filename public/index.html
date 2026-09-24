@@ -28,6 +28,8 @@
   <script defer src="/spreadsheet-ui.js"></script>
   <script defer src="/vendor/chart.umd.min.js"></script>
   <script defer src="/vendor/papaparse.min.js"></script>
+  <script defer src="/conversation.js?v=1"></script>
+  <link rel="stylesheet" href="/conversation.css">
   <script defer src="/pipechat.js?v=2"></script>
 </head>
 <body class="auth-locked">
@@ -76,6 +78,7 @@
     <div class="workspace">
       <aside class="chat-pane pane" aria-label="PipeChat conversation">
         <div class="pane-header"><span class="assistant-icon"><i data-icon="MessagesSquare"></i></span><div><h2>PipeChat</h2><p>Your pipeline assistant</p></div><span id="aiModeLabel" class="connection">AI</span></div>
+        <div class="conversation-tools"><button id="chatEarlierBtn" class="secondary" hidden>Load earlier messages</button><span id="conversationStatus" role="status"></span><button id="chatRetryBtn" class="icon-btn" title="Retry chat save" aria-label="Retry chat save" hidden><span data-icon="RotateCcw"></span></button></div>
         <div id="chatFeed" class="chat-feed" aria-live="polite"></div>
         <div id="chatSuggestions" class="suggestions"><button data-prompt="Show pipeline by rep">Pipeline by rep<i data-icon="ArrowUpRight"></i></button><button data-prompt="Show me follow-ups for today">Today's follow-ups<i data-icon="ArrowUpRight"></i></button></div>
         <div class="chat-footer"><form id="chatForm" class="composer"><textarea id="chatInput" rows="2" maxlength="12000" aria-label="Message PipeChat" placeholder="Tell PipeChat what you want to do..."></textarea><button id="sendBtn" class="icon-btn send-btn" type="submit" title="Send message" aria-label="Send message"><i data-icon="Send"></i></button></form><div class="usage-row"><span id="usageLabel"></span><span id="chatStatus" role="status"></span></div></div>
