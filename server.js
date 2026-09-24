@@ -7,6 +7,7 @@ const tableSchemaCore = require('./public/table-schema.js');
 const customization = require('./public/workspace-customization.js');
 const todoCore = require('./public/todo-core.js');
 const reportEngine = require('./public/report-engine.js');
+const dateCalendar = require('./lib/date-context.js');
 const reportInstructions = [
   'For every new chart or numerical question use show_report with smartReport (version 1) and report null. The old report format is compatibility-only. pipeline.records contains the FULL authorized table, independent of dashboard controls or visibleIds. Default scope is all; use visible only if the user explicitly requests the current filtered pipeline view. Never fabricate totals or return calculated numbers in conversation: the browser validates and calculates the report from rows.',
   'smartReport supports bar, line, stage (doughnut), and kpi. groupBy and splitBy are any existing field IDs or null. Default groupBy is the primary-role field, with sum of the selected numeric Measure (or record count if none). measures contains 1-6 distinctly labeled measures with metric count/sum/average/min/max/median/count_distinct/percentage, field, and where. count and percentage have field null. Sum/average/min/max/median require numeric or currency columns; count_distinct accepts any column. Do not infer numeric types from ambiguous text. percentage is matching records / all base-filtered records within each group; its measure.where defines the numerator. Clarify other ratio definitions rather than approximating them.',
@@ -678,6 +679,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
       instructions: spreadsheetBuild ? spreadsheetTypes.instructions : tableBuild ? tableSchemaCore.instructions : csv ? csvCore.instructions : tableSchema?.status==='ready' ? [
         conversationInstructions,
         todoInstructions,
+        dateCalendar.instructions,
         'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Custom-title creation is available through the Add To Do card dialog.',
         customizationInstructions,
         tableActionInstructions,
@@ -689,6 +691,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
       ].join('\n') : [
         conversationInstructions,
         todoInstructions,
+        dateCalendar.instructions,
         'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Custom-title creation is available through the Add To Do card dialog.',
         customizationInstructions,
         tableActionInstructions,
@@ -715,6 +718,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
                 supportedActions: actionSchema.properties.action.enum,
                 userCommand,
                 pipeline:{...pipeline,primaryField:core.role('primary')},
+                dateContext:dateCalendar.dateContext(pipeline?.currentDate),
                 conversationHistory,
                 conversationMemory,
                 recalledMessages,
