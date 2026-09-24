@@ -35,6 +35,10 @@ global.fetch = async (url, options) => {
     return {ok:true,json:async()=>({output_text:JSON.stringify({columnMap:{account:'Business',stage:null,value:null,close:null,owner:null,next:null,follow:null,notes:null},stageMappings:[]})})};
   }
   assert.equal(data.pendingAction.action, 'update_records');
+  assert.equal(data.dateContext.today,'2026-09-24');
+  assert.equal(data.dateContext.tomorrow,'2026-09-25');
+  assert.equal(data.dateContext.nextWeekdays.Monday,'2026-09-28');
+  assert.match(request.instructions,/server-calculated calendar/);
   assert.equal(data.pendingClarification.originalCommand, 'Change Acme');
   assert.equal(data.currentReport.groupBy, 'owner');
   assert.deepEqual(data.currentReport.owners,['Ravi','Sarah']);
