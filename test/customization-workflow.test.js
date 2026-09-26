@@ -21,6 +21,30 @@ function harness(){
 const plain=v=>JSON.parse(JSON.stringify(v));
 const additionsFixture=require('./fixtures/record-additions.cjs');
 const assistantFixture=require('./fixtures/assistant-actions.cjs');
+
+test('bulk dropdown, text and date previews confirm, cancel and undo with dynamic record labels',async()=>{
+  const h=harness(),table={...additionsFixture.schema,fields:[...additionsFixture.schema.fields,{id:'cf_priority',name:'Priority',type:'choice',role:'none',options:['Low','Medium','High']}]};
+  h.useSchema(table);h.S.records=[...additionsFixture.records,{...additionsFixture.records[0],f_deal:'Above threshold',f_value:75000}].map((r,i)=>({...r,id:i+1,cf_priority:'Low',history:[]}));
+  const before=plain(h.S.records),filter={field:'f_value',operator:'lt',value:50000};
+  const cells=rows=>plain(rows).map(({history,activity,health,...row})=>row);
+  const sets=[[['f_stage','Qualified'],['cf_priority','High']],[['f_notes','Bulk QA note']],[['f_follow','2026-10-10']]];
+  for(const fields of sets){
+    const iterationBefore=plain(h.S.records);
+    const action={action:'update_records',changes:fields.map(([field,value])=>({field,value,filter,operation:'set'}))};
+    h.prepare(action);h.renderTrust();assert.equal(h.S.pending.count,3);assert.equal(h.S.clarification,null);assert.match(h.node('trustBody').innerHTML,/Northstar Design/);assert(!h.node('trustBody').innerHTML.includes('Unnamed'));
+    const count=h.calls.length;h.cancelDraft();assert.equal(h.calls.length,count);assert.deepEqual(plain(h.S.records),iterationBefore);
+    h.prepare(action);await h.confirmDraft();for(const row of h.S.records.slice(0,3))for(const [field,value]of fields)assert.equal(row[field],value);assert.deepEqual(plain(h.S.records[3]),before[3]);
+    await h.undo();assert.deepEqual(cells(h.S.records),cells(before));assert(h.S.records.slice(0,3).every(row=>row.history.length>0));
+  }
+});
+
+test('current names and owners render and resolve even for previously saved legacy-shaped clarification candidates',async()=>{
+  const h=harness();h.useSchema(additionsFixture.schema);h.S.records=[{...additionsFixture.records[0],id:1,history:[]},{...additionsFixture.records[0],id:2,f_deal:'Northstar Labs',f_owner:'Sam',history:[]}];
+  h.prepare({action:'update_records',changes:[{recordMatch:'Northstar',ids:[1],field:'f_stage',value:'Negotiation',operation:'set'},{recordMatch:'Northstar',field:'f_follow',value:'2026-10-10',operation:'set'}]});
+  assert.equal(h.S.clarification.candidates.length,2);h.renderTrust();assert.match(h.node('trustBody').innerHTML,/Northstar Design/);assert.match(h.node('trustBody').innerHTML,/Alex/);assert.match(h.node('trustBody').innerHTML,/Northstar Labs/);assert.match(h.node('trustBody').innerHTML,/Sam/);
+  h.S.clarification.candidates=h.S.clarification.candidates.map(c=>({id:c.id,account:c.f_deal,owner:c.f_owner}));h.S.records[0].f_deal='Renamed Northstar';h.S.records[0].f_owner='Ravi';h.renderTrust();assert.match(h.node('trustBody').innerHTML,/Renamed Northstar/);assert.match(h.node('trustBody').innerHTML,/Ravi/);assert(!h.node('trustBody').innerHTML.includes('Unassigned'));
+  await h.send('Renamed Northstar');assert.equal(h.calls.filter(c=>c.url==='/api/pipechat-ai').length,0);assert.equal(h.S.pending.count,1);assert.equal(h.S.pending.patches[0].id,1);assert.equal(h.S.pending.patches[0].account,'Renamed Northstar');assert.equal(h.S.pending.patches[0].after.f_follow,'2026-10-10');assert(h.messages.some(m=>m==='Use Renamed Northstar.'));assert.equal(h.S.clarification,null);
+});
 test('exact new-dropdown request previews choices and persists editable blank dropdowns, preserving rows and Undo',async()=>{
   const h=harness(),before=plain(h.S.records);h.S.tab='todo';h.reply(assistantFixture.dropdown);await h.send(assistantFixture.dropdownPrompt);
   assert.equal(h.S.tab,'table');assert.equal(h.S.pending.field.type,'choice');assert.deepEqual(plain(h.S.pending.field.options),['hot','medium','cold']);assert.match(h.node('trustBody').innerHTML,/Dropdown options: hot, medium, cold/);assert.equal(h.S.customFields.length,0);assert.deepEqual(plain(h.S.records),before);
