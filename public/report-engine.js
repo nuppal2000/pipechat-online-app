@@ -3,6 +3,8 @@
   const metrics=['count','sum','average','min','max','median','count_distinct','percentage'];
   const buckets=['none','day','week','month','quarter','year'];
   const operators=['equals','not_equals','in','not_in','contains','not_contains','is_blank','is_not_blank','gt','gte','lt','lte','between','before_today','older_than_days'];
+  const refinementFields=['title','chart','scope','groupBy','bucket','splitBy','measures','sort','limit'];
+  const refinementModes=['add_filter','replace_filter','remove_filter'];
   const names={count:'Record count',sum:'Total',average:'Average',min:'Minimum',max:'Maximum',median:'Median',count_distinct:'Distinct count',percentage:'Percentage'};
   const blank=v=>v==null||typeof v==='string'&&!v.trim();
   const norm=v=>String(v??'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim().replace(/\s+/g,' ');
@@ -11,11 +13,16 @@
   function responseSchema(core,custom=[]){
     const ids=core.definitions(custom).map(f=>f.id),nullable={type:['string','null'],enum:[...ids,null]};
     const scalar={type:['string','number','null']};
-    const conditions={type:'array',items:{type:'array',items:object({field:{type:'string',enum:ids},operator:{type:'string',enum:operators},value:scalar,values:{type:'array',items:scalar}})}};
-    return {anyOf:[{type:'null'},object({version:{type:'integer',enum:[1]},title:{type:'string'},chart:{type:'string',enum:['bar','line','stage','kpi']},scope:{type:'string',enum:['all','visible']},groupBy:nullable,bucket:{type:'string',enum:buckets},splitBy:nullable,measures:{type:'array',items:object({label:{type:'string'},metric:{type:'string',enum:metrics},field:nullable,where:conditions})},where:conditions,sort:{type:'string',enum:['label_asc','label_desc','value_asc','value_desc']},limit:{type:['integer','null']}})]};
+    const conditions={type:'array',maxItems:12,items:{type:'array',minItems:1,maxItems:20,items:object({field:{type:'string',enum:ids},operator:{type:'string',enum:operators},value:scalar,values:{type:'array',maxItems:2000,items:scalar}})}};
+    return {anyOf:[{type:'null'},object({version:{type:'integer',enum:[1]},title:{type:'string'},chart:{type:'string',enum:['bar','line','stage','kpi']},scope:{type:'string',enum:['all','visible']},groupBy:nullable,bucket:{type:'string',enum:buckets},splitBy:nullable,measures:{type:'array',minItems:1,maxItems:6,items:object({label:{type:'string'},metric:{type:'string',enum:metrics},field:nullable,where:conditions})},where:conditions,sort:{type:'string',enum:['label_asc','label_desc','value_asc','value_desc']},limit:{type:['integer','null']}})]};
   }
-  function compileConditions(groups,defs,core,today){
+  function refinementSchema(core,custom=[]){
+    const properties=responseSchema(core,custom).anyOf[1].properties,ids=core.definitions(custom).map(f=>f.id);
+    return object({action:{type:'string',enum:['refine_report']},mode:{type:'string',enum:refinementModes},where:properties.where,replaceFields:{type:'array',maxItems:20,items:{type:'string',enum:ids}},changes:{type:'array',maxItems:refinementFields.length,items:{anyOf:refinementFields.map(field=>object({field:{type:'string',enum:[field]},value:properties[field]}))}}});
+  }
+  function compileConditions(groups,defs,core,today,records=[]){
     if(!Array.isArray(groups)||groups.length>12)fail('Use at most 12 alternative filter groups. Which conditions matter most?');
+    const choices=new Map();
     const compiled=groups.map(group=>{
       if(!Array.isArray(group)||!group.length||group.length>20)fail('Each filter group needs 1 to 20 conditions. Which conditions should apply together?');
       return group.map(c=>{
@@ -24,6 +31,16 @@
         const convert=v=>blank(v)?null:numeric?typeof v==='number'&&Number.isFinite(v)?v:typeof v==='string'&&Number.isFinite(Number(v))?Number(v):null:dated?core.date(v)?.getTime()??null:norm(v);
         const {operator:op}=c;
         if(!Array.isArray(c.values)||c.values.length>2000)fail('Supply a valid list of filter values.');
+        const scalar=v=>v===null||typeof v==='string'||typeof v==='number'&&Number.isFinite(v);
+        if(!scalar(c.value)||c.values.some(v=>!scalar(v)))fail('Filter values must be text, finite numbers, or null.');
+        const membership=['in','not_in','between'].includes(op);
+        if(membership?c.value!==null:c.values.length)fail('Use values for membership/ranges with value null; use a single value for other comparisons.');
+        if(f.type==='choice'&&['contains','not_contains'].includes(op))fail(`Use equals or in with a values array for ${f.name}; choice filters need exact options, not contains.`);
+        if(f.type==='choice'&&['equals','not_equals','in','not_in'].includes(op)){
+          if(!choices.has(f.id))choices.set(f.id,new Set([...(f.options||[]),...records.map(row=>row[f.id])].filter(v=>typeof v==='string'&&!blank(v)).map(norm)));
+          const literals=membership?c.values:[c.value];
+          if(literals.some(v=>typeof v!=='string'||!choices.get(f.id).has(norm(v))))fail(`Which ${f.name} options did you mean? Use defined choices or values present in the table.`);
+        }
         if(['contains','not_contains'].includes(op)&&(numeric||dated||typeof c.value!=='string'||!c.value.trim()))fail(`What text should ${f.name} contain? Text matching needs a text column.`);
         if(['gt','gte','lt','lte','between'].includes(op)&&!numeric&&!dated)fail(`Should ${f.name} be interpreted as a number or a date? Its current column type is text.`);
         if(['before_today','older_than_days'].includes(op)&&!dated)fail(`Which date column should define the age instead of ${f.name}?`);
@@ -42,6 +59,39 @@
     });
     // OR across groups; AND within a group. An empty outer array means no filter.
     return row=>!compiled.length||compiled.some(group=>group.every(matches=>matches(row)));
+  }
+  // options.records supplies observed choice values; the returned report is an independent clone.
+  function refine(current,action,core,custom=[],options={}){
+    if(!current||current.version!==1)fail('There is no current smart report to refine. Use show_report for a new report.');
+    const keys=['action','mode','where','replaceFields','changes'];
+    if(!action||action.action!=='refine_report'||!refinementModes.includes(action.mode)||keys.some(key=>!Object.hasOwn(action,key))||Object.keys(action).some(key=>!keys.includes(key)))fail('Use an explicit refine_report action and supported filter mode; use show_report for a new report.');
+    const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),records=options.records||[],today=core.date(options.today||new Date().toISOString().slice(0,10))?.getTime();
+    if(!Array.isArray(records))fail('Supply table records when validating a report refinement.');
+    if(!Array.isArray(action.replaceFields)||action.replaceFields.length>20||new Set(action.replaceFields).size!==action.replaceFields.length||action.replaceFields.some(field=>!defs.has(field)))fail('Choose distinct existing columns whose report filters should be replaced or removed.');
+    if(!Array.isArray(action.changes)||action.changes.length>refinementFields.length)fail('Supply a bounded list of report property changes.');
+    compileConditions(action.where,defs,core,today,records);
+    if(action.mode==='add_filter'&&action.replaceFields.length||action.mode!=='add_filter'&&!action.replaceFields.length)fail('Only replace_filter and remove_filter use a nonempty replaceFields list.');
+    if(action.mode==='remove_filter'&&action.where.length)fail('remove_filter must have an empty where list.');
+    if(action.mode==='replace_filter'&&(!action.where.length||action.where.flat().some(c=>!action.replaceFields.includes(c.field))||action.replaceFields.some(field=>!action.where.flat().some(c=>c.field===field))))fail('Supply replacement conditions for exactly the columns in replaceFields.');
+    const next={...current},changed=new Set();
+    for(const change of action.changes){
+      if(!change||!refinementFields.includes(change.field)||changed.has(change.field)||!Object.hasOwn(change,'value')||Object.keys(change).some(key=>!['field','value'].includes(key)))fail('Change each supported report property at most once, with an explicit value.');
+      changed.add(change.field);next[change.field]=change.value;
+    }
+    // Validate structure before removing predicates, without blocking repairs of invalid literals.
+    if(!Array.isArray(next.where)||next.where.length>12||next.where.some(group=>!Array.isArray(group)||!group.length||group.length>20||group.some(c=>!c||!defs.has(c.field))))fail('The current report has invalid filter groups. Use show_report to define a new report.');
+    if(action.mode!=='add_filter'){
+      next.where=next.where.map(group=>group.filter(c=>!action.replaceFields.includes(c.field)));
+      // An empty AND branch is true, so it makes the entire OR expression unrestricted.
+      if(next.where.some(group=>!group.length))next.where=[];
+      for(const [key,role]of [['owners','owner'],['accounts','primary']])if(action.replaceFields.includes(core.role(role)))next[key]=null;
+    }
+    if(action.where.length){
+      if(next.where.length*action.where.length>12)fail('The combined filters exceed 12 alternative groups. Which conditions matter most?');
+      next.where=next.where.length?next.where.flatMap(left=>action.where.map(right=>[...left,...right])):action.where;
+    }
+    execute(records,next,core,custom,options);
+    return JSON.parse(JSON.stringify(next));
   }
   function dateBucket(value,bucket,core){
     const date=core.date(value);if(!date)return null;
@@ -65,11 +115,11 @@
       if(['count','percentage'].includes(m.metric)?m.field!==null:!field)fail('Choose a valid measure column, or no column for record count/percentage.');
       if(!['count','percentage','count_distinct'].includes(m.metric)&&!numeric)fail(`Which numeric column should I use for ${m.label}?`);
       if(m.metric==='percentage'&&!m.where?.length)fail(`Which records should count toward ${m.label}, and what should they be compared against?`);
-      return {...m,fieldDef:field,matches:compileConditions(m.where,defs,core,today),type:m.metric==='percentage'?'percent':['count','count_distinct'].includes(m.metric)?'number':field.type};
+      return {...m,fieldDef:field,matches:compileConditions(m.where,defs,core,today,records),type:m.metric==='percentage'?'percent':['count','count_distinct'].includes(m.metric)?'number':field.type};
     });
     if(spec.chart==='stage'&&(measures.length!==1||spec.splitBy))fail('A stage chart needs one measure and no split series. Which measure should I use, or would you prefer a bar chart?');
     if(spec.chart!=='kpi'&&new Set(measures.map(m=>m.type)).size>1)fail('These measures have different units. Use separate KPI cards or choose measures with the same units for one chart.');
-    const matches=compileConditions(spec.where,defs,core,today),visible=new Set(options.visibleIds||[]);
+    const matches=compileConditions(spec.where,defs,core,today,records),visible=new Set(options.visibleIds||[]);
     const selections=[['owners',core.role('owner')],['accounts',core.role('primary')]].map(([key,field])=>{
       const values=spec[key];if(values!=null&&(!field||!Array.isArray(values)||values.length>2000||values.some(v=>typeof v!=='string')))fail('Choose valid record or owner selections.');return {field,values:values==null?null:new Set(values.map(norm))};
     });
@@ -144,7 +194,7 @@
   function selections(spec,core){
     const next=JSON.parse(JSON.stringify(spec));
     for(const [key,role]of [['owners','owner'],['accounts','primary']]){
-      const field=core.role(role);if(!field||!next.where.length)continue;
+      const field=core.role(role);if(!field||!next.where.length||next[key]!=null)continue;
       const found=next.where.map(group=>group.find(c=>c.field===field&&['equals','in'].includes(c.operator)));
       if(found.some(c=>!c))continue;
       const values=c=>c.operator==='in'?c.values:[c.value],signature=c=>JSON.stringify(values(c).map(norm).sort());
@@ -155,5 +205,5 @@
     }
     return next;
   }
-  return {execute,responseSchema,describe,selections,metrics,buckets,operators,names};
+  return {execute,responseSchema,refinementSchema,refine,describe,selections,metrics,buckets,operators,names};
 });
