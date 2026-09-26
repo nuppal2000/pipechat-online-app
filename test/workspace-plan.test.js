@@ -34,3 +34,7 @@ test('date arithmetic skips weekends across month/year boundaries and leap day w
   for(const [today,offset,date]of [['2026-09-26',2,'2026-09-29'],['2026-12-31',2,'2027-01-04'],['2028-02-28',1,'2028-02-29'],['2026-09-28',-1,'2026-09-25']])assert.equal(P.dateValue({dateMode:'business_days',date:null,offset},today).value,date);
   assert.throws(()=>P.dateValue({dateMode:'business_days',offset:1000,date:null},options.today));
 });
+test('review facts cannot be contradicted by guessed dates, counts or names in model prose',()=>{
+  const action=F.top();action.title='3 records due 2026-09-30';action.goals[0].description='3 records due 2026-09-30';action.steps[3].label='3 tasks due 2026-09-30';
+  const html=P.render(run(action),String,false);assert(!html.includes('2026-09-30'));assert(html.includes('2026-09-29'));assert(html.includes('2 changed records, 1 new To Do cards'));assert(html.includes('Create 1 linked To Do cards'));
+});
