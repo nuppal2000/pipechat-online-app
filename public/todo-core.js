@@ -34,6 +34,7 @@
     return {...card,title:String(record[C.role('primary')]??'').trim()||`Unnamed record #${record.id}`};
   }
   function plan(cards,records,schema,custom,action,newId){
+    if(action.action==='move_todos')return planMoves(cards,records,action);
     const adding=['add_todo','add_todos'].includes(action.action);
     try{
       if(!adding||action.todos==null){
@@ -55,6 +56,20 @@
       }
       return {kind:'todo',cards:next,additions,before:null,after:null,count:additions.length,recordId:null};
     }catch(error){if(adding)error.clarification=true;throw error;}
+  }
+  function planMoves(cards,records,action){
+    const next=validate(cards,records),items=action.todoMoves;
+    if(!Array.isArray(items)||!items.length||items.length>2000)throw new Error('Choose between 1 and 2,000 cards to move.');
+    if(['todos','todoId','todoStatus','todoNextAction','todoNotes','todoDueDate','recordMatch','ids','filter'].some(k=>action[k]!=null))throw new Error('A bulk card move must contain only the selected card IDs and their destination lanes.');
+    const byId=new Map(next.map(c=>[c.id,c])),seen=new Set(),moves=[];
+    for(const item of items){
+      if(!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(k=>!['todoId','todoStatus'].includes(k))||!byId.has(item.todoId)||seen.has(item.todoId)||!statuses.includes(item.todoStatus))throw new Error('Some selected cards or destination lanes are invalid or repeated. No cards have been moved.');
+      seen.add(item.todoId);const before=byId.get(item.todoId);
+      if(before.status!==item.todoStatus)moves.push({before,after:{...before,status:item.todoStatus}});
+    }
+    if(!moves.length)throw new Error('Those cards are already in the requested lanes. No changes are needed.');
+    const replacements=new Map(moves.map(m=>[m.after.id,m.after]));
+    return {kind:'todo',cards:validate(next.map(c=>replacements.get(c.id)||c),records),moves,before:null,after:null,count:moves.length,recordId:null};
   }
   function planOne(cards,records,schema,custom,action,newId){
     let next=validate(cards,records),before=null,after=null;

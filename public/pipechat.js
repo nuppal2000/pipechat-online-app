@@ -463,7 +463,7 @@
   function clearClarification(){S.clarification=null;if(!S.pending)S.sourceAction=null;renderTrust();}
   function cancelDraft() {if(S.saving)return;clearDraft();say('Cancelled. No changes were made to the table.');}
   function prepare(action, originalCommand) {
-    if(!['add_todo','add_todos','update_todo','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
+    if(!['add_todo','add_todos','update_todo','move_todos','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
     let proposal;
     if(action.action==='move_record'){
       const change=C.moveRecord(S.records,action,visible().map(row=>row.id));
@@ -477,7 +477,7 @@
       if(fromPosition===action.toPosition){clearDraft();say('That column is already in the requested position.');return;}
       const tableSchema=Schema.reorder(S.tableSchema,S.customFields,field.id,columns[action.toPosition-1].id);
       proposal={kind:'move-field',change:{field,fromPosition,toPosition:action.toPosition,tableSchema},count:0,createdAt:Date.now(),revision:S.revision,generation:S.generation};
-    }else if(['add_todo','add_todos','update_todo','delete_todo'].includes(action.action)){
+    }else if(['add_todo','add_todos','update_todo','move_todos','delete_todo'].includes(action.action)){
       S.tab='todo';S.settingsOpen=false;
       try{proposal=window.PipeChatTodo.plan(S.todoCards,S.records,S.tableSchema,S.customFields,action,'todo_'+crypto.randomUUID().replaceAll('-',''));}
       catch(error){
@@ -610,7 +610,7 @@
       }
       if(p.kind==='todo'){
         if(p.revision!==S.revision||p.generation!==undefined&&p.generation!==S.generation)throw new Error('The workspace changed. Prepare this card preview again.');
-        if(await persistTodo(p.cards,p.additions?`${p.count} To Do cards added`:p.after?p.before?'To Do card updated':'To Do card added':'To Do card deleted'))say(p.additions?`Saved. ${p.count} To Do cards added. Linked CRM records are unchanged.`:'Saved. The To Do board is updated; the linked CRM record is unchanged.');
+        if(await persistTodo(p.cards,p.moves?`${p.count} To Do cards moved`:p.additions?`${p.count} To Do cards added`:p.after?p.before?'To Do card updated':'To Do card added':'To Do card deleted'))say(p.moves?`Saved. ${p.count} To Do cards moved. CRM records are unchanged.`:p.additions?`Saved. ${p.count} To Do cards added. Linked CRM records are unchanged.`:'Saved. The To Do board is updated; the linked CRM record is unchanged.');
         return;
       }
       if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(p.kind)){
@@ -725,7 +725,7 @@
     const action=response.crmAction;
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
-    if(['add_todo','add_todos','update_todo','delete_todo'].includes(action.action)){prepare(action,command);return;}
+    if(['add_todo','add_todos','update_todo','move_todos','delete_todo'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your To Do board is open.');return;}
     if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','add_records','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){
@@ -735,7 +735,8 @@
     }
     if(action.action==='clarify'){
       const originalCommand=S.clarification?.originalCommand||command;
-      S.clarification={originalCommand,question:action.question||response.assistantMessage,previousAction:S.sourceAction};S.pending=null;
+      const answers=S.clarification?[...(S.clarification.answers||[]),{question:S.clarification.question,answer:command}].slice(-8):[];
+      S.clarification={originalCommand,question:action.question||response.assistantMessage,previousAction:S.sourceAction,options:action.clarificationOptions||null,answers};S.pending=null;
       say(S.clarification.question||'Which company or value did you mean?');renderTrust();return;
     }
     if(action.action==='filter_view'){

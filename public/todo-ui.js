@@ -3,7 +3,7 @@
   root.PipeChatTodoUI={create};
   function create({S,esc,icon,persistTodo,prepare,render,toast,localDate}){
     const T=root.PipeChatTodo,$=id=>document.getElementById(id);
-    let expanded=null,dragged=null,dialogVersion=null,draft=null;
+    let expanded=null,dragged=null,dialogVersion=null,draft=null,scrollFrame=null,dragPoint=null;
     const disabled=()=>S.saving||S.busy||Boolean(S.failedEdit)||!S.loaded;
     const statuses=value=>T.statuses.map(s=>`<option ${s===value?'selected':''}>${s}</option>`).join('');
     const busyAttr=()=>disabled()?'disabled':'';
@@ -70,17 +70,40 @@
       if(!event.target.matches('[data-todo-edit]'))return;event.preventDefault();if(disabled()||!draft)return;
       try{propose({...draft.card},S.todoCards.find(c=>c.id===draft.card.id),draft.revision);draft=null;expanded=null;render();}catch(error){draft.error=error.message;draw();}
     });
-    async function move(id,status){
+    async function move(id,status,revision=S.revision,generation=S.generation){
       if(disabled())return;
+      if(revision!==S.revision||generation!==S.generation){toast('The board changed. Drag the card again from its current position.');return;}
       if(S.pending||S.clarification||draft?.dirty){toast('Finish the current card edit or proposal first.');draw();return;}
       const card=S.todoCards.find(c=>c.id===id);if(!card||card.status===status)return;
       await persistTodo(S.todoCards.map(c=>c.id===id?{...c,status}:c),'Card moved to '+status);
     }
-    $('todoView').addEventListener('dragstart',event=>{const card=event.target.closest('[data-card]');if(!card||disabled()||event.target.closest('input,textarea,select')||expanded===card.dataset.card){event.preventDefault();return;}dragged=card.dataset.card;event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',dragged);card.classList.add('dragging');});
-    $('todoView').addEventListener('dragover',event=>{const lane=event.target.closest('[data-lane]');if(!lane||!dragged||disabled())return;event.preventDefault();event.dataTransfer.dropEffect='move';$('todoView').querySelectorAll('.drop-target').forEach(el=>el.classList.remove('drop-target'));lane.classList.add('drop-target');});
-    $('todoView').addEventListener('drop',event=>{const lane=event.target.closest('[data-lane]');event.preventDefault();if(lane&&dragged)move(dragged,lane.dataset.lane);dragged=null;draw();});
-    $('todoView').addEventListener('dragend',()=>{dragged=null;draw();});
+    function highlight(lane){$('todoView').querySelectorAll('.drop-target').forEach(el=>el.classList.remove('drop-target'));lane?.classList.add('drop-target');}
+    function stopDrag(){if(scrollFrame!==null)window.cancelAnimationFrame(scrollFrame);scrollFrame=null;dragPoint=null;dragged=null;highlight(null);}
+    function edgeSpeed(value,start,end){return value<start||value>end?0:value<start+48?-Math.ceil((start+48-value)/4):value>end-48?Math.ceil((value-end+48)/4):0;}
+    function scrollDrag(){
+      scrollFrame=null;if(!dragged||!dragPoint||disabled())return;
+      const board=$('todoView'),rect=board.getBoundingClientRect(),{x,y}=dragPoint;
+      if(x>=rect.left&&x<=rect.right&&y>=rect.top&&y<=rect.bottom){
+        board.scrollLeft+=edgeSpeed(x,rect.left,rect.right);
+        if(board.scrollHeight>board.clientHeight)board.scrollTop+=edgeSpeed(y,rect.top,rect.bottom);
+        else if(document.scrollingElement)document.scrollingElement.scrollTop+=edgeSpeed(y,0,window.innerHeight);
+        highlight(document.elementFromPoint(x,y)?.closest('[data-lane]'));
+      }
+      scrollFrame=window.requestAnimationFrame(scrollDrag);
+    }
+    // Dragover continues at the viewport edge, so long boards can scroll without releasing the card.
+    document.addEventListener?.('dragover',event=>{if(dragged)dragPoint={x:event.clientX,y:event.clientY};});
+    $('todoView').addEventListener('dragstart',event=>{const card=event.target.closest('[data-card]');if(!card||disabled()||S.pending||S.clarification||draft?.dirty||event.target.closest('input,textarea,select')||expanded===card.dataset.card){event.preventDefault();return;}dragged={id:card.dataset.card,revision:S.revision,generation:S.generation};event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',dragged.id);card.classList.add('dragging');});
+    $('todoView').addEventListener('dragover',event=>{const lane=event.target.closest('[data-lane]');if(!lane||!dragged||disabled())return;event.preventDefault();event.dataTransfer.dropEffect='move';highlight(lane);dragPoint={x:event.clientX,y:event.clientY};if(scrollFrame===null)scrollFrame=window.requestAnimationFrame(scrollDrag);});
+    $('todoView').addEventListener('drop',event=>{const lane=event.target.closest('[data-lane]'),source=dragged;event.preventDefault();stopDrag();if(lane&&source)move(source.id,lane.dataset.lane,source.revision,source.generation);draw();});
+    $('todoView').addEventListener('dragend',()=>{stopDrag();draw();});
+    window.addEventListener('blur',stopDrag);
     function preview(p){
+      if(p.moves){
+        $('trustTitle').textContent='Move To Do cards';$('trustStatus').textContent='Only board status changes. CRM fields stay unchanged.';
+        $('trustBody').innerHTML=`<p>${p.count} cards to move.</p>${p.moves.map(({before,after})=>`<section class="proposal-record"><h3>${esc(T.project(after,S.records,S.tableSchema).title)}</h3><p>${esc(after.nextAction||'Not set')}</p><div class="field-diff"><span>Board status</span><div>${esc(before.status)} &rarr; ${esc(after.status)}</div></div></section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} moves</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+        return;
+      }
       if(p.additions){
         $('trustTitle').textContent='Add To Do cards';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
         $('trustBody').innerHTML=`<p>${p.count} cards to add. Existing cards will be kept.</p>${p.additions.map(card=>`<section class="proposal-record"><h3>${esc(T.project(card,S.records,S.tableSchema).title)}</h3>${[['Board status',card.status],['To Do',card.nextAction],['Notes',card.notes],['Due date',card.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} cards</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
@@ -90,7 +113,7 @@
       $('trustTitle').textContent=!after?'Delete To Do card':p.before?'Update To Do card':'Add To Do card';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
       $('trustBody').innerHTML=`<h3>${esc(T.project(after||p.before,S.records,S.tableSchema).title)}</h3>${!after?'<p class="error">Remove this card? No CRM records will be changed.</p>':[['Board status',after.status],['To Do',after.nextAction],['Notes',after.notes],['Due date',after.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}<div class="proposal-actions"><button class="${after?'primary':'danger'}" data-confirm ${S.saving?'disabled':''}>${after?'Confirm card':'Delete card'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
     }
-    function clear(){expanded=null;dragged=null;draft=null;closeForm();}
+    function clear(){expanded=null;stopDrag();draft=null;closeForm();}
     window.addEventListener('beforeunload',event=>{if(draft?.dirty){event.preventDefault();event.returnValue='';}});
     return {draw,preview,clear};
   }
