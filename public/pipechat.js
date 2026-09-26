@@ -393,6 +393,10 @@
     $('trustStatus').textContent='No changes pending.';
     if(S.failedEdit){renderFailedEdit();return;}
     if(restoredProposal){panel.innerHTML='<p>A previous proposal was not confirmed.</p><button class="primary" id="reviewRestoredProposal">Review proposal again</button><button class="secondary" data-cancel>Cancel</button>';$('reviewRestoredProposal').onclick=reviewRestoredProposal;$('trustStatus').textContent='Review a fresh preview before confirming.';return;}
+    if(S.pending?.kind==='workspace-plan'){
+      $('trustTitle').textContent='Review complete plan';$('trustStatus').textContent='Nothing saved yet. Confirm or cancel all changes together.';
+      panel.innerHTML=window.PipeChatPlan.render(S.pending,esc,S.saving);return;
+    }
     if(S.pending?.kind==='todo'){todoUI.preview(S.pending);return;}
     if(S.clarification?.candidates){
       $('trustTitle').textContent='Choose a record';
@@ -466,7 +470,13 @@
   function prepare(action, originalCommand) {
     if(!['add_todo','add_todos','update_todo','move_todos','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
     let proposal;
-    if(action.action==='move_record'){
+    if(action.action==='workspace_plan'){
+      try{proposal=window.PipeChatPlan.prepare({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards},action,{today:localDate(),nonce:crypto.randomUUID().replaceAll('-','')});}
+      catch(error){S.pending=null;S.sourceAction=C.clone(action);S.clarification={originalCommand:S.clarification?.originalCommand||originalCommand,question:error.message,previousAction:C.clone(action)};say('Quick clarification. '+error.message);renderTrust();focusTrust();return;}
+      proposal.revision=S.revision;proposal.generation=S.generation;
+      S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;
+      say(`Review the complete plan: ${proposal.addedFields.length} new columns, ${proposal.patches.length} changed records and ${proposal.addedCards.length} new To Do cards. Selections and date calculations are included. Nothing is saved until you confirm the entire plan.`);renderTrust();focusTrust();return;
+    }else if(action.action==='move_record'){
       const change=C.moveRecord(S.records,action,visible().map(row=>row.id));
       if(change.noChange){clearDraft();say('That record is already at the requested row. No changes are needed.');return;}
       proposal=change.clarification?change:{kind:'move-record',change,count:1,createdAt:Date.now(),revision:S.revision,generation:S.generation,view:tableView()};
@@ -599,6 +609,11 @@
     if(p.importRevision!==undefined&&(p.importRevision!==S.revision||p.importGeneration!==S.generation)){clearDraft();say('The table changed. Import the file again to review duplicates against the current table.');return;}
     try{
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
+      if(p.kind==='workspace-plan'){
+        if(p.revision!==S.revision||p.generation!==S.generation||p.before!==window.PipeChatPlan.snapshot({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards}))throw new Error('The workspace changed. Review the complete plan again.');
+        if(await persist(p.next.records,'Complete plan saved',{customFields:p.next.customFields,tableSchema:p.next.tableSchema,todoCards:p.next.todoCards,exactRecords:true}))say(`Saved together: ${p.addedFields.length} new columns, ${p.patches.length} changed records and ${p.addedCards.length} new To Do cards.`);
+        return;
+      }
       if(['move-record','move-field'].includes(p.kind)){
         if(p.revision!==S.revision||p.generation!==S.generation)throw new Error('The table changed. Prepare this move again.');
         if(p.kind==='move-record'&&JSON.stringify(p.view)!==JSON.stringify(tableView()))throw new Error('The table view changed. Prepare this move again so the row numbers match.');
@@ -724,6 +739,7 @@
   }
   function handleAction(response,command) {
     const action=response.crmAction;
+    if(action?.action==='workspace_plan'){prepare(action,command);return;}
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
     if(['add_todo','add_todos','update_todo','move_todos','delete_todo'].includes(action.action)){prepare(action,command);return;}
