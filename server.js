@@ -363,6 +363,8 @@ function responseSchema(customFields,tableSchema) {
   action.properties.report.anyOf[1].properties.groupBy.enum.push(...ids);
   if(tableSchema?.status==='ready'){
     const walk=node=>{
+      // Card fields are independent of the configurable CRM columns.
+      if(node===action.properties.todoSelection)return;
       if(!node||typeof node!=='object')return;
       if(node.properties?.field?.enum)node.properties.field.enum=[...keys,...(node.properties.field.enum.includes(null)?[null]:[])];
       for(const value of Object.values(node))if(value&&typeof value==='object')walk(value);
