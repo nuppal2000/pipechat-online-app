@@ -1,5 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const T=require('../public/todo-core');
+test('desktop lanes stretch to the tallest overflowing card stack instead of ending at the viewport',()=>{
+  const css=fs.readFileSync(require.resolve('../public/todo.css'),'utf8');
+  assert.match(css,/grid-auto-rows:minmax\(max-content,1fr\)/);
+  assert.match(css,/@media\(max-width:760px\).*grid-auto-rows:max-content/);
+});
 function harness(){
   const nodes=new Map(),frames=new Map(),saved=[],notices=[];let sequence=0;
   const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:'',events:{},addEventListener(type,fn){this.events[type]=fn;},querySelectorAll:()=>[],classList:{add(){},remove(){}}});return nodes.get(id);};
