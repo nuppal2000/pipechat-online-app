@@ -35,7 +35,7 @@ test('server isolation, validation, persistence, schema/context, and usage lock'
     assert.equal((await request('/api/crm-data','PUT',{deals:[deal,deal]},a.cookie)).status,400);
     assert.equal((await request('/api/crm-data','PUT',{deals:[{id:2}]},a.cookie)).status,400);
     assert.equal((await request('/api/crm-data','PUT',{deals:[],expectedUpdatedAt:null},a.cookie)).status,409);
-    const chat={userCommand:'yes',pendingAction:{action:'update_records'},pendingClarification:{originalCommand:'Change Acme'},currentReport:{groupBy:'owner',owners:['Ravi','Sarah'],accounts:['Alpha','Beta']},pipeline:{records:[deal],currentDate:'2026-09-24'}};
+    const chat={userCommand:'a',pendingAction:{action:'update_records'},pendingClarification:{originalCommand:'Change Acme',question:'Which date? (a) 2026-10-01, (b) leave blank'},currentReport:{groupBy:'owner',owners:['Ravi','Sarah'],accounts:['Alpha','Beta']},pipeline:{records:[deal],currentDate:'2026-09-24'}};
     const responses=await Promise.all([request('/api/pipechat-ai','POST',chat,a.cookie),request('/api/pipechat-ai','POST',chat,a.cookie)]);
     assert.deepEqual(responses.map(r=>r.status).sort(),[200,402],output);
     assert.equal((await request('/api/chat-usage','GET',null,a.cookie)).body.remaining,0);

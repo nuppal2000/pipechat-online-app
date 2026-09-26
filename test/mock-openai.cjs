@@ -40,6 +40,9 @@ global.fetch = async (url, options) => {
   assert.equal(data.dateContext.nextWeekdays.Monday,'2026-09-28');
   assert.match(request.instructions,/server-calculated calendar/);
   assert.equal(data.pendingClarification.originalCommand, 'Change Acme');
+  assert.equal(data.clarificationAnswer.selectedMeaning,'2026-10-01');
+  assert.equal(data.clarificationAnswer.originalCommand,'Change Acme');
+  assert.match(request.instructions,/Do not repeat a question already answered/);
   assert.equal(data.currentReport.groupBy, 'owner');
   assert.deepEqual(data.currentReport.owners,['Ravi','Sarah']);
   assert.deepEqual(data.currentReport.accounts,['Alpha','Beta']);
