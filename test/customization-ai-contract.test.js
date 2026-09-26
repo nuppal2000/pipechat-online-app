@@ -69,6 +69,9 @@ test('AI contract explicitly requests predicate-wide deletion and relevant recur
 });
 
 test('bulk table edits use complete predicates for dropdowns, text and dates',()=>{
+  const action=context.getSchema([],require('./fixtures/record-additions.cjs').schema).properties.crmAction.anyOf[1];
+  assert.match(action.properties.value.description,/Required replacement.*bulk_update/);assert.match(action.properties.changes.anyOf[1].items.properties.value.description,/Replacement for THIS field edit/);
+  assert.match(source,/TOP-LEVEL value property/);assert.match(source,/filter.value is only the selection threshold/);
   assert.match(source,/EVERY change must carry the complete filter/);
   assert.match(source,/Dropdown, text and date fields have the same targeting rules/);
   assert.match(source,/Do not enumerate a sample of matching records/);

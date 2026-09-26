@@ -38,3 +38,17 @@ test('invalid field values and IDs reject the whole batch, while no-ops retain o
   assert.deepEqual(rows,before);
   const p=C.plan(rows,{action:'update_records',changes:[change('f_stage','Prospecting'),change('cf_priority','High')]});assert.equal(p.count,3);assert(p.patches.every(p=>Object.keys(p.after).join()==='cf_priority'));
 });
+
+test('missing edit values clarify instead of clearing; explicit empty strings still clear safely',()=>{
+  const before=structuredClone(rows);
+  for(const field of ['f_notes','f_stage','f_follow','f_value']){
+    for(const value of [null,undefined]){
+      const action={action:'bulk_update',...change(field,value)},q=C.plan(rows,action).clarification;
+      assert.match(q.question,/did not receive a replacement/);assert.deepEqual(rows,before);
+    }
+    const cleared=C.apply(rows,C.plan(rows,{action:'bulk_update',...change(field,'')}),'QA');
+    assert(cleared.slice(0,3).every(r=>r[field]===(field==='f_value'?null:'')));assert.deepEqual(cleared.slice(3),rows.slice(3));
+  }
+  const action={action:'update_records',changes:[change('f_stage','Qualified'),change('f_notes',null)]};
+  const q=C.plan(rows,action).clarification;assert.equal(q.changeIndex,1);assert.equal(q.action.changes.length,2);assert.deepEqual(rows,before);
+});
