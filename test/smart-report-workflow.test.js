@@ -25,6 +25,14 @@ test('bad chart requests retain the previous graph and clarification context',()
  h.handleAction({crmAction:{action:'show_report',smartReport:{...report,groupBy:'unknown'}}},'Use missing field');
  assert.equal(JSON.stringify(h.S.report),prior);assert.equal(h.charts.length,count);assert.equal(h.S.clarification.originalCommand,'Use missing field');assert.match(h.messages.at(-1),/Quick clarification/);
 });
+
+test('conversational report refinement keeps totals, grouping and open filters; invalid lists do not erase the graph',()=>{
+ const h=harness();h.S.records=[{id:1,account:'A',owner:'Ravi',stage:'Warm',value:100},{id:2,account:'B',owner:'Sarah',stage:'Proposal Sent',value:300},{id:3,account:'C',owner:'Ravi',stage:'Won',value:999}];
+ const base={...report,groupBy:'stage',where:[[{field:'stage',operator:'not_in',value:null,values:['Won','Lost']}]]};h.handleAction({crmAction:{action:'show_report',smartReport:base}},'Show total value by stage for open deals');
+ const refine={action:'refine_report',mode:'add_filter',where:[[{field:'stage',operator:'in',value:null,values:['Warm','Proposal Sent']}]],replaceFields:[],changes:[]};
+ h.handleAction({crmAction:refine},'Now show only Warm and Proposal Sent');assert.equal(h.S.report.measures[0].metric,'sum');assert.equal(h.S.report.groupBy,'stage');assert.equal(h.S.report.where[0].length,2);assert.deepEqual(Array.from(h.charts.at(-1).data.datasets[0].data),[300,100]);assert.equal(h.S.focus.kind,'report');
+ const previous=JSON.stringify(h.S.report),count=h.charts.length;h.handleAction({crmAction:{...refine,where:[[{field:'stage',operator:'contains',value:'Warm|Proposal Sent',values:[]}]]}},'Only those two');assert.equal(JSON.stringify(h.S.report),previous);assert.equal(h.charts.length,count);assert(h.S.clarification);assert.equal(h.S.pending,null);
+});
 test('primary default, escaped chart labels, KPI and date control integration',()=>{
  const h=harness();assert.equal(h.defaultReport().groupBy,'account');h.S.records[0].owner='<script>bad()</script>';
  h.handleAction({crmAction:{action:'show_report',smartReport:{...report,where:[],chart:'kpi'}}},'KPI');
