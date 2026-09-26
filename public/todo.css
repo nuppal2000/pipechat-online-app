@@ -1,4 +1,4 @@
-.todo-board{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:14px;padding:18px;overflow-x:auto;align-items:start;min-width:0}
+.todo-board{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:14px;padding:18px;overflow:auto;align-items:stretch;min-width:0;min-height:0;flex:1}
 .todo-lane{min-width:0;min-height:180px;border-top:2px solid #e5e7ec;padding-top:10px}
 .todo-lane>header{display:flex;align-items:center;gap:7px;padding:0 2px 14px}.todo-lane h3{font-size:14px;margin:0;white-space:normal;word-break:normal}.todo-lane>header>span:last-child{margin-left:auto;color:#697181;font-size:12px}
 .todo-dot{height:7px;width:7px;border-radius:50%;flex:none}.todo-dot-0{background:#9c7474}.todo-dot-1{background:#4684a2}.todo-dot-2{background:#4a9678}

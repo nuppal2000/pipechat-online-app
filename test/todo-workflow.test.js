@@ -18,6 +18,24 @@ function harness(initial={deals:[structuredClone(row)],tableSchema:null}){
   return {...h,calls,messages,node,fail:v=>failure=v,reply:v=>reply=v};
 }
 const plain=v=>JSON.parse(JSON.stringify(v));
+
+test('bulk card moves preview/cancel, save atomically, undo, and reject stale requests without CRM edits',async()=>{
+  const h=harness();h.prepare({action:'add_todos',todos:[{ids:[1],todoNextAction:'Call'},{ids:[1],todoNextAction:'Email'}]});await h.confirmDraft();
+  const before=plain(h.S.todoCards),rows=plain(h.S.records),action={action:'move_todos',todoMoves:before.map(c=>({todoId:c.id,todoStatus:'Done'}))};
+  h.prepare(action);assert.equal(h.S.pending.count,2);assert.deepEqual(plain(h.S.todoCards),before);h.cancelDraft();assert.deepEqual(plain(h.S.todoCards),before);
+  h.prepare(action);h.fail(true);await h.confirmDraft();assert.equal(h.S.pending.count,2);assert.deepEqual(plain(h.S.todoCards),before);
+  h.fail(false);await h.confirmDraft();assert(h.S.todoCards.every(c=>c.status==='Done'));assert.match(h.S.undo.label,/2 To Do cards moved/);await h.undo();assert.deepEqual(plain(h.S.todoCards),before);
+  h.prepare(action);h.S.revision++;const count=h.calls.length;await h.confirmDraft();assert.equal(h.calls.length,count);assert.deepEqual(plain(h.S.records),rows);assert(h.calls.every(c=>c.url==='/api/todo-cards'));
+});
+
+test('successive clarification replies retain choices, original intent and prior answers until preview',async()=>{
+  const h=harness();h.S.usage={remaining:10};const original='Add a review task for Acme';
+  h.reply({action:'clarify',question:'Which date? (a) 2026-10-01, (b) leave blank',clarificationOptions:[{key:'a',label:'2026-10-01'},{key:'b',label:'leave blank'}]});await h.send(original);
+  h.reply({action:'clarify',question:'Which lane? (1) To Do, (2) In Progress',clarificationOptions:[{key:'1',label:'To Do'},{key:'2',label:'In Progress'}]});await h.send('a');
+  assert.equal(h.S.clarification.originalCommand,original);assert.equal(h.S.clarification.answers[0].answer,'a');
+  h.reply({action:'add_todo',ids:[1],todoNextAction:'Review',todoDueDate:'2026-10-01',todoStatus:'In Progress'});await h.send('2');
+  assert.equal(h.calls.at(-1).body.pendingClarification.options[1].label,'In Progress');assert.equal(h.S.clarification,null);assert.equal(h.S.pending.after.status,'In Progress');assert.equal(h.S.todoCards.length,0);
+});
 test('manual card preview/cancel/confirmation, deletion and undo work at the chat cap without changing rows',async()=>{
   const h=harness(),original=plain(h.S.records);
   h.prepare({action:'add_todo',ids:[1]});assert.equal(h.S.todoCards.length,0);assert.equal(h.calls.length,0);h.cancelDraft();assert.equal(h.calls.length,0);
