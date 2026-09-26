@@ -43,6 +43,19 @@ test('model guidance distinguishes KPI changes from charts and requires dropdown
   assert.match(source,/Never use configure_kpi for an add request/);assert.match(source,/delete only that card, never a table field or records/);
   assert.match(source,/supportedActions: actionSchema.properties.action.enum/);assert.match(source,/Positions are one-based/);assert.match(source,/never edit primary names to simulate movement/);assert.match(source,/Database flexibility does not grant arbitrary SQL/);assert.match(source,/one confirmed step at a time/);
 });
+
+test('customized CRM field enums never replace independent card condition fields',()=>{
+  const {schema}=require('./fixtures/record-additions.cjs');
+  for(const table of [null,tableSchemaCore.legacySchema(),schema]){
+    const action=context.getSchema([{id:'cf_email',name:'Email',type:'text'}],table).properties.crmAction.anyOf[1];
+    const condition=action.properties.todoSelection.anyOf[1].properties.conditions.items;
+    assert.deepEqual([...condition.properties.field.enum],['title','status','nextAction','notes','dueDate']);
+    const selection={scope:'matching',destination:'Done',conditions:[{field:condition.properties.field.enum[2],operator:'starts_with',value:'Review'}]};
+    const core=pipelineCore.create(table),records=[{id:1,[core.role('primary')]:'Alpha'}],T=context.todoCore;
+    const result=T.plan([{...T.create('todo_alpha',1),nextAction:'Review documents'}],records,table,[],{action:'move_todos',todoSelection:selection});
+    assert.equal(result.count,1);assert.equal(result.cards[0].status,'Done');
+  }
+});
 test('deleted KPI IDs disappear and added IDs are available only in their owning request schema',()=>{
   const changed=customization.addKpi(tableSchemaCore.legacySchema(),[],'kpi_user_custom',{title:'Custom count',metric:'count',field:null,conditions:[]}).tableSchema;
   const removed=customization.deleteKpi(changed,[],'kpi_records').tableSchema;
