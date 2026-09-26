@@ -12,7 +12,7 @@ function harness(){
     if(options.method==='PUT')saved={deals:body.deals,customFields:body.customFields,tableSchema:body.tableSchema,todoCards:body.todoCards||[],updatedAt:'v'+calls.length};
     return {ok:true,json:async()=>structuredClone(saved)};
   }};
-  context.window.messages=messages;
+  context.window.messages=messages;context.window.PipeChatPlan=require('../public/workspace-plan.js');
   const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,useSchema,prepare,send,confirmDraft,undo,dismissUndo,cancelDraft,openFieldDialog,submitFieldDialog,openColumnMenu,renderTrust,renderTable,renderDashboardKpis,fieldInput,resizeTextCell,moveColumn,selectScope,visible,fieldHeader};`),context);
   const h=context.window.test;h.useSchema(schema);Object.assign(h.S,{records:structuredClone(records),customFields:[],updatedAt:'v1',loaded:true,user:{id:1,name:'QA'},usage:{remaining:20},health:{aiConfigured:true}});
@@ -21,6 +21,20 @@ function harness(){
 const plain=v=>JSON.parse(JSON.stringify(v));
 const additionsFixture=require('./fixtures/record-additions.cjs');
 const assistantFixture=require('./fixtures/assistant-actions.cjs');
+const planFixture=require('./fixtures/workspace-plans.cjs');
+
+test('complete plans preview all outcomes, cancel without writes, confirm once and Undo table/schema/cards together',async()=>{
+  const h=harness(),w=planFixture.workspace();h.useSchema(w.tableSchema);Object.assign(h.S,{...w,tab:'todo'});const before=plain(h.S.records),action=planFixture.risk();action.steps.push(planFixture.tasks('tasks','medium'));action.goals.push({description:'Medium risk tasks',stepIds:['tasks']});
+  h.reply(action);await h.send('Add Risk Level, populate open deals by value, and create tasks for Medium risks');assert.equal(h.S.tab,'table');assert.equal(h.S.pending.kind,'workspace-plan');assert.match(h.node('trustBody').innerHTML,/Confirm entire plan/);assert.match(h.node('trustBody').innerHTML,/High-value follow-up/);assert.equal(h.S.customFields.length,0);assert.equal(h.S.todoCards.length,0);h.cancelDraft();assert.deepEqual(plain(h.S.records),before);assert(!h.calls.some(c=>c.url==='/api/crm-data'));
+  h.prepare(action,'Complete plan');await h.confirmDraft();assert.equal(h.calls.filter(c=>c.url==='/api/crm-data').length,1);assert.equal(h.S.todoCards.length,2);assert.equal(h.S.customFields[0].name,'Risk Level');assert.equal(h.S.records[0][h.S.customFields[0].id],'Medium');
+  await h.undo();assert.equal(h.S.customFields.length,0);assert.equal(h.S.todoCards.length,0);for(const r of h.S.records)for(const f of w.tableSchema.fields)assert.equal(r[f.id],before.find(x=>x.id===r.id)[f.id]);
+});
+test('complete-plan failure, stale revision or board snapshot never partially mutates state; correction retains whole plan',async()=>{
+  const h=harness(),w=planFixture.workspace();h.useSchema(w.tableSchema);Object.assign(h.S,w);const before=plain(h.S.records),action=planFixture.top();h.prepare(action);h.fail(true);await h.confirmDraft();assert.deepEqual(plain(h.S.records),before);assert.equal(h.S.todoCards.length,0);assert.equal(h.S.pending.kind,'workspace-plan');
+  h.fail(false);h.S.revision++;const calls=h.calls.length;await h.confirmDraft();assert.equal(h.calls.length,calls);
+  h.prepare(action);h.S.todoCards.push({...h.S.pending.addedCards[0],id:'todo_intervening'});await h.confirmDraft();assert.equal(h.calls.length,calls);h.S.todoCards=[];
+  const bad=planFixture.top();bad.steps[3].status='banana';h.prepare(bad,'Full request');assert.equal(h.S.pending,null);assert.equal(h.S.sourceAction.steps.length,4);assert.match(h.S.clarification.question,/entire plan/);assert.deepEqual(plain(h.S.records),before);h.reply(action);await h.send('Use To Do');assert.equal(h.S.pending.kind,'workspace-plan');assert.equal(h.S.clarification,null);
+});
 
 test('bulk dropdown, text and date previews confirm, cancel and undo with dynamic record labels',async()=>{
   const h=harness(),table={...additionsFixture.schema,fields:[...additionsFixture.schema.fields,{id:'cf_priority',name:'Priority',type:'choice',role:'none',options:['Low','Medium','High']}]};
