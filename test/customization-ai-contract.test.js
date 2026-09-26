@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const pipelineCore=require('../public/pipeline-core.js'),tableSchemaCore=require('../public/table-schema.js'),customization=require('../public/workspace-customization.js');
 const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
-const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),reportEngine:require('../public/report-engine.js')};
+const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),reportEngine:require('../public/report-engine.js'),workspacePlan:require('../public/workspace-plan.js')};
 vm.runInNewContext(source.slice(source.indexOf('const actionSchema ='),source.indexOf('function sendJson('))+'\nthis.getSchema=responseSchema;',context);
 test('new AI actions retain strict schema and per-request KPI/field IDs without cross-user mutation',()=>{
   const schema=tableSchemaCore.legacySchema(),request=context.getSchema([],schema),action=request.properties.crmAction.anyOf[1];
@@ -41,7 +41,7 @@ test('model guidance distinguishes KPI changes from charts and requires dropdown
   assert.match(source,/What options would you like the dropdown menu to have\?/);assert.match(source,/Stale is ambiguous/);assert.match(source,/dashboardKpis:customization.kpis/);
   assert.match(source,/persistent top dashboard card, not show_report/);assert.match(source,/KPI changes must never alter row data/);
   assert.match(source,/Never use configure_kpi for an add request/);assert.match(source,/delete only that card, never a table field or records/);
-  assert.match(source,/supportedActions: actionSchema.properties.action.enum/);assert.match(source,/Positions are one-based/);assert.match(source,/never edit primary names to simulate movement/);assert.match(source,/Database flexibility does not grant arbitrary SQL/);assert.match(source,/one confirmed step at a time/);
+  assert.match(source,/supportedActions: actionSchema.properties.action.enum/);assert.match(source,/Positions are one-based/);assert.match(source,/never edit primary names to simulate movement/);assert.match(source,/Database flexibility does not grant arbitrary SQL/);assert.match(source,/save atomically with one Undo/);
 });
 
 test('customized CRM field enums never replace independent card condition fields',()=>{
@@ -71,7 +71,7 @@ test('AI contract explicitly requests predicate-wide deletion and relevant recur
 test('bulk table edits use complete predicates for dropdowns, text and dates',()=>{
   const action=context.getSchema([],require('./fixtures/record-additions.cjs').schema).properties.crmAction.anyOf[1];
   assert.match(action.properties.value.description,/separate compact update_records/);assert.match(action.properties.changes.anyOf[1].items.properties.value.description,/Replacement for THIS field edit/);
-  assert.match(source,/compact update_records action for EVERY/);assert.match(source,/filter.value is only the selection threshold/);
+  assert.match(source,/compact update_records action for standalone/);assert.match(source,/filter.value is only the selection threshold/);
   assert.match(source,/EVERY change must carry the complete filter/);
   assert.match(source,/Dropdown, text and date fields have the same targeting rules/);
   assert.match(source,/Do not enumerate a sample of matching records/);
