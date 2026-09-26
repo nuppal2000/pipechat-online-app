@@ -45,6 +45,13 @@ test('current names and owners render and resolve even for previously saved lega
   h.S.clarification.candidates=h.S.clarification.candidates.map(c=>({id:c.id,account:c.f_deal,owner:c.f_owner}));h.S.records[0].f_deal='Renamed Northstar';h.S.records[0].f_owner='Ravi';h.renderTrust();assert.match(h.node('trustBody').innerHTML,/Renamed Northstar/);assert.match(h.node('trustBody').innerHTML,/Ravi/);assert(!h.node('trustBody').innerHTML.includes('Unassigned'));
   await h.send('Renamed Northstar');assert.equal(h.calls.filter(c=>c.url==='/api/pipechat-ai').length,0);assert.equal(h.S.pending.count,1);assert.equal(h.S.pending.patches[0].id,1);assert.equal(h.S.pending.patches[0].account,'Renamed Northstar');assert.equal(h.S.pending.patches[0].after.f_follow,'2026-10-10');assert(h.messages.some(m=>m==='Use Renamed Northstar.'));assert.equal(h.S.clarification,null);
 });
+test('missing bulk replacement keeps the complete request pending and accepts a corrected literal value',async()=>{
+  const h=harness();h.useSchema(additionsFixture.schema);h.S.records=additionsFixture.records.map((r,i)=>({...r,id:i+1,history:[]}));const before=plain(h.S.records);
+  const filter={field:'f_value',operator:'lt',value:50000},action={action:'bulk_update',filter,field:'f_notes',value:null};
+  h.reply(action);await h.send('Set notes to "Review paperwork" for every deal under 50000');assert.equal(h.S.pending,null);assert.match(h.S.clarification.question,/did not receive a replacement/);assert.deepEqual(plain(h.S.records),before);
+  h.reply({...action,value:'Review paperwork'});await h.send('Use Review paperwork');assert.equal(h.calls.at(-1).body.pendingAction.field,'f_notes');assert.equal(h.S.pending.count,3);assert(h.S.pending.patches.every(p=>p.after.f_notes==='Review paperwork'));assert.equal(h.S.clarification,null);
+  h.cancelDraft();assert.deepEqual(plain(h.S.records),before);
+});
 test('exact new-dropdown request previews choices and persists editable blank dropdowns, preserving rows and Undo',async()=>{
   const h=harness(),before=plain(h.S.records);h.S.tab='todo';h.reply(assistantFixture.dropdown);await h.send(assistantFixture.dropdownPrompt);
   assert.equal(h.S.tab,'table');assert.equal(h.S.pending.field.type,'choice');assert.deepEqual(plain(h.S.pending.field.options),['hot','medium','cold']);assert.match(h.node('trustBody').innerHTML,/Dropdown options: hot, medium, cold/);assert.equal(h.S.customFields.length,0);assert.deepEqual(plain(h.S.records),before);
