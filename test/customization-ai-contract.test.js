@@ -70,10 +70,20 @@ test('AI contract explicitly requests predicate-wide deletion and relevant recur
 
 test('bulk table edits use complete predicates for dropdowns, text and dates',()=>{
   const action=context.getSchema([],require('./fixtures/record-additions.cjs').schema).properties.crmAction.anyOf[1];
-  assert.match(action.properties.value.description,/Required replacement.*bulk_update/);assert.match(action.properties.changes.anyOf[1].items.properties.value.description,/Replacement for THIS field edit/);
-  assert.match(source,/TOP-LEVEL value property/);assert.match(source,/filter.value is only the selection threshold/);
+  assert.match(action.properties.value.description,/separate compact update_records/);assert.match(action.properties.changes.anyOf[1].items.properties.value.description,/Replacement for THIS field edit/);
+  assert.match(source,/compact update_records action for EVERY/);assert.match(source,/filter.value is only the selection threshold/);
   assert.match(source,/EVERY change must carry the complete filter/);
   assert.match(source,/Dropdown, text and date fields have the same targeting rules/);
   assert.match(source,/Do not enumerate a sample of matching records/);
   assert.match(source,/genuinely ambiguous singular name still requires clarification/);
+});
+
+test('strict model edits require a complete selector and replacement in one compact action',()=>{
+  for(const table of [null,tableSchemaCore.legacySchema(),require('./fixtures/record-additions.cjs').schema]){
+    const request=context.getSchema([{id:'cf_test',name:'Test',type:'text'}],table),legacy=request.properties.crmAction.anyOf[1],edit=request.properties.crmAction.anyOf[2];
+    assert(!legacy.properties.action.enum.some(name=>['update_record','bulk_update','update_records'].includes(name)));assert.deepEqual([...edit.properties.action.enum],['update_records']);assert.deepEqual([...edit.required],['action','changes']);
+    const variants=edit.properties.changes.items.anyOf;assert.equal(variants.length,3);
+    for(const item of variants){assert(item.required.includes('value'));assert.deepEqual([...item.properties.value.type],['string','number']);assert.equal(['filter','ids','recordMatch'].filter(key=>item.properties[key].type!=='null').length,1);assert.equal(item.additionalProperties,false);}
+    const filter=variants[0].properties.filter;assert(filter.properties.field.enum.includes('cf_test'));if(table&&!table.legacy)assert(filter.properties.field.enum.includes('f_value'));assert.equal(variants[1].properties.ids.minItems,1);assert.equal(variants[2].properties.recordMatch.minLength,1);
+  }
 });
