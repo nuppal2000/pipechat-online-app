@@ -242,8 +242,13 @@
     const patches = new Map();
     for (const [index, change] of changes.entries()) {
       const field = fieldName(change.field,customFields);
-      const selection = targets(records, change, action.action === 'bulk_update' || Boolean(change.filter),customFields);
-      if (selection.candidates) return { clarification:{action:clone(action), changeIndex:action.action === 'update_records' ? index : null, candidates:selection.candidates.map(record => ({id:record.id,account:record[primary],owner:record[role('owner')],stage:record[role('status')]}))} };
+      // A predicate describes the full set, even if the model also supplied example IDs or a name.
+      // All changes resolve against the same original snapshot, not earlier patches in this batch.
+      const selection = change.filter ? {records:records.filter(predicate(change.filter,customFields))} : targets(records, change, ['bulk_update','update_records'].includes(action.action),customFields);
+      if (selection.candidates) {
+        const displayFields=[...new Set(['id',primary,role('owner'),role('status')].filter(Boolean))];
+        return {clarification:{action:clone(action),changeIndex:action.action==='update_records'?index:null,candidates:selection.candidates.map(record=>Object.fromEntries(displayFields.map(key=>[key,record[key]])))}};
+      }
       if (!selection.records.length) throw new Error('No records match this request.');
       const value = validateStoredValue(field, change.value,customFields);
       if (change.operation && !['set','append'].includes(change.operation)) throw new Error('Unsupported change operation.');

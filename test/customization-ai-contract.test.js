@@ -67,3 +67,10 @@ test('AI contract explicitly requests predicate-wide deletion and relevant recur
   assert.match(source,/pipeline.primaryField/);assert.match(source,/tableSchema.columnOrder is set, its FIRST field/);
   assert.match(source,/return propose_field/);assert.match(source,/no existing field represents it/);assert.match(source,/Do not interrupt an active clarification/);assert.match(source,/never infer or populate values/);
 });
+
+test('bulk table edits use complete predicates for dropdowns, text and dates',()=>{
+  assert.match(source,/EVERY change must carry the complete filter/);
+  assert.match(source,/Dropdown, text and date fields have the same targeting rules/);
+  assert.match(source,/Do not enumerate a sample of matching records/);
+  assert.match(source,/genuinely ambiguous singular name still requires clarification/);
+});
