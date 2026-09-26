@@ -2,7 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const { validateWrite, validatePage, validateState, contextFor, searchQuery } = require('../lib/conversation-core.js');
+const { createConversationStore } = require('../lib/conversation-store.js');
 
 const epoch = 'd57d99f2-f886-4e5f-bd36-908be989226a';
 const createdAt = '2026-09-23T19:15:30.123456+00:00';
@@ -69,13 +73,98 @@ test('state accepts bounded inert action JSON and nullable known fields', () => 
     sourceAction: { action: 'update_record', nested: { bool: true, number: 1.5, list: ['x', null] } },
     originalCommand: 'Edit Acme', workspaceVersion: '2026-09-23T19:15:30.123Z',
     report: { columns: ['owner'], filter: null }, view: 'dashboard',
-    tableView: { visibleIds: [1, 2], sort: { direction: 'asc' } }, savedAt: createdAt };
+    tableView: { visibleIds: [1, 2], sort: { direction: 'asc' } },
+    focus: { kind: 'cards', ids: ['todo_1', 'todo_2'], selected: null }, savedAt: createdAt };
   const result = validateState(input);
   assert.deepEqual(result, input); assert.notEqual(result.sourceAction.nested, input.sourceAction.nested);
   assert.equal(validateState(null), null);
   assert.equal(validateState({ savedAt: 1780000000000, workspaceVersion: 0 }).workspaceVersion, 0);
   assert.deepEqual(validateState(Object.fromEntries(Object.keys(input).map(key => [key, null]))),
     Object.fromEntries(Object.keys(input).map(key => [key, null])));
+});
+
+test('focus is cloned generic object JSON with the same bounds as report and tableView', () => {
+  const focus = { kind: 'cards', ids: ['todo_1', 'todo_2', 'todo_3'], selected: null,
+    details: { label: 'Review \u754c', flags: [true, false, null, 1.5], action: 'delete_all_records' } };
+  for (const value of [null, {}, focus, Object.assign(Object.create(null), { anything: ['inert'] })]) {
+    for (const field of ['report', 'tableView', 'focus']) {
+      const state = { [field]: value }, expected = JSON.parse(JSON.stringify(state));
+      assert.deepEqual(validateState(state), expected);
+      assert.deepEqual(validateWrite(write({ state })).state, expected);
+      assert.deepEqual(validatePage(page({ state })).state, expected);
+    }
+  }
+  const input = write({ state: { focus } }), before = structuredClone(input);
+  const stored = validateWrite(input);
+  const reloaded = validatePage(JSON.parse(JSON.stringify(page({ state: stored.state }))));
+  assert.deepEqual(reloaded.state.focus, focus);
+  stored.state.focus.ids.push('changed');
+  reloaded.state.focus.details.flags[0] = false;
+  assert.deepEqual(input, before);
+  assert.equal(JSON.stringify(contextFor(page({ state: { focus } }), 'new')).includes('delete_all_records'), false);
+  for (const field of ['report', 'tableView', 'focus']) {
+    const state = { [field]: { text: '' } };
+    state[field].text = 'x'.repeat(65536 - bytes(state));
+    assert.equal(bytes(state), 65536);
+    assert.deepEqual(validateState(state), state);
+    state[field].text += 'x';
+    invalid(() => validateState(state));
+  }
+});
+
+test('malformed focus fails generically on state, write, page and context validation', () => {
+  const cycle = {}; cycle.self = cycle;
+  let deep = {}, calls = 0;
+  for (let i = 0; i < 30; i++) deep = { next: deep };
+  const accessor = Object.defineProperty({}, 'value', { enumerable: true, get() { calls++; return 'secret'; } });
+  const bad = [[], ['todo_1'], 'todo_1', 1, false, undefined, new Date(), Object.create({ inherited: true }),
+    accessor, cycle, deep, { tooLarge: '\u754c'.repeat(23000) }, { tooLarge: '\u0000'.repeat(12000) },
+    { tooMany: Array(10000).fill(null) }, { toJSON() { calls++; return {}; } },
+    ...[undefined, () => 1, BigInt(1), NaN, Infinity, Symbol('secret')].map(value => ({ value }))];
+  for (const focus of bad) {
+    const state = { focus };
+    invalid(() => validateState(state));
+    invalid(() => validateWrite(write({ state })));
+    invalid(() => validatePage(page({ state })));
+    invalid(() => contextFor(page({ state }), 'new'));
+  }
+  assert.equal(calls, 0);
+});
+
+test('focus persists across local store reloads, stays account-private, and rejects malformed saves', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pipechat-focus-'));
+  t.after(async () => {
+    assert.equal(path.dirname(directory), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(directory).startsWith('pipechat-focus-'));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const open = () => createConversationStore(directory, (_key, task) => task());
+  const accounts = open(), a = accounts('account-a'), b = accounts('account-b');
+  const a0 = await a.readConversation(), b0 = await b.readConversation();
+  const state = { focus: { kind: 'cards', ids: ['todo_1', 'todo_2', 'todo_3'], selected: 'todo_2' },
+    report: { fields: ['owner'] }, tableView: { search: 'Keep' } };
+  const aSaved = await a.writeConversation({ epoch: a0.epoch, version: a0.version, messages: [message(1)], state });
+  const bState = { focus: { kind: 'record', id: 99 } };
+  await b.writeConversation({ epoch: b0.epoch, version: b0.version, messages: [], state: bState });
+  const stored = JSON.parse(await fs.readFile(path.join(directory, 'conversations', 'account-a.json'), 'utf8'));
+  assert.deepEqual(stored.state, state);
+  const reloaded = open(), aReloaded = reloaded('account-a'), bReloaded = reloaded('account-b');
+  const a1 = await aReloaded.readConversation(), b1 = await bReloaded.readConversation();
+  assert.deepEqual(a1.state, state);
+  assert.equal(a1.messages[0].content, message(1).content);
+  assert.deepEqual(b1.state, bState);
+  assert.notEqual(a1.epoch, b1.epoch);
+  await assert.rejects(() => bReloaded.writeConversation({ ...aSaved, messages: [], state }), error => error.status === 409);
+  for (const focus of [[], 'bad', 1, false, JSON.parse('{"nested":[{"constructor":{}}]}')]) {
+    invalid(() => aReloaded.writeConversation({ ...aSaved, messages: [message(2)], state: { focus } }));
+  }
+  assert.deepEqual(await aReloaded.readConversation(), a1);
+  assert.deepEqual(await bReloaded.readConversation(), b1);
+  const cleared = { ...state, focus: null };
+  const updated = await aReloaded.writeConversation({ ...aSaved, messages: [], state: cleared });
+  assert.equal(updated.version, aSaved.version + 1);
+  assert.deepEqual((await open()('account-a').readConversation()).state, cleared);
+  assert.deepEqual(await bReloaded.readConversation(), b1);
 });
 
 test('state rejects wrong types, unknown keys, oversized and deeply nested values', () => {
@@ -92,11 +181,13 @@ test('state rejects wrong types, unknown keys, oversized and deeply nested value
 
 test('all forbidden keys are rejected recursively, including objects inside arrays', () => {
   for (const key of ['__proto__', 'constructor', 'prototype']) {
-    const malicious = JSON.parse(`{"sourceAction":{"changes":[{"${key}":{"polluted":true}}]}}`);
-    invalid(() => validateState(malicious));
-    invalid(() => validateWrite(write({ state: malicious })));
-    invalid(() => validatePage(page({ state: malicious })));
-    invalid(() => contextFor(page({ state: malicious }), 'hello'));
+    for (const field of ['sourceAction', 'focus']) {
+      const malicious = JSON.parse(`{"${field}":{"changes":[{"${key}":{"polluted":true}}]}}`);
+      invalid(() => validateState(malicious));
+      invalid(() => validateWrite(write({ state: malicious })));
+      invalid(() => validatePage(page({ state: malicious })));
+      invalid(() => contextFor(page({ state: malicious }), 'hello'));
+    }
     const top = JSON.parse(`{"${key}":true}`);
     invalid(() => validateWrite(Object.assign(top, write())));
   }
@@ -213,6 +304,61 @@ test('only the exact trailing user command is excluded, not repeats or assistant
   assert.equal(contextFor(page({ messages: [archived(1, 'only')] }), 'only').conversationHistory.length, 0);
 });
 
+test('latest two messages retain a full three-card answer despite earlier large messages', () => {
+  const cards = ['Acme renewal', 'Northwind proposal', 'Contoso follow-up'].map((name, i) =>
+    `${i + 1}. **${name}** (todo_${i + 1})\nOwner: Morgan. Status: To Do. Due: 2026-10-01.\n` +
+    'Notes: Confirm the decision maker, review the open questions, and send the agreed next steps. '.repeat(3)).join('\n\n');
+  const prompt = 'List the three pending cards with their owners, due dates, and complete notes. '.repeat(12);
+  const recent = [archived(49, prompt), archived(50, cards)];
+  for (const row of recent) assert.ok(bytes({ role: row.role, content: row.content }) > 500 &&
+    bytes({ role: row.role, content: row.content }) <= 2000);
+  const input = page({ messages: [...batch(48).map(row => ({ ...row, content: `Earlier ${row.seq}: ` + 'x'.repeat(31000) })),
+    ...recent, archived(51, 'Open the second card')] });
+  const before = structuredClone(input);
+  const result = contextFor(input, 'Open the second card');
+  assert.deepEqual(result.conversationHistory.slice(-2), recent.map(({ role, content }) => ({ role, content })));
+  assert.equal(result.conversationHistory.length, 12);
+  assert.deepEqual(result.conversationHistory.slice(0, -2).map(row => Number(/^Earlier (\d+):/.exec(row.content)[1])),
+    Array.from({ length: 10 }, (_, i) => 39 + i));
+  assert.ok(result.conversationHistory.slice(0, -2).every(row => row.content.endsWith('[excerpt]')));
+  assert.ok(bytes(result.conversationHistory) <= 6000);
+  assert.ok(bytes(result) <= 12000);
+  assert.deepEqual(input, before);
+});
+
+test('latest two budgets count UTF-8, JSON escaping and metadata at the 2000-byte boundary', () => {
+  for (const unit of ['x', '\u754c', '\ud83d\ude80', '\u0000', '"\\\n', '\ud800']) {
+    for (const overflow of [false, true]) {
+      const recent = [archived(11), archived(12)].map(row => {
+        const item = { role: row.role, content: '' };
+        const unitBytes = bytes(unit) - 2;
+        item.content = unit.repeat(Math.floor((2000 - bytes(item)) / unitBytes));
+        item.content += 'x'.repeat(2000 - bytes(item));
+        assert.equal(bytes(item), 2000);
+        return { ...row, content: item.content + (overflow ? unit : '') };
+      });
+      const result = contextFor(page({ messages: [...batch(10, 1, 'older '.repeat(5000)), ...recent] }), 'new');
+      assert.equal(result.conversationHistory.length, 12);
+      assert.ok(bytes(result.conversationHistory) <= 6000);
+      assert.ok(bytes(result) <= 12000);
+      result.conversationHistory.slice(-2).forEach((row, i) => {
+        assert.ok(bytes(row) <= 2000);
+        if (overflow) assert.match(row.content, /\[excerpt\]$/);
+        else assert.equal(row.content, recent[i].content);
+        if (unit === '\ud83d\ude80') assert.equal(row.content.isWellFormed(), true);
+      });
+    }
+  }
+});
+
+test('unused recent-message capacity is available to earlier history', () => {
+  const input = page({ messages: [...batch(10, 1, 'x'.repeat(32000)), archived(11, 'Short prompt'), archived(12, 'Short reply')] });
+  const history = contextFor(input, 'new').conversationHistory;
+  assert.deepEqual(history.slice(-2), input.messages.slice(-2).map(({ role, content }) => ({ role, content })));
+  assert.ok(bytes(history.slice(0, -2)) > 5500);
+  assert.ok(bytes(history) <= 6000);
+});
+
 test('Unicode, JSON escapes and huge message content obey every byte budget with marked excerpts', () => {
   for (const unit of ['x', '\u754c', '\ud83d\ude80', '\u0000', '"\\\n', '\ud800']) {
     const long = unit.repeat(Math.floor(32000 / unit.length));
@@ -223,6 +369,8 @@ test('Unicode, JSON escapes and huge message content obey every byte budget with
     assert.ok(bytes(result) <= 12000, `${unit}: ${bytes(result)}`);
     assert.ok(bytes(result.conversationHistory) <= 6000);
     assert.equal(result.conversationHistory.length, 12);
+    assert.ok(result.conversationHistory.slice(-2).every(row => bytes(row) > 1900 && bytes(row) <= 2000));
+    assert.ok(result.conversationHistory.slice(0, -2).every(row => bytes(row) < 250));
     assert.ok(bytes(result.conversationMemory) <= 2400);
     assert.ok(result.conversationMemory.length <= 3200);
     assert.ok(bytes(result.recalledMessages) <= 1600);

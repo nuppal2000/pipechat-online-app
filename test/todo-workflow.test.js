@@ -11,13 +11,26 @@ function harness(initial={deals:[structuredClone(row)],tableSchema:null}){
     if(options.method==='PUT')saved=url==='/api/todo-cards'?{...saved,todoCards:body.todoCards,updatedAt:'v'+(calls.length+1)}:{...body,tableSchema:body.tableSchema||null,updatedAt:'v'+(calls.length+1)};
     return {ok:true,json:async()=>structuredClone(saved)};
   }};
-  context.window.messages=messages;
+  context.window.messages=messages;context.window.PipeChatTodoActions=require('../public/todo-actions.js');
   const source=fs.readFileSync(require.resolve('../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};renderTrust=()=>{};toast=()=>{};focusTrust=()=>{};updateUsage=()=>{};say=message=>window.messages.push(message);window.test={S,useSchema,prepare,confirmDraft,cancelDraft,chooseCandidate,undo,persist,manualEdit,aiPayload,send};`),context);
   const h=context.window.test;h.useSchema(saved.tableSchema);saved.tableSchema=JSON.parse(JSON.stringify(h.S.tableSchema));Object.assign(h.S,{records:structuredClone(saved.deals),updatedAt:'v1',user:{id:'local',name:'QA'},loaded:true,usage:{remaining:0},health:{aiConfigured:true}});
   return {...h,calls,messages,node,fail:v=>failure=v,reply:v=>reply=v};
 }
 const plain=v=>JSON.parse(JSON.stringify(v));
+
+test('query -> those cards date edit -> confirm -> Undo preserves all selected IDs and uses one card-only save',async()=>{
+  const h=harness();h.prepare({action:'add_todos',todos:[{ids:[1],todoNextAction:'First',todoStatus:'In Progress'},{ids:[1],todoNextAction:'Second',todoStatus:'In Progress'},{ids:[1],todoNextAction:'Third',todoStatus:'Done'}]});await h.confirmDraft();
+  const before=plain(h.S.todoCards),rows=plain(h.S.records);h.S.usage={remaining:10};
+  const selection={source:'all',ids:[],focusId:null,conditions:[{field:'status',operator:'not_equals',value:'Done',values:[]},{field:'dueDate',operator:'is_blank',value:null,values:[]}]};
+  h.reply({action:'query_todos',selection});await h.send('Which not-Done cards have no due date?');assert.equal(h.S.focus.ids.length,2);assert.equal(h.S.pending,null);assert.match(h.messages.at(-1),/Second/);
+  const action={action:'update_todos',updates:[{selection:{source:'focus',focusId:h.S.focus.id,ids:[],conditions:[]},changes:[{field:'dueDate',operation:'set',value:'2026-10-02'}]}]};
+  h.reply(action);await h.send('Set those cards due next Friday');assert.equal(h.calls.at(-1).body.pipeline.conversationFocus.ids.length,2);assert.equal(h.S.pending.count,2);assert.deepEqual(plain(h.S.todoCards),before);h.cancelDraft();
+  h.prepare(action);h.fail(true);await h.confirmDraft();assert.deepEqual(plain(h.S.todoCards),before);assert.equal(h.S.pending.count,2);
+  h.fail(false);const writes=h.calls.filter(c=>c.url==='/api/todo-cards').length;await h.confirmDraft();assert.equal(h.calls.filter(c=>c.url==='/api/todo-cards').length,writes+1);assert(h.S.todoCards.slice(0,2).every(c=>c.dueDate==='2026-10-02'));assert.equal(h.S.todoCards[2].dueDate,'');assert.deepEqual(plain(h.S.records),rows);assert.equal(h.S.focus.ids.length,2);
+  await h.undo();assert.deepEqual(plain(h.S.todoCards),before);assert.deepEqual(plain(h.S.records),rows);
+  h.prepare({...action,updates:[{...action.updates[0],selection:{...action.updates[0].selection,focusId:h.S.focus.id}}]});h.S.revision++;const calls=h.calls.length;await h.confirmDraft();assert.equal(h.calls.length,calls);
+});
 
 test('bulk card moves preview/cancel, save atomically, undo, and reject stale requests without CRM edits',async()=>{
   const h=harness();h.prepare({action:'add_todos',todos:[{ids:[1],todoNextAction:'Call'},{ids:[1],todoNextAction:'Email'}]});await h.confirmDraft();

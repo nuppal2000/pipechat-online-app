@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const pipelineCore=require('../public/pipeline-core.js'),tableSchemaCore=require('../public/table-schema.js'),customization=require('../public/workspace-customization.js');
 const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
-const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),reportEngine:require('../public/report-engine.js'),workspacePlan:require('../public/workspace-plan.js')};
+const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),todoActions:require('../public/todo-actions.js'),reportEngine:require('../public/report-engine.js'),workspacePlan:require('../public/workspace-plan.js')};
 vm.runInNewContext(source.slice(source.indexOf('const actionSchema ='),source.indexOf('function sendJson('))+'\nthis.getSchema=responseSchema;',context);
 test('new AI actions retain strict schema and per-request KPI/field IDs without cross-user mutation',()=>{
   const schema=tableSchemaCore.legacySchema(),request=context.getSchema([],schema),action=request.properties.crmAction.anyOf[1];
@@ -17,8 +17,8 @@ test('new AI actions retain strict schema and per-request KPI/field IDs without 
 
 test('AI guidance creates typed fields, complete task batches and CRM previews independent of current view',()=>{
   const action=context.getSchema([],null).properties.crmAction.anyOf[1];assert(action.required.includes('todos'));
-  assert(action.properties.action.enum.includes('move_todos'));assert(action.required.includes('todoMoves'));assert.equal(action.properties.todoMoves.anyOf[1].maxItems,2000);assert(action.required.includes('clarificationOptions'));assert(action.required.includes('todoSelection'));assert.equal(action.properties.todoSelection.anyOf[1].properties.conditions.maxItems,12);
-  assert.match(source,/clarificationAnswer:clarificationContext.resolve\(pendingClarification,userCommand\)/);assert.match(source,/MULTIPLE existing cards use move_todos/);
+  assert(!action.properties.action.enum.includes('move_todos'));assert(!action.properties.action.enum.includes('update_todo'));assert(action.required.includes('todoMoves'));assert.equal(action.properties.todoMoves.anyOf[1].maxItems,2000);assert(action.required.includes('clarificationOptions'));assert(action.required.includes('todoSelection'));assert.equal(action.properties.todoSelection.anyOf[1].properties.conditions.maxItems,12);
+  assert.match(source,/clarificationAnswer:clarificationContext.resolve\(pendingClarification,userCommand\)/);assert.match(source,/moving multiple cards use update_todos/);
   const todos=action.properties.todos.anyOf[1];assert.equal(todos.maxItems,200);assert.equal(todos.items.additionalProperties,false);assert(todos.items.required.includes('recordMatch'));assert(todos.items.required.includes('todoDueDate'));
   assert.match(source,/targetType choice, dropdownOptions \[hot, medium, cold\]/);assert.match(source,/Never downgrade an explicitly requested dropdown/);
   assert.match(source,/TWO OR MORE cards use add_todos/);assert.match(source,/containing EVERY requested task/);assert.match(source,/current local date/);
@@ -86,4 +86,17 @@ test('strict model edits require a complete selector and replacement in one comp
     for(const item of variants){assert(item.required.includes('value'));assert.deepEqual([...item.properties.value.type],['string','number']);assert.equal(['filter','ids','recordMatch'].filter(key=>item.properties[key].type!=='null').length,1);assert.equal(item.additionalProperties,false);}
     const filter=variants[0].properties.filter;assert(filter.properties.field.enum.includes('cf_test'));if(table&&!table.legacy)assert(filter.properties.field.enum.includes('f_value'));assert.equal(variants[1].properties.ids.minItems,1);assert.equal(variants[2].properties.recordMatch.minLength,1);
   }
+});
+
+test('card edits, saved focus and chart refinements have compact typed contracts rather than legacy lossy actions',()=>{
+  for(const table of [null,require('./fixtures/record-additions.cjs').schema]){
+    const branches=context.getSchema([],table).properties.crmAction.anyOf;
+    const find=name=>branches.find(b=>b.properties?.action.enum.includes(name));
+    const query=find('query_todos'),edit=find('update_todos'),report=find('show_report'),refine=find('refine_report');
+    assert(query&&edit&&report&&refine);assert.deepEqual([...query.required],['action','selection']);assert.deepEqual([...edit.required],['action','updates']);
+    assert.deepEqual([...report.required],['action','smartReport']);assert.equal(find('update_todo'),undefined);assert.equal(find('move_todos'),undefined);
+    assert.deepEqual([...edit.properties.updates.items.properties.changes.items.properties.field.enum],['status','nextAction','notes','dueDate']);
+    assert.deepEqual([...query.properties.selection.properties.source.enum],['all','focus','ids']);
+  }
+  assert.match(source,/ENTIRE saved card set/);assert.match(source,/NOT an instruction to set or move status/);assert.match(source,/refine_report action, not a rebuilt show_report/);
 });

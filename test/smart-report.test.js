@@ -66,6 +66,184 @@ test('explicit top-N sorts and bounds without silently truncating default result
  assert.equal(run(spec({where:[[condition('owner','equals','Nobody')]]})).labels.length,0);
 });
 test('request-local schema uses actual field IDs, strict objects, and complete required properties',()=>{
- const schema=R.responseSchema(C,[]),visit=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual(node.required.sort(),Object.keys(node.properties).sort());}for(const v of Object.values(node))if(v&&typeof v==='object')visit(v);};visit(schema);
- assert(schema.anyOf[1].properties.groupBy.enum.includes('account'));assert(!schema.anyOf[1].properties.groupBy.enum.includes('invented'));
+  const schema=R.responseSchema(C,[]),visit=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual(node.required.sort(),Object.keys(node.properties).sort());}for(const v of Object.values(node))if(v&&typeof v==='object')visit(v);};visit(schema);
+  assert(schema.anyOf[1].properties.groupBy.enum.includes('account'));assert(!schema.anyOf[1].properties.groupBy.enum.includes('invented'));
+});
+
+const salesCore=C.create({status:'ready',useCase:'Sales',description:'',title:'Deals',recordLabel:'deal',fields:[
+ {id:'f_account',name:'Deal',type:'text',role:'primary',options:[]},
+ {id:'f_stage',name:'Stage',type:'choice',role:'status',options:['Qualified','Proposal Sent','Negotiation','Closed Won','Closed Lost','On Hold']},
+ {id:'f_value',name:'Deal Value',type:'currency',role:'none',options:[]},
+ {id:'f_owner',name:'Owner',type:'text',role:'owner',options:[]},
+ {id:'f_close',name:'Close date',type:'date',role:'none',options:[]}
+]});
+const salesRows=[
+ {id:1,f_account:'Alder',f_stage:'Qualified',f_value:12000,f_owner:'Alex',f_close:'2026-10-01'},
+ {id:2,f_account:'Beacon',f_stage:'Proposal Sent',f_value:7500,f_owner:'Sam',f_close:'2026-10-02'},
+ {id:3,f_account:'Cobalt',f_stage:'Negotiation',f_value:20000,f_owner:'Alex',f_close:'2026-10-03'},
+ {id:4,f_account:'Delta',f_stage:'Closed Won',f_value:90000,f_owner:'Alex',f_close:'2026-10-04'},
+ {id:5,f_account:'Echo',f_stage:'Closed Lost',f_value:30000,f_owner:'Sam',f_close:'2026-10-05'},
+ {id:6,f_account:'Fern',f_stage:'',f_value:5000,f_owner:'Alex',f_close:'2026-10-06'},
+ {id:7,f_account:'Gem',f_stage:'Qualified',f_value:2000,f_owner:'Sam',f_close:'2026-09-01'}
+];
+const openCondition=condition('f_stage','not_in',null,['Closed Won','Closed Lost']);
+const closeCondition=condition('f_close','gte','2026-10-01');
+const selectedStages=condition('f_stage','in',null,['Qualified','Proposal Sent']);
+const salesSpec=(extra={})=>spec({groupBy:'f_stage',measures:[measure('sum','f_value')],where:[[openCondition,closeCondition]],...extra});
+const refinement=(extra={})=>({action:'refine_report',mode:'add_filter',where:[],replaceFields:[],changes:[],...extra});
+const salesOptions={today:'2026-10-02',records:salesRows,visibleIds:[1]};
+const refineSales=(current,action)=>R.refine(current,action,salesCore,[],salesOptions);
+const runSales=s=>R.execute(salesRows,s,salesCore,[],salesOptions);
+
+test('compact refinement schema is separate, strict, bounded and uses request-local field IDs',()=>{
+ const schema=R.refinementSchema(salesCore),visit=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual([...node.required].sort(),Object.keys(node.properties).sort());}for(const v of Object.values(node))if(v&&typeof v==='object')visit(v);};visit(schema);
+ assert.deepEqual(schema.required,['action','mode','where','replaceFields','changes']);
+ assert.deepEqual(schema.properties.action.enum,['refine_report']);
+ assert.deepEqual(schema.properties.mode.enum,['add_filter','replace_filter','remove_filter']);
+ assert.equal(schema.properties.where.maxItems,12);assert.equal(schema.properties.where.items.maxItems,20);
+ assert(schema.properties.where.items.items.properties.field.enum.includes('f_stage'));
+ assert(!schema.properties.where.items.items.properties.field.enum.includes('stage'));
+ const changes=schema.properties.changes.items.anyOf;
+ assert(changes.find(c=>c.properties.field.enum[0]==='groupBy').properties.value.enum.includes(null));
+ assert(!changes.some(c=>c.properties.field.enum[0]==='where'));
+ assert(!R.refinementSchema(C).properties.replaceFields.items.enum.includes('f_stage'));
+ assert(!R.responseSchema(salesCore).anyOf[1].properties.action);
+});
+
+test('typed stage membership refines the open cohort without losing metric, grouping, scope or dates',()=>{
+ const current=salesSpec(),action=refinement({where:[[selectedStages]]}),before=JSON.stringify({current,action,rows:salesRows});
+ const next=refineSales(current,action),result=runSales(next);
+ assert.deepEqual(result.labels,['Qualified','Proposal Sent']);assert.deepEqual(result.datasets[0].values,[12000,7500]);assert.equal(result.count,2);
+ assert.deepEqual(next.where,[[openCondition,closeCondition,selectedStages]]);
+ for(const key of ['title','chart','scope','groupBy','bucket','splitBy','measures','sort','limit'])assert.deepEqual(next[key],current[key]);
+ assert.equal(JSON.stringify({current,action,rows:salesRows}),before);
+ next.measures[0].label='Changed';next.where[0][2].values.push('Negotiation');
+ assert.equal(JSON.stringify({current,action,rows:salesRows}),before,'returned report must not alias either input');
+ const visible=refineSales(salesSpec({scope:'visible'}),action);assert.equal(visible.scope,'visible');assert.equal(runSales(visible).count,1);
+});
+
+test('stage replacement and removal are explicit field-wide operations retaining unrelated base filters',()=>{
+ const selected=refineSales(salesSpec(),refinement({where:[[selectedStages]]}));
+ const alternate=condition('f_stage','in',null,['Negotiation']);
+ const replaced=refineSales(selected,refinement({mode:'replace_filter',replaceFields:['f_stage'],where:[[alternate]]}));
+ assert.deepEqual(replaced.where,[[closeCondition,alternate]]);
+ assert.deepEqual(runSales(replaced).labels,['Negotiation']);assert.deepEqual(runSales(replaced).datasets[0].values,[20000]);
+ assert.deepEqual(replaced.measures,selected.measures);
+ const removed=refineSales(replaced,refinement({mode:'remove_filter',replaceFields:['f_stage']}));
+ assert.deepEqual(removed.where,[[closeCondition]]);assert.equal(runSales(removed).count,6);
+ assert.deepEqual(selected.where,[[openCondition,closeCondition,selectedStages]]);
+});
+
+test('report property patches preserve unspecified measures, cohorts and explicit nullable changes',()=>{
+ const measures=[measure('average','f_value',[[condition('f_owner','equals','Alex')]])];
+ const current=salesSpec({measures,splitBy:'f_owner',limit:2,sort:'label_asc'});
+ const next=refineSales(current,refinement({changes:[{field:'chart',value:'kpi'},{field:'groupBy',value:null},{field:'splitBy',value:null},{field:'limit',value:null},{field:'scope',value:'visible'}]}));
+ assert.equal(next.groupBy,null);assert.equal(next.splitBy,null);assert.equal(next.limit,null);assert.equal(next.chart,'kpi');
+ assert.equal(next.scope,'visible');assert.equal(next.sort,'label_asc');assert.deepEqual(next.measures,measures);assert.deepEqual(next.where,current.where);
+ const changed=refineSales(current,refinement({changes:[{field:'measures',value:[measure('sum','f_value')]}]}));
+ assert.equal(changed.measures[0].metric,'sum');assert.deepEqual(changed.where,current.where);assert.equal(current.measures[0].metric,'average');
+});
+
+test('adding OR filters distributes AND across every existing alternative',()=>{
+ const alex=condition('f_owner','equals','Alex'),sam=condition('f_owner','equals','Sam');
+ const qualified=condition('f_stage','equals','Qualified'),proposal=condition('f_stage','equals','Proposal Sent');
+ const current=salesSpec({where:[[alex,closeCondition],[sam,closeCondition]]});
+ const next=refineSales(current,refinement({where:[[qualified],[proposal]]}));
+ assert.deepEqual(next.where,[[alex,closeCondition,qualified],[alex,closeCondition,proposal],[sam,closeCondition,qualified],[sam,closeCondition,proposal]]);
+ assert.deepEqual(runSales(next).rows.map(r=>r.id),[1,2]);
+ assert.deepEqual(refineSales(salesSpec({where:[]}),refinement({where:[[qualified],[proposal]]})).where,[[qualified],[proposal]]);
+});
+
+test('replacement removes the target from every OR branch but retains other predicates',()=>{
+ const alex=condition('f_owner','equals','Alex'),sam=condition('f_owner','equals','Sam');
+ const current=salesSpec({where:[[condition('f_stage','equals','Qualified'),alex],[condition('f_stage','equals','Closed Won'),sam]]});
+ const next=refineSales(current,refinement({mode:'replace_filter',replaceFields:['f_stage'],where:[[selectedStages]]}));
+ assert.deepEqual(next.where,[[alex,selectedStages],[sam,selectedStages]]);
+ assert.deepEqual(runSales(next).rows.map(r=>r.id),[1,2,7]);
+ const removed=refineSales(current,refinement({mode:'remove_filter',replaceFields:['f_stage']}));
+ assert.deepEqual(removed.where,[[alex],[sam]]);assert.equal(runSales(removed).count,7);
+});
+
+test('a removal leaving an empty AND branch retains true-OR semantics',()=>{
+ const current=salesSpec({where:[[selectedStages],[condition('f_owner','equals','Alex'),openCondition]]});
+ const removed=refineSales(current,refinement({mode:'remove_filter',replaceFields:['f_stage']}));
+ assert.deepEqual(removed.where,[]);assert.equal(runSales(removed).count,7);
+ const next=refineSales(current,refinement({mode:'replace_filter',replaceFields:['f_stage'],where:[[condition('f_stage','equals','Closed Lost')]]}));
+ assert.equal(runSales(next).count,1);assert.equal(runSales(next).rows[0].id,5);
+});
+
+test('manual owner/account selections survive narrowing and are cleared only by explicit field replacement',()=>{
+ const current=salesSpec({owners:['Alex'],accounts:['Alder','Cobalt']}),action=refinement({where:[[selectedStages]]});
+ const next=refineSales(current,action);assert.deepEqual(next.owners,['Alex']);assert.deepEqual(next.accounts,current.accounts);assert.equal(runSales(next).count,1);
+ const owner=condition('f_owner','equals','Sam');
+ const replaced=refineSales(current,refinement({mode:'replace_filter',replaceFields:['f_owner'],where:[[owner]]}));
+ assert.equal(replaced.owners,null);assert.deepEqual(replaced.accounts,current.accounts);assert.equal(runSales(replaced).count,0);
+ const narrowed=refineSales(current,refinement({where:[[owner]]}));
+ assert.equal(runSales(narrowed).count,0);assert.equal(runSales(R.selections(narrowed,salesCore)).count,0,'selection extraction must not overwrite an existing selection');
+ const removed=refineSales(current,refinement({mode:'remove_filter',replaceFields:['f_account']}));
+ assert.equal(removed.accounts,null);assert.deepEqual(removed.owners,['Alex']);
+});
+
+test('categorical literals are validated, and contains never disguises a choice membership list',()=>{
+ const current=salesSpec(),before=JSON.stringify(current);
+ for(const c of [condition('f_stage','contains','Qualified|Proposal Sent'),condition('f_stage','not_contains','Qualified'),condition('f_stage','equals','Qualified|Proposal Sent'),condition('f_stage','in',null,['Qualified|Proposal Sent']),condition('f_stage','in',null,['Qualified','Invented']),condition('f_stage','not_in',null,['Invented']),condition('f_stage','equals',12)]){
+   assert.throws(()=>refineSales(current,refinement({where:[[c]]})),/exact options|defined choices/);
+   assert.throws(()=>runSales(salesSpec({where:[[c]]})),/exact options|defined choices/);
+ }
+ assert.equal(JSON.stringify(current),before);
+ assert.equal(runSales(refineSales(current,refinement({where:[[condition('f_stage','in',null,[' qualified ','PROPOSAL SENT'])]]}))).count,2);
+ assert.equal(runSales(salesSpec({where:[[condition('f_stage','equals','On Hold')]]})).count,0,'a defined option without rows remains a valid empty result');
+ assert.throws(()=>runSales(salesSpec({measures:[measure('sum','f_value',[[condition('f_stage','equals','Invented')]])]})),/defined choices/);
+});
+
+test('explicit replacement repairs an invalid choice filter without dropping unrelated date restrictions',()=>{
+ const current=salesSpec({where:[[closeCondition,condition('f_stage','contains','Qualified|Proposal Sent')]]}),before=JSON.stringify(current);
+ assert.throws(()=>refineSales(current,refinement({where:[[selectedStages]]})),/exact options/);
+ const repaired=refineSales(current,refinement({mode:'replace_filter',replaceFields:['f_stage'],where:[[selectedStages]]}));
+ assert.deepEqual(repaired.where,[[closeCondition,selectedStages]]);assert.deepEqual(runSales(repaired).rows.map(r=>r.id),[1,2]);
+ assert.equal(JSON.stringify(current),before);
+});
+
+test('observed choice values and literal pipes are supported without splitting or text-value guessing',()=>{
+ const observed=[...salesRows,{...salesRows[0],id:8,f_stage:'Qualified|Proposal Sent',f_account:'A|B, C'}];
+ const report=salesSpec({where:[[condition('f_stage','equals','Qualified|Proposal Sent')]]});
+ assert.equal(R.execute(observed,report,salesCore).count,1);
+ assert.equal(R.refine(salesSpec(),refinement({where:report.where}),salesCore,[],{records:observed}).where[0].at(-1).value,'Qualified|Proposal Sent');
+ assert.throws(()=>R.refine(salesSpec(),refinement({where:report.where}),salesCore),/defined choices/);
+ for(const operator of ['equals','contains']){
+   const text=salesSpec({where:[[condition('f_account',operator,'A|B, C')]]});
+   assert.equal(R.execute(observed,text,salesCore).count,1);
+   assert.equal(R.execute(salesRows,text,salesCore).count,0,'unobserved text literals are valid');
+ }
+ const typed=salesSpec({where:[[condition('f_value','in',null,[12000,'7500']),condition('f_close','in',null,['2026-10-01','2026-10-02'])]]});
+ assert.equal(runSales(typed).count,2);
+});
+
+test('malformed refinements and conflicting filter operands require clarification without mutation',()=>{
+ const current=salesSpec(),before=JSON.stringify(current);
+ const invalid=[
+  {action:'show_report'}, {mode:'new'}, {mode:'replace_filter'}, {replaceFields:['f_stage']},
+  {mode:'remove_filter',replaceFields:['f_stage'],where:[[selectedStages]]},
+  {mode:'replace_filter',replaceFields:['f_owner'],where:[[selectedStages]]},
+  {mode:'remove_filter',replaceFields:['f_missing']}, {mode:'remove_filter',replaceFields:['f_stage','f_stage']},
+  {changes:[{field:'scope',value:'open'}]}, {changes:[{field:'limit',value:NaN}]},
+  {changes:[{field:'where',value:[]}]}, {changes:[{field:'groupBy',value:'missing'}]},
+  {changes:[{field:'chart',value:'bar'},{field:'chart',value:'kpi'}]}, {smartReport:salesSpec()},
+  {where:[[]]}, {where:[[condition('f_stage','in','Qualified',['Qualified'])]]},
+  {where:[[condition('f_account','contains','A',['B'])]]}, {where:[[condition('f_value','equals',{})]]}
+ ];
+ for(const extra of invalid)assert.throws(()=>refineSales(current,refinement(extra)));
+ assert.throws(()=>R.refine(null,refinement(),salesCore),/show_report/);
+ assert.throws(()=>R.refine({metric:'sum'},refinement(),salesCore),/show_report/);
+ assert.equal(JSON.stringify(current),before);
+});
+
+test('refinement composition is bounded by group, condition, value and change limits',()=>{
+ const alternatives=Array.from({length:4},(_,i)=>[condition('f_value','gte',i)]);
+ assert.throws(()=>refineSales(salesSpec({where:alternatives}),refinement({where:alternatives})),/12 alternative/);
+ const many=Array.from({length:20},()=>condition('f_value','gte',0));
+ assert.throws(()=>refineSales(salesSpec({where:[many]}),refinement({where:[[selectedStages]]})),/1 to 20/);
+ assert.throws(()=>refineSales(salesSpec(),refinement({where:Array.from({length:13},()=>[selectedStages])})),/12 alternative/);
+ assert.throws(()=>refineSales(salesSpec(),refinement({where:[[condition('f_account','in',null,Array(2001).fill('A'))]]})),/valid list/);
+ assert.throws(()=>refineSales(salesSpec(),refinement({changes:Array(10).fill({field:'title',value:'New'})})),/bounded/);
 });

@@ -20,14 +20,14 @@ const code = (fn, expected) => assert.rejects(fn, error => {
   return true;
 });
 
-test('conversation archive on full local PostgreSQL migrations 001 through 010', { timeout: 180000 }, async t => {
+test('conversation archive on full local PostgreSQL migrations 001 through 012', { timeout: 180000 }, async t => {
   const db = new PGlite();
   t.after(() => db.close());
   const run = async file => db.exec(await fs.readFile(path.join(__dirname, '../db', file), 'utf8'));
   await run('tests/mock-supabase.sql');
   const migrations = (await fs.readdir(path.join(__dirname, '../db/migrations')))
-    .filter(f => /^(00[1-9]|010)-.*\.sql$/.test(f)).sort();
-  assert.equal(migrations.length, 10);
+    .filter(f => /^(00[1-9]|01[0-2])-.*\.sql$/.test(f)).sort();
+  assert.equal(migrations.length, 12);
   for (const file of migrations.slice(0, 9)) await run('migrations/' + file);
   await run('tests/security.sql');
 
@@ -82,7 +82,8 @@ test('conversation archive on full local PostgreSQL migrations 001 through 010',
   seedWorkspace = await rpc(seed, 'write_workspace_v2', [[{ id: 1, account: 'Existing CRM', history: ['Keep me'] }], [], legacySchema(), seedWorkspace.updatedAt,
     [{ id: 'todo_existing', recordId: 1, status: 'To Do', nextAction: 'Call', notes: 'Keep this card', dueDate: '' }]]);
   await rpc(seed, 'reserve_usage', [randomUUID()]);
-  const oldFunctions = async () => (await db.query(`select p.oid, pg_get_functiondef(p.oid) as definition
+  const oldFunctions = async () => (await db.query(`select p.oid,p.proname,p.proowner,p.proacl,p.prosecdef,p.provolatile,p.proconfig,
+    pg_get_functiondef(p.oid) as definition
     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
     where n.nspname in ('pipechat','public') order by p.oid`)).rows;
   const beforeFunctions = await oldFunctions();
@@ -106,6 +107,42 @@ test('conversation archive on full local PostgreSQL migrations 001 through 010',
     const index = (await db.query("select indexdef from pg_indexes where schemaname='pipechat' and indexname='conversation_messages_search'")).rows[0].indexdef;
     assert.match(index, /USING gin/);
     assert.match(index, /to_tsvector\('simple'::regconfig, content\)/);
+  });
+
+  await run('migrations/' + migrations[10]);
+  await t.test('focus migration only extends validator fields, preserving data, rules and grants', async () => {
+    await write(seed, await read(seed), [message('Archive before focus migration')],
+      { report: { fields: ['owner'] }, tableView: { search: 'Keep' }, view: 'table' });
+    const archive = await read(seed), rows = await oldRows(), quotaBefore = await quota();
+    const functionsBefore = await oldFunctions();
+    const security = async () => ({
+      schemas: (await db.query("select oid,nspowner,nspacl from pg_namespace where nspname in ('pipechat','public') order by oid")).rows,
+      tables: (await db.query(`select c.oid,c.relowner,c.relacl,c.relrowsecurity,c.relforcerowsecurity
+        from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='pipechat' order by c.oid`)).rows,
+      policies: (await db.query("select * from pg_policies where schemaname='pipechat' order by tablename,policyname")).rows,
+      rules: (await db.query("select * from pg_rules where schemaname='pipechat' order by tablename,rulename")).rows,
+      constraints: (await db.query(`select c.oid,pg_get_constraintdef(c.oid) as definition from pg_constraint c
+        join pg_namespace n on n.oid=c.connamespace where n.nspname='pipechat' order by c.oid`)).rows,
+      triggers: (await db.query(`select t.oid,pg_get_triggerdef(t.oid) as definition from pg_trigger t
+        join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace
+        where n.nspname='pipechat' order by t.oid`)).rows
+    });
+    const securityBefore = await security();
+    await run('migrations/' + migrations[11]);
+    const functionsAfter = await oldFunctions();
+    assert.equal(functionsAfter.length, functionsBefore.length);
+    for (const old of functionsBefore) {
+      const current = functionsAfter.find(f => f.oid === old.oid);
+      if (old.proname === 'validate_conversation_state') {
+        assert.notEqual(current.definition, old.definition);
+        assert.deepEqual({ ...current, definition: current.definition.replaceAll(",'focus'", '') }, old);
+      } else assert.deepEqual(current, old);
+    }
+    assert.deepEqual(await security(), securityBefore);
+    assert.deepEqual(await oldRows(), rows);
+    assert.deepEqual(await quota(), quotaBefore);
+    assert.deepEqual(await read(seed), archive);
+    await run('tests/security.sql');
   });
 
   await t.test('lazy initialization, empty contract, queued first reads and strict CAS', async () => {
@@ -141,10 +178,14 @@ test('conversation archive on full local PostgreSQL migrations 001 through 010',
     await member(b, a);
     const id = randomUUID(), a0 = await read(a), b0 = await read(b);
     assert.notEqual(a0.epoch, b0.epoch);
-    await write(a, a0, [message('Scarlet private owner', 'user', id)], { originalCommand: 'Owner only' });
+    await write(a, a0, [message('Scarlet private owner', 'user', id)],
+      { originalCommand: 'Owner only', focus: { kind: 'cards', ids: ['owner_private'] } });
     assert.deepEqual(await read(b), b0);
-    await write(b, b0, [message('Cobalt private member', 'assistant', id)], { originalCommand: 'Member only' });
+    await write(b, b0, [message('Cobalt private member', 'assistant', id)],
+      { originalCommand: 'Member only', focus: { kind: 'cards', ids: ['member_private'] } });
     const a1 = await read(a), b1 = await read(b);
+    assert.deepEqual(a1.state.focus, { kind: 'cards', ids: ['owner_private'] });
+    assert.deepEqual(b1.state.focus, { kind: 'cards', ids: ['member_private'] });
     assert.deepEqual(await search(a, 'Cobalt'), []);
     assert.deepEqual(await search(b, 'Scarlet'), []);
     assert.equal((await search(a, 'Scarlet'))[0].id, id);
@@ -154,12 +195,68 @@ test('conversation archive on full local PostgreSQL migrations 001 through 010',
     const moved = await read(b);
     assert.notEqual(moved.epoch, b1.epoch);
     assert.deepEqual(moved.messages, []);
+    assert.equal(moved.state, null);
     await code(() => write(b, b1, [message('Old workspace')]), 'PT409');
-    await write(b, moved, [message('Second workspace', 'user', id)]);
-    assert.deepEqual((await read(c)).messages, []);
+    await write(b, moved, [message('Second workspace', 'user', id)], { focus: { kind: 'record', id: 'new_workspace' } });
+    assert.deepEqual((await read(b)).state.focus, { kind: 'record', id: 'new_workspace' });
+    const c0 = await read(c);
+    assert.deepEqual(c0.messages, []);
+    assert.equal(c0.state, null);
     await db.query('update pipechat.memberships set workspace_id=(select workspace_id from pipechat.memberships where user_id=$1) where user_id=$2', [a.id, b.id]);
     assert.deepEqual(await read(b), b1);
     assert.deepEqual(await read(a), a1);
+  });
+
+  await t.test('focus survives storage and a fresh login; state-only changes are inert and versioned', async () => {
+    const u = await user(), crm = await setup(u), initial = await read(u);
+    const state = { focus: { kind: 'cards', ids: ['todo_1', 'todo_2', 'todo_3'], selected: 'todo_2',
+      details: { action: 'delete_records', ids: [1], label: 'Review \u754c', flags: [true, false, null, 1.5] } },
+      report: { groupBy: 'owner' }, tableView: { search: 'Keep' } };
+    let saved = await write(u, initial, [message('Three cards', 'assistant')], state);
+    const snapshot = await read(u);
+    assert.equal(saved.version, 1);
+    assert.deepEqual(snapshot.state, state);
+    assert.deepEqual((await db.query('select state from pipechat.conversation_threads where epoch=$1', [saved.epoch])).rows[0].state, state);
+    await db.query('delete from auth.sessions where id=$1', [u.session]);
+    await code(() => read(u), 'PT401');
+    const relogin = { ...u, session: randomUUID() };
+    await db.query('insert into auth.sessions(id,user_id) values ($1,$2)', [relogin.session, relogin.id]);
+    assert.deepEqual(await read(relogin), snapshot);
+    assert.deepEqual((await read(relogin, 1)).state, state);
+    assert.deepEqual(await write(relogin, saved, [], state), saved);
+    for (const focus of [{}, { arbitrary: ['generic', { nested: null }] }, null]) {
+      const nextState = { ...state, focus };
+      const next = await write(relogin, saved, [], nextState);
+      assert.equal(next.version, saved.version + 1);
+      assert.deepEqual((await read(relogin)).state, nextState);
+      assert.deepEqual((await read(relogin)).messages, snapshot.messages);
+      await code(() => write(relogin, saved, [], state), 'PT409');
+      saved = next;
+    }
+    assert.deepEqual(await workspace(relogin), crm);
+  });
+
+  await t.test('malformed focus rolls back messages and state with the same generic object rules', async () => {
+    const u = await user();
+    const state = { focus: { ids: ['keep'] }, tableView: { search: 'Unchanged' } };
+    await write(u, await read(u), [message('Keep')], state);
+    const snapshot = await read(u);
+    const invalidFocus = [[], ['todo_1'], 'todo_1', 1, false, true,
+      ...['__proto__', 'prototype', 'constructor'].map(key => JSON.parse(`{"nested":[{"${key}":{}}]}`)),
+      { text: 'x'.repeat(65536) }, { text: '\u754c'.repeat(23000) }, { text: '\u0001'.repeat(12000) }];
+    for (const field of ['report', 'tableView', 'focus']) {
+      for (const value of invalidFocus) {
+        await code(() => write(u, snapshot, [message('Must roll back')], { ...state, [field]: value }), 'PT400');
+        assert.deepEqual(await read(u), snapshot);
+      }
+    }
+    const overhead = (await db.query("select octet_length('{\"focus\":{\"text\":\"\"}}'::jsonb::text) as n")).rows[0].n;
+    const exact = { focus: { text: 'x'.repeat(65536 - overhead) } };
+    const saved = await write(u, snapshot, [], exact);
+    assert.deepEqual((await read(u)).state, exact);
+    await code(() => write(u, saved, [message('Must roll back')], { focus: { text: exact.focus.text + 'x' } }), 'PT400');
+    assert.deepEqual((await read(u)).state, exact);
+    assert.deepEqual((await read(u)).messages, snapshot.messages);
   });
 
   await t.test('idempotent IDs, state-only versions, server timestamps, and all-or-nothing writes', async () => {

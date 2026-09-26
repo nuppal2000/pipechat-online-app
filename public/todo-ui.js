@@ -99,6 +99,12 @@
     $('todoView').addEventListener('dragend',()=>{stopDrag();draw();});
     window.addEventListener('blur',stopDrag);
     function preview(p){
+      if(p.updates){
+        const labels={status:'Board status',nextAction:'To Do',notes:'Notes',dueDate:'Due date'};
+        $('trustTitle').textContent='Update To Do cards';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
+        $('trustBody').innerHTML=`<p>${p.selectedCount} selected; ${p.count} cards to update.</p>${p.updates.map(({before,after,fields})=>`<section class="proposal-record"><h3>${esc(T.project(after,S.records,S.tableSchema).title)}</h3><p>${esc(before.nextAction||'Not set')}</p>${fields.map(field=>`<div class="field-diff"><span>${labels[field]}</span><div class="todo-preview-value">${esc(before[field]||'Not set')} &rarr; ${esc(after[field]||'Not set')}</div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} card updates</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+        return;
+      }
       if(p.moves){
         $('trustTitle').textContent='Move To Do cards';$('trustStatus').textContent='Only board status changes. CRM fields stay unchanged.';
         $('trustBody').innerHTML=`<p>${p.count} cards to move.</p>${p.moves.map(({before,after})=>`<section class="proposal-record"><h3>${esc(T.project(after,S.records,S.tableSchema).title)}</h3><p>${esc(after.nextAction||'Not set')}</p><div class="field-diff"><span>Board status</span><div>${esc(before.status)} &rarr; ${esc(after.status)}</div></div></section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} moves</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
