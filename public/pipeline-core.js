@@ -250,6 +250,7 @@
         return {clarification:{action:clone(action),changeIndex:action.action==='update_records'?index:null,candidates:selection.candidates.map(record=>Object.fromEntries(displayFields.map(key=>[key,record[key]])))}};
       }
       if (!selection.records.length) throw new Error('No records match this request.');
+      if(change.value==null)return {clarification:{action:clone(action),changeIndex:action.action==='update_records'?index:null,question:`What value should I put in ${fieldsFor(customFields)[field]}? I did not receive a replacement value, so nothing has been changed. If you want to clear it, please say so.`}};
       const value = validateStoredValue(field, change.value,customFields);
       if (change.operation && !['set','append'].includes(change.operation)) throw new Error('Unsupported change operation.');
       if (change.operation === 'append' && (schema?definitions(customFields).find(f=>f.id===field)?.type!=='text':field!=='notes')) throw new Error('Only text notes support append.');
