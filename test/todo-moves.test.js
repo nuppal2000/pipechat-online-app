@@ -23,3 +23,21 @@ test('already-matching cards are no-ops, not duplicates or false moves',()=>{
   const result=T.plan(cards,records,null,[],action([{todoId:'todo_a',todoStatus:'Done'},{todoId:'todo_c',todoStatus:'Done'}]));assert.equal(result.count,1);
   assert.throws(()=>T.plan(cards,records,null,[],action([{todoId:'todo_c',todoStatus:'Done'}])),/already/);
 });
+
+test('criteria select every matching card, including late matches and existing destination cards',()=>{
+  const many=Array.from({length:35},(_,i)=>({...T.create('todo_'+i,1),nextAction:'Review '+i,notes:'Preserve '+i,status:i===34?'In Progress':'To Do',dueDate:i%2?'2026-10-01':''}));
+  const select=conditions=>({action:'move_todos',todoMoves:null,todoSelection:{scope:'matching',destination:'In Progress',conditions}});
+  const prefix=T.plan(many,records,null,[],select([{field:'nextAction',operator:'starts_with',value:'review '}]));
+  assert.equal(prefix.count,34);assert(prefix.cards.every(c=>c.status==='In Progress'));assert.equal(prefix.cards[33].notes,'Preserve 33');
+  const dated=T.plan(many,records,null,[],select([{field:'status',operator:'equals',value:'To Do'},{field:'dueDate',operator:'is_not_blank',value:null}]));
+  assert.equal(dated.count,17);assert.equal(dated.cards[32].status,'To Do');
+  const byTitle=T.plan(cards,records,null,[],select([{field:'title',operator:'equals',value:'Alpha'},{field:'dueDate',operator:'before',value:'2026-10-02'}]));assert.equal(byTitle.count,1);
+  const all=T.plan(cards,records,null,[],{action:'move_todos',todoSelection:{scope:'all',destination:'Done',conditions:[]}});assert.equal(all.count,2);
+});
+
+test('selection refuses ambiguous/invalid scopes, conflicting IDs and unknown fields without changes',()=>{
+  const selection={scope:'matching',destination:'Done',conditions:[{field:'notes',operator:'contains',value:'Keep'}]};
+  for(const s of [{...selection,scope:'all'},{...selection,conditions:[]},{...selection,destination:'Warm'},{...selection,conditions:[{field:'password',operator:'equals',value:'x'}]},{...selection,conditions:[{field:'dueDate',operator:'before',value:'tomorrow'}]},{...selection,conditions:[{field:'notes',operator:'contains',value:''}]},{...selection,conditions:[{field:'notes',operator:'is_blank',value:'x'}]}])assert.throws(()=>T.plan(cards,records,null,[],{action:'move_todos',todoSelection:s}));
+  assert.throws(()=>T.plan(cards,records,null,[],{...action([{todoId:'todo_a',todoStatus:'Done'}]),todoSelection:selection}),/not both/);
+  assert.throws(()=>T.plan(cards,records,null,[],{action:'move_todos',todoSelection:{...selection,conditions:[{field:'title',operator:'equals',value:'Unknown'}]}}),/No cards match/);
+});

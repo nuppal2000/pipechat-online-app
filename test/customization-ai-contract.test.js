@@ -17,7 +17,7 @@ test('new AI actions retain strict schema and per-request KPI/field IDs without 
 
 test('AI guidance creates typed fields, complete task batches and CRM previews independent of current view',()=>{
   const action=context.getSchema([],null).properties.crmAction.anyOf[1];assert(action.required.includes('todos'));
-  assert(action.properties.action.enum.includes('move_todos'));assert(action.required.includes('todoMoves'));assert.equal(action.properties.todoMoves.anyOf[1].maxItems,2000);assert(action.required.includes('clarificationOptions'));
+  assert(action.properties.action.enum.includes('move_todos'));assert(action.required.includes('todoMoves'));assert.equal(action.properties.todoMoves.anyOf[1].maxItems,2000);assert(action.required.includes('clarificationOptions'));assert(action.required.includes('todoSelection'));assert.equal(action.properties.todoSelection.anyOf[1].properties.conditions.maxItems,12);
   assert.match(source,/clarificationAnswer:clarificationContext.resolve\(pendingClarification,userCommand\)/);assert.match(source,/MULTIPLE existing cards use move_todos/);
   const todos=action.properties.todos.anyOf[1];assert.equal(todos.maxItems,200);assert.equal(todos.items.additionalProperties,false);assert(todos.items.required.includes('recordMatch'));assert(todos.items.required.includes('todoDueDate'));
   assert.match(source,/targetType choice, dropdownOptions \[hot, medium, cold\]/);assert.match(source,/Never downgrade an explicitly requested dropdown/);

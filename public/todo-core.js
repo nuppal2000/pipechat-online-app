@@ -34,7 +34,7 @@
     return {...card,title:String(record[C.role('primary')]??'').trim()||`Unnamed record #${record.id}`};
   }
   function plan(cards,records,schema,custom,action,newId){
-    if(action.action==='move_todos')return planMoves(cards,records,action);
+    if(action.action==='move_todos')return planMoves(cards,records,action,schema);
     const adding=['add_todo','add_todos'].includes(action.action);
     try{
       if(!adding||action.todos==null){
@@ -57,8 +57,31 @@
       return {kind:'todo',cards:next,additions,before:null,after:null,count:additions.length,recordId:null};
     }catch(error){if(adding)error.clarification=true;throw error;}
   }
-  function planMoves(cards,records,action){
-    const next=validate(cards,records),items=action.todoMoves;
+  function selectedMoves(cards,records,schema,selection){
+    if(!selection||Array.isArray(selection)||Object.keys(selection).some(k=>!['scope','destination','conditions'].includes(k))||!['all','matching'].includes(selection.scope)||!statuses.includes(selection.destination)||!Array.isArray(selection.conditions)||selection.conditions.length>12||(selection.scope==='matching'?!selection.conditions.length:selection.conditions.length))throw new Error('Please specify a valid card selection and destination. No cards have been moved.');
+    const fields=['title','status','nextAction','notes','dueDate'],ops=['equals','not_equals','contains','starts_with','is_blank','is_not_blank','before','after'];
+    const normalized=v=>String(v).normalize('NFKC').trim().toLocaleLowerCase();
+    for(const c of selection.conditions){
+      if(!c||typeof c!=='object'||Array.isArray(c)||Object.keys(c).some(k=>!['field','operator','value'].includes(k))||!fields.includes(c.field)||!ops.includes(c.operator))throw new Error('Unsupported card selection. Please clarify which cards to move.');
+      if(['is_blank','is_not_blank'].includes(c.operator)){if(c.value!==null)throw new Error('Blank-card conditions must not include a value.');}
+      else if(!text(c.value,16000)||!c.value.trim())throw new Error('A card selection needs a nonblank comparison value.');
+      if(['before','after'].includes(c.operator)&&(c.field!=='dueDate'||!validDate(c.value)))throw new Error('Before/after card conditions require a complete due date.');
+    }
+    // Evaluate declarative conditions over every card; the model does not enumerate a sample of matches.
+    const matches=cards.filter(card=>{
+      const view=project(card,records,schema);
+      return selection.conditions.every(c=>{
+        const value=normalized(view[c.field]),wanted=normalized(c.value??'');
+        switch(c.operator){case 'equals':return value===wanted;case 'not_equals':return value!==wanted;case 'contains':return value.includes(wanted);case 'starts_with':return value.startsWith(wanted);case 'is_blank':return !value;case 'is_not_blank':return !!value;case 'before':return !!value&&value<wanted;case 'after':return !!value&&value>wanted;default:return false;}
+      });
+    });
+    if(!matches.length)throw new Error('No cards match those conditions. No changes were made.');
+    return matches.map(card=>({todoId:card.id,todoStatus:selection.destination}));
+  }
+  function planMoves(cards,records,action,schema){
+    const next=validate(cards,records);
+    if(action.todoSelection!=null&&action.todoMoves!=null)throw new Error('Choose card conditions or an explicit list, not both.');
+    const items=action.todoSelection==null?action.todoMoves:selectedMoves(next,records,schema,action.todoSelection);
     if(!Array.isArray(items)||!items.length||items.length>2000)throw new Error('Choose between 1 and 2,000 cards to move.');
     if(['todos','todoId','todoStatus','todoNextAction','todoNotes','todoDueDate','recordMatch','ids','filter'].some(k=>action[k]!=null))throw new Error('A bulk card move must contain only the selected card IDs and their destination lanes.');
     const byId=new Map(next.map(c=>[c.id,c])),seen=new Set(),moves=[];
