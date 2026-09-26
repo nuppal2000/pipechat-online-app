@@ -136,6 +136,7 @@
   const icons = (node=document) => node.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));
   const stageClass = value => `stage-${C.normalize(value).replace(/[^a-z0-9]+/g,'-')}`;
   const rowName = record => String(record[C.role('primary')]??'').trim() || `Unnamed record #${record.id}`;
+  const candidateRecord = candidate => S.records.find(record=>record.id===candidate.id)||candidate;
   const display = (field,value) => tailored()?value==null||value===''?'Not set':C.definitions(S.customFields).find(f=>f.id===field)?.type==='currency'?currency(value):String(value):field==='value'?currency(value)||'Not set':field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
   const stageOptions = selected => `<option value="" ${!selected?'selected':''}>Not set</option>`+C.stages.map(stage=>`<option ${stage===selected?'selected':''}>${esc(stage)}</option>`).join('');
   function say(text, role='assistant', error=false) {
@@ -395,7 +396,7 @@
     if(S.pending?.kind==='todo'){todoUI.preview(S.pending);return;}
     if(S.clarification?.candidates){
       $('trustTitle').textContent='Choose a record';
-      panel.innerHTML=`<p class="proposal-intro">${esc(S.clarification.question||'More than one record matches. Which one did you mean?')}</p>${S.clarification.candidates.map(record=>`<button class="candidate" data-candidate="${record.id}"><strong>${esc(rowName(record))}</strong><small>${esc(record[C.role('owner')]||'Unassigned')} / ${esc(record[C.role('status')]||'')} / #${record.id}</small></button>`).join('')}<button class="secondary" data-cancel>Cancel request</button>`;
+      panel.innerHTML=`<p class="proposal-intro">${esc(S.clarification.question||'More than one record matches. Which one did you mean?')}</p>${S.clarification.candidates.map(candidateRecord).map(record=>`<button class="candidate" data-candidate="${record.id}"><strong>${esc(rowName(record))}</strong><small>${esc(record[C.role('owner')]||'Unassigned')} / ${esc(record[C.role('status')]||'')} / #${record.id}</small></button>`).join('')}<button class="secondary" data-cancel>Cancel request</button>`;
       $('trustStatus').textContent='Your request is kept while you choose.';return;
     }
     if(S.pending?.kind==='editor'){renderEditor();return;}
@@ -533,7 +534,7 @@
         say('Quick clarification. '+error.message);renderTrust();focusTrust();return;
       }
     } else throw new Error('This request is not an editable table action.');
-    if(proposal.clarification){S.pending=null;S.sourceAction=C.clone(action);S.clarification={...proposal.clarification,originalCommand:S.clarification?.originalCommand||originalCommand};say(proposal.clarification.question||'I found more than one matching company. Choose the intended company in the review panel; I have kept the rest of your request.');}
+    if(proposal.clarification){S.pending=null;S.sourceAction=C.clone(action);S.clarification={...proposal.clarification,originalCommand:S.clarification?.originalCommand||originalCommand};say(proposal.clarification.question||'I found more than one matching record. Choose the intended record in the review panel; I have kept the rest of your request.');}
     else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(['move-record','move-field'].includes(proposal.kind)?`Review the move to ${proposal.kind==='move-record'?'row':'column'} ${proposal.change.toPosition} before confirming. Cell values will stay unchanged.`:proposal.kind==='todo'?'Review the To Do card change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
     if(S.tab==='todo'||proposal?.kind?.endsWith('-kpi'))render();else renderTrust();focusTrust();
   }
@@ -544,7 +545,7 @@
     // Resolve all fields referring to this same ambiguous company, retaining unrelated changes.
     const changes=q.collection==='todos'?action.todos:action.action==='update_records'?action.changes:[action];
     for(const change of changes)if(change===target||(originalRef&&C.normalize(change.recordMatch)===C.normalize(originalRef))){change.recordMatch=null;change.ids=[id];if(q.collection!=='todos')change.filter=null;}
-    say(`Use ${rowName(q.candidates.find(c=>c.id===id))}.`,'user');
+    say(`Use ${rowName(candidateRecord(q.candidates.find(c=>c.id===id)))}.`,'user');
     try{prepare(action,q.originalCommand);}catch(error){say(error.message,'assistant',true);}
   }
   function newRecord(input,id,imported=false) {
@@ -775,7 +776,7 @@
     if(S.pending?.kind==='csv-import'){say('The CSV is waiting for mapping. Use Retry AI mapping, Review basic mapping, or Cancel import in the review panel.');focusTrust();return;}
     if(S.pending?.kind==='import-duplicates'){say('Please choose Keep duplicates, Merge duplicates, or Cancel import in the review panel.');focusTrust();return;}
     if(S.clarification?.candidates){
-      const found=S.clarification.candidates.filter(r=>C.normalize(rowName(r))===answer||String(r.id)===answer);
+      const found=S.clarification.candidates.map(candidateRecord).filter(r=>C.normalize(rowName(r))===answer||String(r.id)===answer);
       if(found.length===1){chooseCandidate(found[0].id);return;}
       if(['yes','ok','okay','looks good'].includes(answer)){say('Please choose one of the listed companies so I do not update the wrong one.');focusTrust();return;}
     }
