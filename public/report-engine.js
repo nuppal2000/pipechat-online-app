@@ -22,7 +22,8 @@
   }
   function filteringSchema(core,custom=[]){
     const {mode,where,replaceFields}=refinementSchema(core,custom).properties;
-    return object({action:{type:'string',enum:['filter_records']},target:{type:'string',enum:['context','report','pipeline_table']},mode,where,removeFields:replaceFields});
+    const selectionMode={...mode,description:'Use replace_filter to set categorical selections, including short follow-ups naming different owners, stages or accounts. It replaces only the fields in where and keeps unrelated filters. Use add_filter for extra constraints or an explicit intersection, not for switching one category to another. Use remove_filter to clear named fields.'};
+    return object({action:{type:'string',enum:['filter_records']},target:{type:'string',enum:['context','report','pipeline_table']},mode:selectionMode,where,removeFields:replaceFields});
   }
   function filteringRefinement(action){
     const keys=['action','target','mode','where','removeFields'];

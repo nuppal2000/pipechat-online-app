@@ -325,6 +325,21 @@ test('derived replacement and explicit removal preserve other predicates in ever
  assert.deepEqual(current.where[0][1],condition('f_owner','equals','Sam'));
 });
 
+test('successive categorical selections replace just their dimension while extra numeric bounds intersect',()=>{
+ const base={where:[[selectedStages,condition('f_value','gte',5000)]]};
+ const selected=owner=>filtering({target:'context',mode:'replace_filter',where:[[condition('f_owner','equals',owner)]]});
+ const first=refineTable(base,selected('Alex')),second=refineTable(first,selected('Sam')),third=refineTable(second,selected('Alex'));
+ for(const [filter,owner]of [[first,'Alex'],[second,'Sam'],[third,'Alex']]){
+  assert.deepEqual(filter.where,[[selectedStages,condition('f_value','gte',5000),condition('f_owner','equals',owner)]]);
+  const current=salesSpec(base),initial=refineSales(current,R.filteringRefinement(selected(owner)));
+  assert.deepEqual(initial.where,filter.where);
+ }
+ const bounded=refineTable(third,filtering({where:[[condition('f_value','lt',10000)]]}));
+ assert.deepEqual(bounded.where[0].filter(c=>c.field==='f_value').map(c=>c.operator),['gte','lt']);
+ assert.equal(tableRows(bounded).length,0,'an explicitly added bound must not silently replace a lower bound');
+ assert.match(R.filteringSchema(salesCore).properties.mode.description,/replace_filter to set categorical selections/);
+});
+
 test('filter action conversion rejects contradictory modes, redundant fields and malformed conditions',()=>{
  const bad=[{replaceFields:[]},{removeFields:null},{removeFields:['f_owner']},{mode:'replace_filter'},
   {mode:'replace_filter',removeFields:['f_stage'],where:[[selectedStages]]},{mode:'remove_filter'},
