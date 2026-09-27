@@ -43,7 +43,7 @@ test('primary default, escaped chart labels, KPI and date control integration',(
 test('contextual filtering preserves the report; explicitly targeted table filters remain available',()=>{
  const h=harness();h.S.scope='all';h.S.search='';h.S.records=[{id:1,account:'A',stage:'Warm',value:100},{id:2,account:'B',stage:'Proposal Sent',value:300},{id:3,account:'C',stage:'Won',value:999}];
  const base={...report,groupBy:'stage',where:[[{field:'stage',operator:'not_in',value:null,values:['Won','Lost']}]]};h.handleAction({crmAction:{action:'show_report',smartReport:base}},'Total value by stage for open deals');
- const filter={action:'filter_records',target:'context',mode:'add_filter',where:[[{field:'stage',operator:'in',value:null,values:['Warm','Proposal Sent']}]],replaceFields:[]};
+ const filter={action:'filter_records',target:'context',mode:'add_filter',where:[[{field:'stage',operator:'in',value:null,values:['Warm','Proposal Sent']}]],removeFields:[]};
  h.handleAction({crmAction:filter},'Now only Warm and Proposal Sent');assert.equal(h.S.tab,'dashboard');assert.equal(h.S.filter,null);assert.equal(h.S.report.measures[0].metric,'sum');assert.deepEqual(Array.from(h.charts.at(-1).data.datasets[0].data),[300,100]);
  const saved=JSON.stringify(h.S.report);h.handleAction({crmAction:{...filter,target:'pipeline_table'}},'Show those stages in the pipeline table');assert.equal(h.S.tab,'table');assert.equal(h.S.focus.kind,'table');assert.equal(JSON.stringify(h.S.report),saved);assert.match(h.messages.at(-1),/Showing 2 matching records/);
  h.handleAction({crmAction:{...filter,where:[[{field:'value',operator:'gt',value:200,values:[]}]]}},'Now only values above 200');assert.match(h.messages.at(-1),/Showing 1 matching records/);assert.equal(h.S.filter.where[0].length,2);assert.equal(JSON.stringify(h.S.report),saved);
@@ -54,6 +54,6 @@ test('the exact legacy misrouting response cannot switch away or produce a false
  const h=harness();h.handleAction({crmAction:{action:'show_report',smartReport:report}},'Show report');const before=JSON.stringify({report:h.S.report,filter:h.S.filter,tab:h.S.tab,records:h.S.records});
  assert.throws(()=>h.handleAction({crmAction:{action:'filter_view',filter:{field:'stage',operator:'contains',value:'Qualified, Proposal Sent'}}},'Now only Qualified and Proposal Sent'),/current view has been kept/);
  assert.equal(JSON.stringify({report:h.S.report,filter:h.S.filter,tab:h.S.tab,records:h.S.records}),before);
- assert.throws(()=>h.handleAction({crmAction:{action:'filter_records',target:'unknown',mode:'add_filter',where:[],replaceFields:[]}},'Only these'),/report or the pipeline/);
+ assert.throws(()=>h.handleAction({crmAction:{action:'filter_records',target:'unknown',mode:'add_filter',where:[],removeFields:[]}},'Only these'),/report or the pipeline/);
  assert.equal(JSON.stringify({report:h.S.report,filter:h.S.filter,tab:h.S.tab,records:h.S.records}),before);
 });
