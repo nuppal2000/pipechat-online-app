@@ -11,8 +11,13 @@
   const obj=properties=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
   const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).every(k=>keys.includes(k))&&keys.every(k=>Object.hasOwn(v,k));
   const str=(v,max=16000)=>typeof v==='string'&&v.length<=max&&!/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(v);
-  function actionSchemas(){
-    const selection=obj({source:{type:'string',enum:['all','focus','ids']},ids:{type:'array',maxItems:2000,items:{type:'string'}},focusId:{type:['string','null']},conditions:{type:'array',maxItems:12,items:obj({field:{type:'string',enum:fields},operator:{type:'string',enum:operators},value:{type:['string','null']},values:{type:'array',maxItems:2000,items:{type:'string'}}})}});
+  function actionSchemas(focus=null){
+    const conditions={type:'array',maxItems:12,items:obj({field:{type:'string',enum:fields},operator:{type:'string',enum:operators},value:{type:['string','null']},values:{type:'array',maxItems:2000,items:{type:'string'}}})};
+    const ids={type:'array',maxItems:2000,items:{type:'string'}},emptyIds={...ids,maxItems:0};
+    const variants=[obj({source:{type:'string',enum:['all']},ids:emptyIds,focusId:{type:'null'},conditions}),obj({source:{type:'string',enum:['ids']},ids:{...ids,minItems:1},focusId:{type:'null'},conditions})];
+    // Bind model references to this request's saved selection; never ask it to invent or retype an ID.
+    if(focus?.kind==='todos'&&str(focus.id,100)&&focus.id&&Array.isArray(focus.ids)&&focus.ids.length<=2000)variants.push(obj({source:{type:'string',enum:['focus']},ids:emptyIds,focusId:{type:'string',enum:[focus.id]},conditions}));
+    const selection={anyOf:variants};
     return [obj({action:{type:'string',enum:['query_todos']},selection}),obj({action:{type:'string',enum:['update_todos']},updates:{type:'array',minItems:1,maxItems:200,items:obj({selection,changes:{type:'array',minItems:1,maxItems:4,items:obj({field:{type:'string',enum:editable},operation:{type:'string',enum:['set','append']},value:{type:'string'}})}})}})];
   }
   function select(cards,records,schema,selection,focus=null){
