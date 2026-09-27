@@ -301,7 +301,8 @@
       if(spec.chart==='stage'&&values.some(v=>v!==null&&v<0))fail('A stage chart cannot represent negative values. Would you like a bar chart instead?');
       datasets.push({label,values,type:m.type});
     }
-    return {labels:data.map(g=>g.label),datasets,table,rows,count:rows.length,undated,totalGroups,shownGroups:data.length,description:describe(spec,core,custom),title:spec.title.trim()||measures.map(m=>m.label).join(' / ')+(spec.groupBy?' by '+defs.get(spec.groupBy).name:'')};
+    const represented=data.flatMap(g=>g.rows);
+    return {labels:data.map(g=>g.label),datasets,table,rows,count:rows.length,representedIds:represented.map(r=>r.id),summaries:measures.map(m=>({label:m.label,metric:m.metric,field:m.field,type:m.type,value:aggregate(represented,m),count:represented.filter(m.matches).length})),undated,totalGroups,shownGroups:data.length,description:describe(spec,core,custom),title:spec.title.trim()||measures.map(m=>m.label).join(' / ')+(spec.groupBy?' by '+defs.get(spec.groupBy).name:'')};
   }
   function describe(spec,core,custom=[]){
     const fields=core.fieldsFor(custom),groups=g=>describeConditions(g,fields);
