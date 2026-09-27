@@ -8,8 +8,9 @@
   function list(values){if(!Array.isArray(values)||!values.length||values.length>12||values.some(v=>!identifier(v))||new Set(values).size!==values.length)bad('Choose distinct dashboard element IDs.');return values;}
   function schemas(core,custom=[]){
     const spec=R.responseSchema(core,custom).anyOf[1],refine=R.refinementSchema(core,custom),p=refine.properties;
-    const reference=obj({elementId:id,measure:{type:'integer',minimum:0,maximum:5},stat:{type:'string',enum:['records','aggregate','maximum','minimum_nonzero']}});
-    const question={anyOf:[obj({kind:{type:'string',enum:['summary']},elementIds:ids}),obj({kind:{type:'string',enum:['value']},label:{type:'string',maxLength:200},reference}),obj({kind:{type:'string',enum:['difference','percentage']},label:{type:'string',maxLength:200},left:reference,right:reference})]};
+    const measure={type:'integer',minimum:0,maximum:5};
+    const reference={anyOf:[obj({elementId:id,measure,stat:{type:'string',enum:['records','aggregate','maximum','minimum_nonzero']}}),obj({elementId:id,measure,stat:{type:'string',enum:['group']},group:{type:'string',maxLength:300},series:{type:['string','null'],maxLength:300}})]};
+    const question={anyOf:[obj({kind:{type:'string',enum:['summary']},elementIds:ids}),obj({kind:{type:'string',enum:['groups']},elementId:id,measure}),obj({kind:{type:'string',enum:['value']},label:{type:'string',maxLength:200},reference}),obj({kind:{type:'string',enum:['difference','percentage']},label:{type:'string',maxLength:200},left:reference,right:reference})]};
     const questions={type:'array',maxItems:20,items:question};
     return [obj({action:{type:'string',enum:['dashboard_plan']},operations:{type:'array',minItems:1,maxItems:24,items:{anyOf:[
       obj({op:{type:'string',enum:['clear']}}),
@@ -49,13 +50,19 @@
   }
   function extrema(table){return [...new Set(table.map(row=>row.series))].map(series=>{const rows=table.filter(r=>r.series===series&&Number.isFinite(r.value)),positive=rows.filter(r=>r.value>0),max=rows.length?Math.max(...rows.map(r=>r.value)):null,min=positive.length?Math.min(...positive.map(r=>r.value)):null;return {series,maximum:max,largest:rows.filter(r=>r.value===max).map(r=>r.group),minimumNonzero:min,smallestNonzero:positive.filter(r=>r.value===min).map(r=>r.group)};});}
   function readReference(ref,views){
-    shape(ref,['elementId','measure','stat']);const v=views.find(v=>v.id===ref.elementId),s=v?.snapshot;
-    if(!s||!Number.isInteger(ref.measure)||ref.measure<0||ref.measure>=s.summaries.length||!['records','aggregate','maximum','minimum_nonzero'].includes(ref.stat))bad('Which displayed graph and measure should I analyze?');
+    shape(ref,ref?.stat==='group'?['elementId','measure','stat','group','series']:['elementId','measure','stat']);const v=views.find(v=>v.id===ref.elementId),s=v?.snapshot;
+    if(!s||!Number.isInteger(ref.measure)||ref.measure<0||ref.measure>=s.summaries.length||!['records','aggregate','maximum','minimum_nonzero','group'].includes(ref.stat))bad('Which displayed graph and measure should I analyze?');
     const m=s.summaries[ref.measure],summary=`${s.title} [${s.id}], ${s.recordCount} records, grouped by ${s.groupBy}${s.bucket==='none'?'':' / '+s.bucket}`;
     if(ref.stat==='records')return {value:s.recordCount,type:'number',unit:'records',detail:summary,ids:s.recordIds};
     if(ref.stat==='aggregate')return {value:m.value,type:m.type,unit:m.metric+':'+m.field,detail:`${m.label}: ${summary}`,ids:s.recordIds};
     // Dataset indices are explicit. A split report uses the same ordering as the rendered series.
     const series=v.result.datasets.filter((_,i)=>i%s.summaries.length===ref.measure);if(!series.length)bad('Choose a displayed series.');
+    if(ref.stat==='group'){
+      if(typeof ref.group!=='string'||ref.group.length>300||ref.series!==null&&(typeof ref.series!=='string'||ref.series.length>300))bad('Choose a displayed group and series.');
+      const matches=s.table.filter(row=>row.group===ref.group&&series.some(d=>d.label===row.series)&&(ref.series===null||row.series===ref.series));
+      if(matches.length!==1)bad('That group or series is missing or ambiguous in the displayed graph. Which plotted group should I use?');
+      const row=matches[0];return {value:row.value,type:row.type,unit:m.metric+':'+m.field,detail:`${row.group} / ${row.series}, ${row.count} records in this group (${summary})`,ids:s.recordIds};
+    }
     const rows=s.table.filter(row=>series.some(d=>d.label===row.series)&&Number.isFinite(row.value)&&(ref.stat!=='minimum_nonzero'||row.value!==0));
     const value=rows.length?(ref.stat==='maximum'?Math.max:Math.min)(...rows.map(r=>r.value)):null;
     return {value,type:m.type,unit:m.metric+':'+m.field,detail:`${rows.filter(r=>r.value===value).map(r=>r.group+(series.length>1?' / '+r.series:'')).join(', ')||'No qualifying group'} (${summary}; ${ref.stat==='maximum'?'largest':'smallest nonzero'} ${m.label})`,ids:s.recordIds};
@@ -66,6 +73,10 @@
     for(const q of questions){
       if(q.kind==='summary'){
         shape(q,['kind','elementIds']);for(const id of list(q.elementIds)){const s=views.find(v=>v.id===id)?.snapshot;if(!s)bad('A requested report is not currently displayed.');lines.push(`${s.title} [${id}]: ${s.recordCount} records represented${s.matchingCount!==s.recordCount?` (${s.matchingCount} matched before date/group exclusions)`:''}. ${s.summaries.map(m=>`${m.label}: ${format(m.value,m.type)}`).join('; ')}. Scope: ${s.scope}.`);}
+      }else if(q.kind==='groups'){
+        shape(q,['kind','elementId','measure']);const v=views.find(v=>v.id===q.elementId);if(!v||!Number.isInteger(q.measure)||q.measure<0||q.measure>=v.snapshot.summaries.length)bad('Choose a displayed graph and measure for the group report.');
+        const series=v.result.datasets.filter((_,i)=>i%v.snapshot.summaries.length===q.measure),rows=v.snapshot.table.filter(row=>series.some(d=>d.label===row.series));
+        lines.push(`${v.snapshot.title} [${v.id}]: ${v.snapshot.recordCount} records represented. Scope: ${v.snapshot.scope}.\n${rows.map(row=>`- ${row.group}${series.length>1?' / '+row.series:''}: ${format(row.value,row.type)} (${row.count} records).`).join('\n')||'No groups.'}`);
       }else if(q.kind==='value'){
         shape(q,['kind','label','reference']);if(typeof q.label!=='string'||q.label.length>200)bad('Use a short analysis label.');const a=readReference(q.reference,views);lines.push(`${q.label}: ${format(a.value,a.type)}. ${a.detail}.`);
       }else if(['difference','percentage'].includes(q.kind)){

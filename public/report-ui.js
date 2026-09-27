@@ -50,7 +50,7 @@
   }
   function control(spec,id,value,core,custom){
     const next=JSON.parse(JSON.stringify(spec)),m=next.measures[0],defs=core.definitions(custom);
-    next.title='';
+    if(id!=='reportChart')next.title='';
     if(id==='reportChart')next.chart=value;
     if(id==='reportGroup'){const [field,bucket]=value.split('::');next.groupBy=field==='none'?null:field;next.bucket=bucket||'none';next.sort=next.bucket==='none'?'value_desc':'label_asc';}
     if(id==='reportMetric'){

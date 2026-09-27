@@ -9,7 +9,27 @@ const rows=Array.from({length:42},(_,i)=>({id:i+1,account:'Record '+i,owner:i<6?
 function apply(board,operations,questions=[]){return D.apply(board,{action:'dashboard_plan',operations,questions},rows,C,custom,{today:'2026-09-27'});}
 const add=(id,spec)=>({op:'add',id,spec});
 const ref=(elementId,stat='aggregate')=>({elementId,measure:0,stat});
+const groupRef=(elementId,group,series=null)=>({elementId,measure:0,stat:'group',group,series});
 function initial(){return apply(null,[add('count',spec()),add('value',spec('sum'))]);}
+
+test('named group references and group reports never substitute the overall average',()=>{
+ const data=[...Array.from({length:6},(_,i)=>({id:i+1,owner:'Sarah',value:75250})),...Array.from({length:4},(_,i)=>({id:i+7,owner:'Ravi',value:79250}))];
+ const r=D.apply(null,{action:'dashboard_plan',operations:[add('averages',spec('average',{where:[]}))],questions:[]},data,C);
+ assert.equal(r.views[0].snapshot.summaries[0].value,76850);
+ const answer=D.analyze([{kind:'value',label:'Sarah average',reference:groupRef('averages','Sarah')},{kind:'value',label:'Ravi average',reference:groupRef('averages','Ravi')},{kind:'groups',elementId:'averages',measure:0}],r.views);
+ assert.match(answer,/Sarah average: \$75,250\.00/);assert.match(answer,/Ravi average: \$79,250\.00/);assert.match(answer,/Sarah: \$75,250\.00 \(6 records\)/);assert.match(answer,/Ravi: \$79,250\.00 \(4 records\)/);assert(!answer.includes('76,850'));
+ assert.throws(()=>D.analyze([{kind:'value',label:'Missing',reference:groupRef('averages','Unknown')}],r.views),/missing or ambiguous/);
+ const difference=D.analyze([{kind:'difference',label:'Group gap',left:groupRef('averages','Ravi'),right:groupRef('averages','Sarah')}],r.views);assert.match(difference,/Group gap: \$4,000\.00/);
+});
+
+test('group analysis rejects ambiguous split series and resolves the chosen plotted cell',()=>{
+ const data=[{id:1,owner:'Ravi',stage:'Warm',value:20},{id:2,owner:'Ravi',stage:'Won',value:30}];
+ const r=D.apply(null,{action:'dashboard_plan',operations:[add('split',spec('sum',{where:[],splitBy:'stage'}))],questions:[]},data,C);
+ assert.throws(()=>D.analyze([{kind:'value',label:'Ravi',reference:groupRef('split','Ravi')}],r.views),/ambiguous/);
+ const target=r.views[0].snapshot.table.find(row=>row.value===20);
+ assert.match(D.analyze([{kind:'value',label:'Chosen cell',reference:groupRef('split','Ravi',target.series)}],r.views),/Chosen cell: \$20\.00/);
+ assert.throws(()=>D.analyze([{kind:'groups',elementId:'split',measure:99}],r.views),/Choose a displayed/);
+});
 test('separate mixed-unit graphs coexist, use explicit stages, and summarize exact represented rows',()=>{
  const before=JSON.stringify(rows),r=initial();assert.equal(r.board.elements.length,2);assert.equal(r.views[0].snapshot.recordCount,22);assert.equal(r.views[0].snapshot.summaries[0].value,22);assert(Math.abs(r.views[1].snapshot.summaries[0].value-1115800)<0.01);assert.equal(JSON.stringify(rows),before);assert.match(r.answer,/22 records represented/);
 });
