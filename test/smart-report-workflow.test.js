@@ -1,13 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const C=require('../public/pipeline-core'),R=require('../public/report-engine');
 const source=fs.readFileSync(require.resolve('../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
-function harness(){
+function harness(multiple=false){
  const nodes=new Map(),charts=[],messages=[];const node=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',value:'',innerHTML:'',style:{},setAttribute(){}});return nodes.get(id);};
  class Chart{constructor(canvas,config){charts.push(config);}destroy(){}}
  const window={PipeChatReports:R,PipelineCore:C,PipeChatIcons:{},Chart,PipeChatCustomize:require('../public/workspace-customization')};
  const context={window,document:{getElementById:node,querySelector:node},Chart};
  // The browser exposes globalThis and window as the same object.
  vm.runInNewContext(fs.readFileSync(require.resolve('../public/report-ui'),'utf8'),{...context,globalThis:window});
+ if(multiple){window.PipeChatDashboard=require('../public/dashboard-board');window.PipeChatReportsUI.drawBoard=()=>[];}
  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>renderReport(visible());renderTrust=()=>{};renderReportSelections=()=>{};toast=text=>window.messages.push(text);say=text=>{window.messages.push(text);};window.test={S,handleAction,renderReport,changeSmartReport,defaultReport};`),{...context,window:Object.assign(window,{messages})});
  const h=window.test;Object.assign(h.S,{loaded:true,user:{id:1,name:'QA'},scope:'mine',search:'Alpha',records:[{id:1,account:'Alpha',owner:'Ravi',value:100},{id:2,account:'Beta',owner:'Sarah',value:300}],customFields:[]});
  return {...h,node,charts,messages};
@@ -19,6 +20,16 @@ test('chat graph uses full table despite pipeline search/mine, stays read-only a
  assert.equal(h.S.scope,'mine');assert.equal(h.S.search,'Alpha');assert.deepEqual(JSON.parse(JSON.stringify(h.S.report.owners)),['Ravi','Sarah']);
  h.changeSmartReport('reportMetric','average');assert.equal(h.S.report.measures[0].metric,'average');assert.equal(h.S.report.scope,'all');assert.equal(h.S.report.owners.length,2);
  assert.equal(JSON.stringify(h.S.records),before);assert.equal(h.S.pending,null);
+});
+
+test('multi-dashboard client plans, cached analysis, controls and contextual refinements preserve siblings and data',()=>{
+ const h=harness(true),before=JSON.stringify(h.S.records);
+ h.handleAction({crmAction:{action:'dashboard_plan',operations:[{op:'add',id:'first',spec:report},{op:'add',id:'second',spec:{...report,title:'Count',measures:[{label:'Count',metric:'count',field:null,where:[]}]}}],questions:[{kind:'value',label:'Highest',reference:{elementId:'first',measure:0,stat:'maximum'}}]}},'Two charts and highest');
+ assert.equal(h.S.dashboard.elements.length,2);assert.equal(h.S.tab,'dashboard');assert.match(h.messages.at(-1),/Sarah/);const board=JSON.stringify(h.S.dashboard),charts=h.charts.length;
+ h.handleAction({crmAction:{action:'analyze_dashboard',questions:[{kind:'value',label:'Smallest',reference:{elementId:'first',measure:0,stat:'minimum_nonzero'}}]}},'Smallest only');assert.equal(JSON.stringify(h.S.dashboard),board);assert.equal(h.charts.length,charts);assert.match(h.messages.at(-1),/Ravi/);
+ h.changeSmartReport('reportChart','line');assert.equal(h.S.dashboard.elements[0].spec.chart,'bar');assert.equal(h.S.dashboard.elements[1].spec.chart,'line');
+ h.handleAction({crmAction:{action:'filter_records',target:'context',mode:'replace_filter',where:[[{field:'owner',operator:'equals',value:'Sarah',values:[]}]],removeFields:[]}},'Now only Sarah');assert.equal(h.S.dashboard.elements.length,2);assert.equal(h.S.dashboard.elements[0].spec.where[0][0].operator,'in');assert.equal(h.S.dashboard.elements[1].spec.where[0][0].value,'Sarah');assert.equal(JSON.stringify(h.S.records),before);assert.equal(h.S.pending,null);
+ h.S.revision++;assert.throws(()=>h.handleAction({crmAction:{action:'analyze_dashboard',questions:[]}},'Old graph'),/current dashboard/);
 });
 test('bad chart requests retain the previous graph and clarification context',()=>{
  const h=harness();h.handleAction({crmAction:{action:'show_report',smartReport:report}},'Compare');const prior=JSON.stringify(h.S.report),count=h.charts.length;
