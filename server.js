@@ -359,7 +359,7 @@ const pipechatResponseSchema = {
   required: ["assistantMessage", "crmAction", "memoryNote"]
 };
 
-function responseSchema(customFields,tableSchema) {
+function responseSchema(customFields,tableSchema,conversationFocus=null) {
   // Request-local enums: one user's column names must never affect another user's schema.
   const schema=structuredClone(pipechatResponseSchema), ids=customFields.map(field=>field.id);
   const extend=node=>{
@@ -403,7 +403,7 @@ function responseSchema(customFields,tableSchema) {
   action.properties.action.enum=action.properties.action.enum.filter(name=>!['update_record','bulk_update','update_records','update_todo','move_todos','show_report','filter_view','clear_view'].includes(name));
   schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['update_records']},changes:{type:'array',minItems:1,maxItems:200,items:{anyOf:selectors}}},required:['action','changes']});
   schema.properties.crmAction.anyOf.push(workspacePlan.responseSchema());
-  schema.properties.crmAction.anyOf.push(...todoActions.actionSchemas());
+  schema.properties.crmAction.anyOf.push(...todoActions.actionSchemas(conversationFocus));
   schema.properties.crmAction.anyOf.push(reportEngine.refinementSchema(core,customFields));
   schema.properties.crmAction.anyOf.push(reportEngine.filteringSchema(core,customFields));
   schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['clear_table_view']}},required:['action']});
@@ -792,7 +792,7 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
           type: "json_schema",
           name: "pipechat_response",
           strict: true,
-          schema: spreadsheetBuild ? spreadsheetTypes.responseSchema : tableBuild ? tableSchemaCore.designSchema : csv ? csvCore.schema : responseSchema(customFields,tableSchema)
+          schema: spreadsheetBuild ? spreadsheetTypes.responseSchema : tableBuild ? tableSchemaCore.designSchema : csv ? csvCore.schema : responseSchema(customFields,tableSchema,pipeline?.conversationFocus)
         }
       }
     })
