@@ -25,6 +25,51 @@
     const selectionMode={...mode,description:'Use replace_filter to set categorical selections, including short follow-ups naming different owners, stages or accounts. It replaces only the fields in where and keeps unrelated filters. Use add_filter for extra constraints or an explicit intersection, not for switching one category to another. Use remove_filter to clear named fields.'};
     return object({action:{type:'string',enum:['filter_records']},target:{type:'string',enum:['context','report','pipeline_table']},mode:selectionMode,where,removeFields:replaceFields});
   }
+  function readActionSchemas(core,custom=[]){
+    const p=responseSchema(core,custom).anyOf[1].properties,ids=core.definitions(custom).map(f=>f.id);
+    return [
+      object({action:{type:'string',enum:['query_records'],description:'Show individual records in Pipeline, not a chart. A fresh search starts from the full table and combines filtering and optional sorting in one read-only action.'},where:p.where,orderBy:{type:['string','null'],enum:[...ids,null]},direction:{type:['string','null'],enum:['asc','desc',null]}}),
+      object({action:{type:'string',enum:['show_kpi'],description:'Temporary numerical answer, never a saved dashboard card. Use for show, count, total, average and one-off KPI questions.'},title:p.title,scope:p.scope,where:p.where,measures:p.measures}),
+      object({action:{type:'string',enum:['audit_records'],description:'Read-only counts and affected record names for each requested group. The app evaluates every group independently against the complete scoped table; never count from sampled rows or generate names in assistantMessage.'},scope:p.scope,where:p.where,groups:{type:'array',minItems:1,maxItems:20,items:object({label:{type:'string',minLength:1,maxLength:120},where:{...p.where,minItems:1}})}})
+    ];
+  }
+  function readShape(action,name,keys){
+    if(!action||action.action!==name||keys.some(key=>!Object.hasOwn(action,key))||Object.keys(action).some(key=>!keys.includes(key)))fail(`Supply a complete ${name} request using only supported properties.`);
+  }
+  function readPredicate(where,core,custom,records,today){
+    // Reuse the same strict predicate contract as reports and contextual refinements.
+    filteringRefinement({action:'filter_records',target:'pipeline_table',mode:'add_filter',where,removeFields:[]});
+    return tableMatches({where},core,custom,records,today);
+  }
+  function queryRecords(records,action,core,custom=[],options={}){
+    readShape(action,'query_records',['action','where','orderBy','direction']);
+    if(!Array.isArray(records))fail('Supply the complete authorized table.');
+    const defs=core.definitions(custom);
+    if(action.orderBy===null?action.direction!==null:!defs.some(f=>f.id===action.orderBy)||!['asc','desc'].includes(action.direction))fail('Choose an existing sort column and ascending or descending order, or leave both blank.');
+    const matches=readPredicate(action.where,core,custom,records,options.today),sort=action.orderBy===null?null:{field:action.orderBy,direction:action.direction};
+    return {rows:core.sortRecords(records.filter(matches),sort,custom,options.today?core.date(options.today):new Date()),filter:action.where.length?{where:JSON.parse(JSON.stringify(action.where))}:null,sort};
+  }
+  function kpiReport(action){
+    readShape(action,'show_kpi',['action','title','scope','where','measures']);
+    return JSON.parse(JSON.stringify({version:1,title:action.title,chart:'kpi',scope:action.scope,groupBy:null,bucket:'none',splitBy:null,where:action.where,measures:action.measures,sort:'label_asc',limit:null}));
+  }
+  function auditRecords(records,action,core,custom=[],options={}){
+    readShape(action,'audit_records',['action','scope','where','groups']);
+    if(!Array.isArray(records)||!['all','visible'].includes(action.scope))fail('Choose the full table or the current pipeline view for the audit.');
+    if(!Array.isArray(action.groups)||!action.groups.length||action.groups.length>20)fail('Choose between one and twenty audit groups.');
+    const visible=new Set(options.visibleIds||[]),base=readPredicate(action.where,core,custom,records,options.today);
+    const rows=records.filter(row=>(action.scope==='all'||visible.has(row.id))&&base(row)),labels=new Set(),primary=core.role('primary');
+    const groups=action.groups.map(group=>{
+      if(!group||Object.keys(group).some(k=>!['label','where'].includes(k))||typeof group.label!=='string'||!group.label.trim()||group.label.length>120||labels.has(norm(group.label))||!Array.isArray(group.where)||!group.where.length)fail('Each audit group needs a distinct label and explicit matching conditions.');
+      labels.add(norm(group.label));
+      const matches=readPredicate(group.where,core,custom,records,options.today),selected=rows.filter(matches);
+      return {label:group.label.trim(),count:selected.length,records:selected.map(row=>({id:row.id,name:blank(row[primary])?`Unnamed record #${row.id}`:String(row[primary])}))};
+    });
+    return {total:rows.length,scope:action.scope,groups};
+  }
+  function describeAudit(result){
+    return `Read-only audit: ${result.total} records from ${result.scope==='all'?'the full table':'the current pipeline view'}. Counts and names calculated from table data. Records can appear in multiple groups.\n\n`+result.groups.map(group=>`${group.label} (${group.count})\n${group.records.length?group.records.map(row=>`- ${row.name} (#${row.id})`).join('\n'):'- None'}`).join('\n\n')+'\n\nNo records or saved KPI cards were changed.';
+  }
   function filteringRefinement(action){
     const keys=['action','target','mode','where','removeFields'];
     if(!action||action.action!=='filter_records'||!['context','report','pipeline_table'].includes(action.target)||!refinementModes.includes(action.mode)||keys.some(key=>!Object.hasOwn(action,key))||Object.keys(action).some(key=>!keys.includes(key)))fail('Use filter_records with target, mode, where and removeFields.');
@@ -283,5 +328,5 @@
     }
     return next;
   }
-  return {execute,responseSchema,refinementSchema,filteringSchema,filteringRefinement,refine,refineTableFilter,tableMatches,tableFilterDescription,describe,selections,metrics,buckets,operators,names};
+  return {execute,responseSchema,refinementSchema,filteringSchema,filteringRefinement,readActionSchemas,queryRecords,kpiReport,auditRecords,describeAudit,refine,refineTableFilter,tableMatches,tableFilterDescription,describe,selections,metrics,buckets,operators,names};
 });

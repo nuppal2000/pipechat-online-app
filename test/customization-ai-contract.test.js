@@ -104,3 +104,13 @@ test('card edits, saved focus and chart refinements have compact typed contracts
   }
   assert.match(source,/ENTIRE saved card set/);assert.match(source,/NOT an instruction to set or move status/);assert.match(source,/refine_report action, not a rebuilt show_report/);
 });
+
+test('read intent distinguishes fresh lists, refinements, temporary KPIs, persistent cards and audits',()=>{
+ const branches=context.getSchema([],require('./fixtures/record-additions.cjs').schema).properties.crmAction.anyOf;
+ for(const name of ['query_records','show_kpi','audit_records'])assert(branches.some(b=>b.properties?.action.enum.includes(name)));
+ assert.match(source,/fresh request to find\/show\/list individual records/);assert.match(source,/short refinement of the active chart stays on Dashboard/);
+ assert.match(source,/word KPI alone does not authorize/);assert.match(source,/Use add_kpi ONLY for an explicit request/);assert.match(source,/Each|EVERY requested field\/cohort/);
+ assert(!source.includes('Never infer a switch to Pipeline from words'));
+ assert.match(source,/never.*count samples/);assert.match(source,/not a filter or assumed answer/);
+ const ui=fs.readFileSync(path.join(__dirname,'../public/todo-ui.js'),'utf8');assert.match(ui,/<label>Task<input name="nextAction"/);assert(!ui.includes('<label>To Do<input name="nextAction"'));assert.match(ui,/<span>To Do<\/span>/);
+});

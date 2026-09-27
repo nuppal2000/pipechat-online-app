@@ -759,6 +759,19 @@
     }
     if(['add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your To Do board is open.');return;}
+    if(action.action==='query_records'){
+      const result=window.PipeChatReports.queryRecords(S.records,action,C,S.customFields,{today:localDate()});
+      S.filter=result.filter;S.sort=result.sort;S.scope='all';S.search='';$('dealSearch').value='';S.focus={kind:'table'};S.tab='table';clearClarification();render();
+      say(`Showing ${result.rows.length} matching records${result.sort?`, sorted by ${labels()[result.sort.field]}, ${result.sort.direction==='asc'?'ascending':'descending'}`:''}. Table values are unchanged.`);return;
+    }
+    if(action.action==='audit_records'){
+      const result=window.PipeChatReports.auditRecords(S.records,action,C,S.customFields,{today:localDate(),visibleIds:visible().map(r=>r.id)});
+      if(action.scope==='all'){S.filter=action.where.length?{where:C.clone(action.where)}:null;S.scope='all';S.search='';$('dealSearch').value='';}
+      S.focus={kind:'table'};S.tab='table';clearClarification();render();say(window.PipeChatReports.describeAudit(result));return;
+    }
+    if(action.action==='show_kpi'){
+      handleAction({crmAction:{action:'show_report',smartReport:window.PipeChatReports.kpiReport(action)}},command);return;
+    }
     if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','add_records','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){
       const field=C.fieldName(action.field,S.customFields);
@@ -827,7 +840,7 @@
     if(S.health?.aiConfigured===false){clearClarification();say('Sorry, I cannot connect to the AI service right now. Manual editing is still available. No table changes were made.');return;}
     S.busy=true;updateUsage();const generation=S.generation, revision=S.revision, pending=S.pending,requestView=JSON.stringify(tableView()),requestContext=JSON.stringify({focus:S.focus,report:S.report,tab:S.tab});
     let interpreting=false;
-    try{saveChatState();const reference=await conversation?.flush();if(generation!==S.generation)return;const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(['filter_records','refine_report'].includes(response.crmAction?.action)&&requestContext!==JSON.stringify({focus:S.focus,report:S.report,tab:S.tab})){say('The view changed while I was thinking. Please repeat the request so I can use the current report or table.');return;}if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table','filter_records'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);saveChatState();}
+    try{saveChatState();const reference=await conversation?.flush();if(generation!==S.generation)return;const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(['filter_records','refine_report'].includes(response.crmAction?.action)&&requestContext!==JSON.stringify({focus:S.focus,report:S.report,tab:S.tab})){say('The view changed while I was thinking. Please repeat the request so I can use the current report or table.');return;}if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table','filter_records','query_records','audit_records','show_kpi'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);saveChatState();}
     catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;if(revision===S.revision&&pending===S.pending)clearClarification();const guidance=interpreting?error.message:error.status===401?'Please sign in again, then try your request.':S.usage?.remaining===0||S.usage?.paymentRequired?'Your chat allowance has been used. You can still edit the table manually.':error.status===429?'The service is busy. Please try again shortly.':'Please try again shortly.';say(`Sorry, I couldn't complete that request. ${guidance} No table changes were made.`);}
     finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);$('addFieldBtn').disabled=S.saving||Boolean(S.failedEdit);}}
   }
