@@ -97,6 +97,8 @@ test('card edits, saved focus and chart refinements have compact typed contracts
     assert.deepEqual([...report.required],['action','smartReport']);assert.equal(find('update_todo'),undefined);assert.equal(find('move_todos'),undefined);
     assert.deepEqual([...edit.properties.updates.items.properties.changes.items.properties.field.enum],['status','nextAction','notes','dueDate']);
     assert.deepEqual([...query.properties.selection.properties.source.enum],['all','focus','ids']);
+    const filtering=find('filter_records');assert(filtering);assert.deepEqual([...filtering.properties.target.enum],['context','report','pipeline_table']);
+    assert.equal(find('filter_view'),undefined);assert.equal(find('clear_view'),undefined);assert(find('clear_table_view'));
   }
   assert.match(source,/ENTIRE saved card set/);assert.match(source,/NOT an instruction to set or move status/);assert.match(source,/refine_report action, not a rebuilt show_report/);
 });

@@ -20,6 +20,10 @@
     const properties=responseSchema(core,custom).anyOf[1].properties,ids=core.definitions(custom).map(f=>f.id);
     return object({action:{type:'string',enum:['refine_report']},mode:{type:'string',enum:refinementModes},where:properties.where,replaceFields:{type:'array',maxItems:20,items:{type:'string',enum:ids}},changes:{type:'array',maxItems:refinementFields.length,items:{anyOf:refinementFields.map(field=>object({field:{type:'string',enum:[field]},value:properties[field]}))}}});
   }
+  function filteringSchema(core,custom=[]){
+    const {mode,where,replaceFields}=refinementSchema(core,custom).properties;
+    return object({action:{type:'string',enum:['filter_records']},target:{type:'string',enum:['context','report','pipeline_table']},mode,where,replaceFields});
+  }
   function compileConditions(groups,defs,core,today,records=[]){
     if(!Array.isArray(groups)||groups.length>12)fail('Use at most 12 alternative filter groups. Which conditions matter most?');
     const choices=new Map();
@@ -60,38 +64,87 @@
     // OR across groups; AND within a group. An empty outer array means no filter.
     return row=>!compiled.length||compiled.some(group=>group.every(matches=>matches(row)));
   }
+  function refineWhere(current,action,defs,core,today,records){
+    if(!refinementModes.includes(action.mode))fail('Choose add_filter, replace_filter or remove_filter.');
+    if(!Array.isArray(records))fail('Supply table records when validating filters.');
+    if(!Array.isArray(action.replaceFields)||action.replaceFields.length>20||new Set(action.replaceFields).size!==action.replaceFields.length||action.replaceFields.some(field=>!defs.has(field)))fail('Choose distinct existing columns whose report filters should be replaced or removed.');
+    compileConditions(action.where,defs,core,today,records);
+    if(action.mode==='add_filter'&&action.replaceFields.length||action.mode!=='add_filter'&&!action.replaceFields.length)fail('Only replace_filter and remove_filter use a nonempty replaceFields list.');
+    if(action.mode==='remove_filter'&&action.where.length)fail('remove_filter must have an empty where list.');
+    if(action.mode==='replace_filter'&&(!action.where.length||action.where.flat().some(c=>!action.replaceFields.includes(c.field))||action.replaceFields.some(field=>!action.where.flat().some(c=>c.field===field))))fail('Supply replacement conditions for exactly the columns in replaceFields.');
+    let where=current;
+    // Validate structure before removing predicates, without blocking repairs of invalid literals.
+    if(!Array.isArray(where)||where.length>12||where.some(group=>!Array.isArray(group)||!group.length||group.length>20||group.some(c=>!c||!defs.has(c.field))))fail('The current filter has invalid groups. Please clarify which conditions should apply.');
+    if(action.mode!=='add_filter'){
+      where=where.map(group=>group.filter(c=>!action.replaceFields.includes(c.field)));
+      // An empty AND branch is true, so it makes the entire OR expression unrestricted.
+      if(where.some(group=>!group.length))where=[];
+    }
+    if(action.where.length){
+      if(where.length*action.where.length>12)fail('The combined filters exceed 12 alternative groups. Which conditions matter most?');
+      where=where.length?where.flatMap(left=>action.where.map(right=>[...left,...right])):action.where;
+    }
+    compileConditions(where,defs,core,today,records);
+    return where;
+  }
   // options.records supplies observed choice values; the returned report is an independent clone.
   function refine(current,action,core,custom=[],options={}){
     if(!current||current.version!==1)fail('There is no current smart report to refine. Use show_report for a new report.');
     const keys=['action','mode','where','replaceFields','changes'];
     if(!action||action.action!=='refine_report'||!refinementModes.includes(action.mode)||keys.some(key=>!Object.hasOwn(action,key))||Object.keys(action).some(key=>!keys.includes(key)))fail('Use an explicit refine_report action and supported filter mode; use show_report for a new report.');
     const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),records=options.records||[],today=core.date(options.today||new Date().toISOString().slice(0,10))?.getTime();
-    if(!Array.isArray(records))fail('Supply table records when validating a report refinement.');
-    if(!Array.isArray(action.replaceFields)||action.replaceFields.length>20||new Set(action.replaceFields).size!==action.replaceFields.length||action.replaceFields.some(field=>!defs.has(field)))fail('Choose distinct existing columns whose report filters should be replaced or removed.');
     if(!Array.isArray(action.changes)||action.changes.length>refinementFields.length)fail('Supply a bounded list of report property changes.');
-    compileConditions(action.where,defs,core,today,records);
-    if(action.mode==='add_filter'&&action.replaceFields.length||action.mode!=='add_filter'&&!action.replaceFields.length)fail('Only replace_filter and remove_filter use a nonempty replaceFields list.');
-    if(action.mode==='remove_filter'&&action.where.length)fail('remove_filter must have an empty where list.');
-    if(action.mode==='replace_filter'&&(!action.where.length||action.where.flat().some(c=>!action.replaceFields.includes(c.field))||action.replaceFields.some(field=>!action.where.flat().some(c=>c.field===field))))fail('Supply replacement conditions for exactly the columns in replaceFields.');
     const next={...current},changed=new Set();
     for(const change of action.changes){
       if(!change||!refinementFields.includes(change.field)||changed.has(change.field)||!Object.hasOwn(change,'value')||Object.keys(change).some(key=>!['field','value'].includes(key)))fail('Change each supported report property at most once, with an explicit value.');
       changed.add(change.field);next[change.field]=change.value;
     }
-    // Validate structure before removing predicates, without blocking repairs of invalid literals.
-    if(!Array.isArray(next.where)||next.where.length>12||next.where.some(group=>!Array.isArray(group)||!group.length||group.length>20||group.some(c=>!c||!defs.has(c.field))))fail('The current report has invalid filter groups. Use show_report to define a new report.');
-    if(action.mode!=='add_filter'){
-      next.where=next.where.map(group=>group.filter(c=>!action.replaceFields.includes(c.field)));
-      // An empty AND branch is true, so it makes the entire OR expression unrestricted.
-      if(next.where.some(group=>!group.length))next.where=[];
-      for(const [key,role]of [['owners','owner'],['accounts','primary']])if(action.replaceFields.includes(core.role(role)))next[key]=null;
-    }
-    if(action.where.length){
-      if(next.where.length*action.where.length>12)fail('The combined filters exceed 12 alternative groups. Which conditions matter most?');
-      next.where=next.where.length?next.where.flatMap(left=>action.where.map(right=>[...left,...right])):action.where;
-    }
+    next.where=refineWhere(current.where,action,defs,core,today,records);
+    if(action.mode!=='add_filter')for(const [key,role]of [['owners','owner'],['accounts','primary']])if(action.replaceFields.includes(core.role(role)))next[key]=null;
     execute(records,next,core,custom,options);
     return JSON.parse(JSON.stringify(next));
+  }
+  function tableWhere(filter,core,custom,today){
+    if(filter==null)return [];
+    if(typeof filter!=='object'||Array.isArray(filter))fail('Supply a legacy filter or an object containing typed where conditions.');
+    if(Object.hasOwn(filter,'where')){
+      if(Object.keys(filter).some(key=>key!=='where'))fail('Do not combine legacy and typed table filters.');
+      return filter.where;
+    }
+    if(Object.keys(filter).some(key=>!['field','operator','value'].includes(key))||!Object.hasOwn(filter,'value'))fail('The legacy table filter is incomplete or has unsupported properties.');
+    if(filter.operator==='month_equals')fail('The legacy month_equals filter needs an explicit date range before it can be refined. No filters were discarded.');
+    if(!['equals','contains','is_blank','gt','gte','lt','lte'].includes(filter.operator))fail('That legacy table comparison cannot be converted safely. Please clarify the filter.');
+    const field=core.fieldName(filter.field,custom),def=core.definitions(custom).find(f=>f.id===field);
+    if(!def)fail('A table filter refers to an unavailable field. Which current column should I use?');
+    const c={field,operator:filter.operator,value:filter.operator==='is_blank'?null:filter.value,values:[]};
+    if(c.operator==='equals'&&norm(c.value)==='today'&&(def.type==='date'||field==='follow')){
+      const date=core.date(today||new Date().toISOString().slice(0,10));if(!date)fail('Supply today as a complete valid calendar date.');
+      const literal={...c,value:date.toISOString().slice(0,10)};
+      return def.type==='date'?[[literal]]:[[c],[literal]];
+    }
+    return [[c]];
+  }
+  // The caller resolves conversational context before choosing this table-only helper.
+  function refineTableFilter(currentFilter,action,core,custom=[],records=[],today){
+    const keys=['action','target','mode','where','replaceFields'];
+    if(!action||action.action!=='filter_records'||!['context','pipeline_table'].includes(action.target)||keys.some(key=>!Object.hasOwn(action,key))||Object.keys(action).some(key=>!keys.includes(key)))fail('Use filter_records targeting pipeline_table or a context already resolved to the table.');
+    const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),day=core.date(today||new Date().toISOString().slice(0,10))?.getTime();
+    const where=refineWhere(tableWhere(currentFilter,core,custom,today),action,defs,core,day,records);
+    return {where:JSON.parse(JSON.stringify(where))};
+  }
+  function tableMatches(filter,core,custom=[],records=[],today){
+    if(!Array.isArray(records))fail('Supply table records when validating filters.');
+    const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),day=core.date(today||new Date().toISOString().slice(0,10))?.getTime();
+    return compileConditions(tableWhere(filter,core,custom,today),defs,core,day,records);
+  }
+  function describeConditions(groups,fields){
+    return groups.map(and=>and.map(c=>`${fields[c.field]||c.field} ${c.operator.replaceAll('_',' ')} ${['in','not_in','between'].includes(c.operator)?c.values.join(', '):c.value??''}`).join(' AND ')).map(s=>'('+s+')').join(' OR ');
+  }
+  function tableFilterDescription(filter,core,custom=[]){
+    const where=tableWhere(filter,core,custom),fields=core.fieldsFor(custom);
+    // Formatting needs no row snapshot; matching/refinement validate categorical literals.
+    if(!Array.isArray(where)||where.length>12||where.some(group=>!Array.isArray(group)||!group.length||group.length>20||group.some(c=>!c||!Object.hasOwn(fields,c.field)||!operators.includes(c.operator)||!Array.isArray(c.values)||c.values.length>2000)))fail('The table filter cannot be described until its conditions are valid.');
+    return describeConditions(where,fields);
   }
   function dateBucket(value,bucket,core){
     const date=core.date(value);if(!date)return null;
@@ -181,7 +234,7 @@
     return {labels:data.map(g=>g.label),datasets,table,rows,count:rows.length,undated,totalGroups,shownGroups:data.length,description:describe(spec,core,custom),title:spec.title.trim()||measures.map(m=>m.label).join(' / ')+(spec.groupBy?' by '+defs.get(spec.groupBy).name:'')};
   }
   function describe(spec,core,custom=[]){
-    const fields=core.fieldsFor(custom),groups=g=>g.map(and=>and.map(c=>`${fields[c.field]||c.field} ${c.operator.replaceAll('_',' ')} ${['in','not_in','between'].includes(c.operator)?c.values.join(', '):c.value??''}`).join(' AND ')).map(s=>'('+s+')').join(' OR ');
+    const fields=core.fieldsFor(custom),groups=g=>describeConditions(g,fields);
     const parts=[spec.scope==='all'?'All table records':'Current pipeline view'];
     if(spec.where.length)parts.push(groups(spec.where));
     for(const m of spec.measures)if(m.where.length)parts.push(`${m.label}: ${groups(m.where)}${m.metric==='percentage'?' / all matching records in each group':''}`);
@@ -205,5 +258,5 @@
     }
     return next;
   }
-  return {execute,responseSchema,refinementSchema,refine,describe,selections,metrics,buckets,operators,names};
+  return {execute,responseSchema,refinementSchema,filteringSchema,refine,refineTableFilter,tableMatches,tableFilterDescription,describe,selections,metrics,buckets,operators,names};
 });

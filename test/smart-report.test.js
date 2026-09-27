@@ -247,3 +247,91 @@ test('refinement composition is bounded by group, condition, value and change li
  assert.throws(()=>refineSales(salesSpec(),refinement({where:[[condition('f_account','in',null,Array(2001).fill('A'))]]})),/valid list/);
  assert.throws(()=>refineSales(salesSpec(),refinement({changes:Array(10).fill({field:'title',value:'New'})})),/bounded/);
 });
+
+const filtering=(extra={})=>({action:'filter_records',target:'pipeline_table',mode:'add_filter',where:[],replaceFields:[],...extra});
+const refineTable=(current,action)=>R.refineTableFilter(current,action,salesCore,[],salesRows,salesOptions.today);
+const tableRows=filter=>salesRows.filter(R.tableMatches(filter,salesCore,[],salesRows,salesOptions.today));
+
+test('contextual filtering schema exposes only target and bounded typed filter operations',()=>{
+ const schema=R.filteringSchema(salesCore),visit=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual([...node.required].sort(),Object.keys(node.properties).sort());}for(const v of Object.values(node))if(v&&typeof v==='object')visit(v);};visit(schema);
+ assert.deepEqual(schema.required,['action','target','mode','where','replaceFields']);
+ assert.deepEqual(schema.properties.action.enum,['filter_records']);
+ assert.deepEqual(schema.properties.target.enum,['context','report','pipeline_table']);
+ assert.deepEqual(schema.properties.mode.enum,['add_filter','replace_filter','remove_filter']);
+ assert.equal(schema.properties.where.maxItems,12);assert.equal(schema.properties.where.items.maxItems,20);
+ assert(schema.properties.replaceFields.items.enum.includes('f_stage'));assert(!schema.properties.changes);
+ assert(!R.filteringSchema(C).properties.replaceFields.items.enum.includes('f_stage'));
+});
+
+test('table filtering starts unrestricted, uses membership and preserves the legacy base condition',()=>{
+ for(const filter of [null,undefined,{where:[]}]){assert.equal(tableRows(filter).length,7);assert.equal(R.tableFilterDescription(filter,salesCore),'');}
+ const current={field:'f_close',operator:'gte',value:'2026-10-01'},action=filtering({where:[[selectedStages]]}),before=JSON.stringify({current,action,salesRows});
+ const next=refineTable(current,action);
+ assert.deepEqual(next,{where:[[closeCondition,selectedStages]]});assert.deepEqual(tableRows(next).map(r=>r.id),[1,2]);
+ assert.equal(R.tableFilterDescription(next,salesCore,[]),'(Close date gte 2026-10-01 AND Stage in Qualified, Proposal Sent)');
+ next.where[0][1].values.push('Negotiation');assert.equal(JSON.stringify({current,action,salesRows}),before);
+ assert.deepEqual(refineTable(null,filtering()),{where:[]});
+ assert.deepEqual(tableRows(refineTable(null,filtering({target:'context',where:[[selectedStages]]}))).map(r=>r.id),[1,2,7]);
+});
+
+test('conflicting table selections remain empty until explicitly replaced or removed',()=>{
+ const current={field:'f_stage',operator:'equals',value:'Qualified'},proposal=condition('f_stage','equals','Proposal Sent');
+ const conflict=refineTable(current,filtering({where:[[proposal]]}));assert.equal(tableRows(conflict).length,0);
+ const replaced=refineTable(conflict,filtering({mode:'replace_filter',replaceFields:['f_stage'],where:[[proposal]]}));
+ assert.deepEqual(replaced.where,[[proposal]]);assert.deepEqual(tableRows(replaced).map(r=>r.id),[2]);
+ const removed=refineTable(replaced,filtering({mode:'remove_filter',replaceFields:['f_stage']}));
+ assert.deepEqual(removed,{where:[]});assert.equal(tableRows(removed).length,7);
+ const none=refineTable(null,filtering({where:[[condition('f_stage','equals','On Hold')]]}));assert.equal(tableRows(none).length,0);
+});
+
+test('table and report refinements share OR composition, field removal and bounded validation',()=>{
+ const current={where:[[condition('f_owner','equals','Alex'),closeCondition],[condition('f_owner','equals','Sam'),closeCondition]]};
+ const where=[[condition('f_stage','equals','Qualified')],[condition('f_stage','equals','Proposal Sent')]];
+ const next=refineTable(current,filtering({where}));
+ assert.deepEqual(next.where,refineSales(salesSpec(current),refinement({where})).where);assert.deepEqual(tableRows(next).map(r=>r.id),[1,2]);
+ const removed=refineTable(next,filtering({mode:'remove_filter',replaceFields:['f_stage']}));
+ assert(removed.where.every(group=>group.length===2));assert.equal(tableRows(removed).length,6);
+ const alternatives=Array.from({length:4},(_,i)=>[condition('f_value','gte',i)]);
+ assert.throws(()=>refineTable({where:alternatives},filtering({where:alternatives})),/12 alternative/);
+ assert.throws(()=>R.tableMatches({where:[[]]},salesCore),/conditions/);
+});
+
+test('table choice filters reject joined strings while text punctuation remains literal',()=>{
+ for(const value of ['Qualified, Proposal Sent','Qualified|Proposal Sent']){
+  const legacy={field:'f_stage',operator:'contains',value};
+  assert.throws(()=>R.tableMatches(legacy,salesCore,[],salesRows),/exact options/);
+  assert.throws(()=>refineTable(null,filtering({where:[[condition('f_stage','contains',value)]]})),/exact options/);
+  assert.throws(()=>refineTable(null,filtering({where:[[condition('f_stage','in',null,[value])]]})),/defined choices/);
+ }
+ const records=[{...salesRows[0],f_account:'A|B, C'}],filter={field:'f_account',operator:'contains',value:'A|B, C'};
+ assert.equal(records.filter(R.tableMatches(filter,salesCore,[],records)).length,1);
+ assert.equal(salesRows.filter(R.tableMatches(filter,salesCore,[],salesRows)).length,0);
+ const custom=[{id:'cf_region',name:'Region',type:'choice',options:['East','West']}],observed=[{id:1,cf_region:'North'}];
+ const typed={where:[[condition('cf_region','in',null,['North'])]]};
+ assert.equal(observed.filter(R.tableMatches(typed,C,custom,observed)).length,1);
+ assert.equal(R.tableFilterDescription(typed,C,custom),'(Region in North)','describing validated filters does not require the row snapshot');
+ assert.throws(()=>R.tableMatches(typed,C,custom),/defined choices/);
+});
+
+test('unsupported or ambiguous legacy filters clarify instead of discarding existing restrictions',()=>{
+ const current={field:'f_close',operator:'month_equals',value:10},before=JSON.stringify(current);
+ for(const attempt of [()=>refineTable(current,filtering({where:[[selectedStages]]})),()=>R.tableMatches(current,salesCore),()=>R.tableFilterDescription(current,salesCore)])assert.throws(attempt,/month_equals.*date range/);
+ for(const filter of [{},{where:[],field:'f_stage',operator:'equals',value:'Qualified'},{field:'missing',operator:'equals',value:'A'},{field:'f_owner',operator:'unsupported',value:'Alex'}])assert.throws(()=>refineTable(filter,filtering()));
+ assert.equal(JSON.stringify(current),before);
+});
+
+test('legacy blanks, field labels and Today retain their existing matching semantics',()=>{
+ const blankStage={field:'Stage',operator:'is_blank',value:null};assert.deepEqual(tableRows(blankStage).map(r=>r.id),[6]);
+ const todayFilter={field:'f_close',operator:'equals',value:'Today'};
+ assert.deepEqual(salesRows.filter(R.tableMatches(todayFilter,salesCore,[],salesRows,'2026-10-02')).map(r=>r.id),[2]);
+ const records=[{follow:'Today'},{follow:'2026-10-02'},{follow:'2026-10-03'}],legacy={field:'follow',operator:'equals',value:'Today'};
+ assert.equal(records.filter(R.tableMatches(legacy,C,[],records,'2026-10-02')).length,2);
+ assert.throws(()=>R.tableMatches(todayFilter,salesCore,[],salesRows,'not-a-date'),/valid calendar date/);
+});
+
+test('table helper rejects report targets, legacy actions and malformed filter operations without mutation',()=>{
+ const current={where:[[closeCondition]]},before=JSON.stringify(current);
+ for(const extra of [{target:'report'},{target:'unknown'},{action:'filter_view'},{changes:[]},{mode:'new'},{mode:'remove_filter'},{replaceFields:['f_stage']},{mode:'replace_filter',replaceFields:['f_owner'],where:[[selectedStages]]},{where:[[condition('f_stage','in','Qualified',['Qualified'])]]}])assert.throws(()=>refineTable(current,filtering(extra)));
+ assert.throws(()=>R.refineTableFilter(null,filtering(),salesCore,[],{}),/table records/);
+ assert.equal(JSON.stringify(current),before);
+});

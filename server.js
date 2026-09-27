@@ -12,6 +12,7 @@ const workspacePlan = require('./public/workspace-plan.js');
 const dateCalendar = require('./lib/date-context.js');
 const clarificationContext = require('./lib/clarification-context.js');
 const reportInstructions = [
+  'For read-only filtering use the compact filter_records action with target context by default. The app resolves context from the saved conversation object: a report stays a report, a table stays a table. Never infer a switch to Pipeline from words such as show, only, records, accounts or owners. Use target pipeline_table ONLY when the user explicitly requests the table/pipeline instead of the active report; target report explicitly addresses the report. filter_records uses mode add_filter/replace_filter/remove_filter, typed where conditions and replaceFields just like refine_report, without changes. Membership is an in array, not joined contains text. filter_view and clear_view are obsolete and unavailable. clear_table_view explicitly opens the unfiltered table; removing chart filters uses refine_report or filter_records. Do not return old actions copied from conversation history.',
   'For a follow-up to currentReport.version 1, use the compact refine_report action, not a rebuilt show_report. This applies even outside Dashboard: now only, instead, those stages, same chart, change it to average retain the chart object and its cohort. refine_report has mode add_filter/replace_filter/remove_filter, where, replaceFields, changes. add_filter ANDs where with existing filters (replaceFields []); use it for further narrowing. replace_filter removes predicates only on replaceFields then adds the new where, for an explicitly replaced selection. remove_filter has where [] and removes only specified fields. Unspecified filters, measure, aggregation, group, scope, dates, sorting and limit remain unchanged. changes is an array of only requested report-property edits {field,value}, using field title/chart/scope/groupBy/bucket/splitBy/measures/sort/limit. For a chart-type change use changes [{field:chart,value:...}], mode add_filter and where []. Never change sum to count just because the chart type changed. Use show_report for a fresh unrelated chart or to convert a legacy report (without version 1), preserving that legacy report context when refining it.',
   'A follow-up only Qualified and Proposal Sent means an in condition with values [Qualified, Proposal Sent], NOT contains Qualified|Proposal Sent, not one joined string, and not two AND equals conditions. This rule applies to any set of categorical choices, owners or account names. Choice fields require equals/in/not_equals/not_in with actual option values. If requested categories do not exist, clarify and keep the previous chart rather than displaying a false empty result. Do not invent a regex or encode OR with punctuation; text substring searches are literal.',
   'For every new chart or numerical question use show_report with smartReport (version 1) and report null. The old report format is compatibility-only. pipeline.records contains the FULL authorized table, independent of dashboard controls or visibleIds. Default scope is all; use visible only if the user explicitly requests the current filtered pipeline view. Never fabricate totals or return calculated numbers in conversation: the browser validates and calculates the report from rows.',
@@ -398,11 +399,13 @@ function responseSchema(customFields,tableSchema) {
     item.properties[key]=key==='filter'?structuredClone(action.properties.filter.anyOf[1]):key==='ids'?{type:'array',minItems:1,maxItems:2000,items:{type:'integer'}}:{type:'string',minLength:1};
     return item;
   });
-  action.properties.action.enum=action.properties.action.enum.filter(name=>!['update_record','bulk_update','update_records','update_todo','move_todos','show_report'].includes(name));
+  action.properties.action.enum=action.properties.action.enum.filter(name=>!['update_record','bulk_update','update_records','update_todo','move_todos','show_report','filter_view','clear_view'].includes(name));
   schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['update_records']},changes:{type:'array',minItems:1,maxItems:200,items:{anyOf:selectors}}},required:['action','changes']});
   schema.properties.crmAction.anyOf.push(workspacePlan.responseSchema());
   schema.properties.crmAction.anyOf.push(...todoActions.actionSchemas());
   schema.properties.crmAction.anyOf.push(reportEngine.refinementSchema(core,customFields));
+  schema.properties.crmAction.anyOf.push(reportEngine.filteringSchema(core,customFields));
+  schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['clear_table_view']}},required:['action']});
   schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['show_report']},smartReport:reportEngine.responseSchema(core,customFields).anyOf[1]},required:['action','smartReport']});
   return schema;
 }
@@ -755,7 +758,8 @@ async function planPipeChatAction({ instructions, userCommand, pipeline, convers
               type: "input_text",
               text: JSON.stringify({
                 task: "Respond as a conversational CRM assistant. Propose a supported CRM action when the user requests a table, field, layout, view, report or task change; you may also suggest propose_field for a recurring workflow concept with no equivalent existing field. Clarify missing details; explain unsupported requests conversationally.",
-                supportedActions: actionSchema.properties.action.enum.filter(name=>!['update_record','bulk_update','update_todo','move_todos'].includes(name)).concat('workspace_plan','query_todos','update_todos','refine_report'),
+                supportedActions: actionSchema.properties.action.enum.filter(name=>!['update_record','bulk_update','update_todo','move_todos','filter_view','clear_view'].includes(name)).concat('workspace_plan','query_todos','update_todos','refine_report','filter_records','clear_table_view'),
+                readOnlyContext:{object:pipeline?.conversationFocus?.kind|| (pipeline?.currentView==='dashboard'?'report':'table'),defaultFilterTarget:'context',explicitTableTarget:'pipeline_table'},
                 userCommand,
                 pipeline:{...pipeline,primaryField:core.role('primary')},
                 dateContext:dateCalendar.dateContext(pipeline?.currentDate),

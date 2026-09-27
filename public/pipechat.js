@@ -159,7 +159,7 @@
     return data;
   }
   function visible() {
-    const query=C.normalize(S.search), matches=C.predicate(S.filter,S.customFields);
+    const query=C.normalize(S.search), matches=tablePredicate();
     const rows=tailored()?S.records.filter(record=>matches(record)&&(S.scope!=='mine'||!C.role('owner')||[S.user?.name,S.user?.email].filter(Boolean).some(name=>C.normalize(name)===C.normalize(record[C.role('owner')])) )&&(S.scope!=='open'||!S.tableSchema.legacy||!['Won','Lost'].includes(record.stage))&&(!query||Object.keys(labels()).some(field=>C.normalize(record[field]).includes(query)))):S.records.filter(record=>matches(record) && (S.scope!=='mine'||[S.user?.name,S.user?.email].filter(Boolean).some(name=>C.normalize(name)===C.normalize(record.owner))) && (S.scope!=='open'||!['Won','Lost'].includes(record.stage)) && (!query||['account','owner','stage','next','notes'].some(field=>C.normalize(record[field]).includes(query))));
     return C.sortRecords(rows,S.sort,S.customFields);
   }
@@ -172,6 +172,8 @@
     const defs=C.definitions(S.customFields),legacyLayout=!tailored()||S.tableSchema.legacy&&JSON.stringify(S.tableSchema.fields)===JSON.stringify(Schema.legacySchema().fields);
     return Schema.orderedFields(legacyLayout?defs.filter(f=>['account','stage','value','close','owner',...S.customFields.map(f=>f.id)].includes(f.id)):defs,S.tableSchema?.columnOrder);
   }
+  function tablePredicate(filter=S.filter){return filter?.where?window.PipeChatReports.tableMatches(filter,C,S.customFields,S.records,localDate()):C.predicate(filter,S.customFields);}
+  function filterDescription(filter){return filter?.where?window.PipeChatReports.tableFilterDescription(filter,C,S.customFields):filter?`${labels()[filter.field]||filter.field} ${filter.operator.replaceAll('_',' ')} ${filter.value??''}`:'';}
   function tableView(){return {scope:S.scope,search:S.search,filter:C.clone(S.filter),sort:C.clone(S.sort),visibleIds:visible().map(row=>row.id),columnOrder:tableColumns().map(f=>f.id)};}
   function updateUsage() {
     const locked=Boolean(S.usage?.paymentRequired || S.usage?.remaining===0),chatLoading=Boolean(S.health?.conversationPersistence&&window.PipeChatConversation&&S.chatReady===false);
@@ -234,7 +236,7 @@
     document.querySelector('[data-scope="mine"]').hidden=tailored()&&!C.role('owner');
     document.querySelector('[data-scope="open"]').hidden=tailored()&&(!S.tableSchema.legacy||!C.fields.stage);
     $('clearSearchBtn').hidden=!S.filter&&!S.search&&S.scope==='all';
-    $('filterStrip').hidden=!S.filter;$('filterText').textContent=S.filter?`${labels()[S.filter.field]||S.filter.field} ${S.filter.operator.replaceAll('_',' ')} ${S.filter.value??''}`:'';
+    $('filterStrip').hidden=!S.filter;$('filterText').textContent=filterDescription(S.filter);
     $('undoStrip').hidden=!S.undo||Boolean(S.undo.dismissed);$('undoText').textContent=S.undo?.label||'';
     $('quickUndoBtn').disabled=S.saving||Boolean(S.failedEdit);$('undoBtn').disabled=S.saving||Boolean(S.failedEdit);
     document.querySelectorAll('[data-scope]').forEach(button=>button.classList.toggle('active',button.dataset.scope===S.scope));
@@ -589,8 +591,8 @@
       if(oldOwner!==C.role('owner'))S.report.owners=null;
       if(S.sort&&!Object.hasOwn(labels(),S.sort.field))S.sort=null;
       const filterExists=filter=>!filter||[...Object.keys(labels()),'health','activity'].includes(C.fieldName(filter.field,S.customFields));
-      if(!filterExists(S.filter))S.filter=null;
-      try{C.predicate(S.filter,S.customFields);}catch{S.filter=null;}
+      if(!S.filter?.where&&!filterExists(S.filter))S.filter=null;
+      try{tablePredicate();}catch{S.filter=null;}
       if(!filterExists(S.report.filter))S.report.filter=null;
       S.report=C.reconcileReport(S.report,S.customFields);syncShareFields();
       S.undo=undo?{records:before,customFields:beforeFields,tableSchema:beforeSchema,todoCards:beforeCards,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;
@@ -769,11 +771,15 @@
       S.clarification={originalCommand,question:action.question||response.assistantMessage,previousAction:S.sourceAction,options:action.clarificationOptions||null,answers};S.pending=null;
       say(S.clarification.question||'Which company or value did you mean?');renderTrust();return;
     }
-    if(action.action==='filter_view'){
-      const filter=action.filter||{field:action.field,operator:action.operator||'equals',value:action.value};C.predicate(filter,S.customFields)(S.records[0]||{});
-      S.filter=filter;S.scope='all';S.search='';$('dealSearch').value='';S.tab='table';S.clarification=null;render();say(`Showing ${visible().length} matching deals.`);return;
+    if(['filter_view','clear_view'].includes(action.action))throw new Error('Please clarify whether you want to refine the current report or filter the pipeline table. Your current view has been kept.');
+    if(action.action==='filter_records'){
+      if(!['context','report','pipeline_table'].includes(action.target))throw new Error('Should I filter the current report or the pipeline table?');
+      const target=action.target==='context'?(S.focus?.kind==='report'||(!S.focus&&S.tab==='dashboard')?'report':'pipeline_table'):action.target;
+      if(target==='report'){handleAction({crmAction:{action:'refine_report',mode:action.mode,where:action.where,replaceFields:action.replaceFields,changes:[]}},command);return;}
+      const next=window.PipeChatReports.refineTableFilter(S.filter,action,C,S.customFields,S.records,localDate());
+      S.filter=next.where.length?next:null;S.focus={kind:'table'};S.tab='table';clearClarification();render();say(`Showing ${visible().length} matching records. Table values are unchanged.`);return;
     }
-    if(action.action==='clear_view'){clearClarification();S.filter=null;S.search='';S.scope='all';$('dealSearch').value='';S.tab='table';render();say(`Showing all ${S.records.length} deals.`);return;}
+    if(action.action==='clear_table_view'){clearClarification();S.filter=null;S.search='';S.scope='all';$('dealSearch').value='';S.focus={kind:'table'};S.tab='table';render();say(`Showing all ${S.records.length} deals.`);return;}
     if(action.action==='refine_report'){
       try{
         const next=window.PipeChatReports.refine(S.report,action,C,S.customFields,{records:S.records,today:localDate(),visibleIds:visible().map(r=>r.id)});
@@ -819,9 +825,9 @@
     if(S.pending&&S.pending.kind!=='editor'&&['yes','confirm','looks good','ok','okay','yes please'].includes(answer)){await confirmDraft();return;}
     if(S.pending?.kind==='editor'){say('Save or cancel the new-deal form before starting another request.');return;}
     if(S.health?.aiConfigured===false){clearClarification();say('Sorry, I cannot connect to the AI service right now. Manual editing is still available. No table changes were made.');return;}
-    S.busy=true;updateUsage();const generation=S.generation, revision=S.revision, pending=S.pending,requestView=JSON.stringify(tableView());
+    S.busy=true;updateUsage();const generation=S.generation, revision=S.revision, pending=S.pending,requestView=JSON.stringify(tableView()),requestContext=JSON.stringify({focus:S.focus,report:S.report,tab:S.tab});
     let interpreting=false;
-    try{saveChatState();const reference=await conversation?.flush();if(generation!==S.generation)return;const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);saveChatState();}
+    try{saveChatState();const reference=await conversation?.flush();if(generation!==S.generation)return;const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(['filter_records','refine_report'].includes(response.crmAction?.action)&&requestContext!==JSON.stringify({focus:S.focus,report:S.report,tab:S.tab})){say('The view changed while I was thinking. Please repeat the request so I can use the current report or table.');return;}if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);saveChatState();}
     catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;if(revision===S.revision&&pending===S.pending)clearClarification();const guidance=interpreting?error.message:error.status===401?'Please sign in again, then try your request.':S.usage?.remaining===0||S.usage?.paymentRequired?'Your chat allowance has been used. You can still edit the table manually.':error.status===429?'The service is busy. Please try again shortly.':'Please try again shortly.';say(`Sorry, I couldn't complete that request. ${guidance} No table changes were made.`);}
     finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);$('addFieldBtn').disabled=S.saving||Boolean(S.failedEdit);}}
   }
@@ -1272,11 +1278,11 @@
       try{
         const filters=[document.querySelector('[data-scope].active')?.textContent||'All records'];
         if(S.search)filters.push('Search: '+S.search);
-        for(const f of [S.filter,S.report.filter])if(f)filters.push(`Filter: ${labels()[f.field]||f.field} ${f.operator.replaceAll('_',' ')} ${f.value??''}`);
+        for(const f of [S.filter,S.report.filter])if(f)filters.push('Filter: '+filterDescription(f));
         if(S.report.owners)filters.push('Owners: '+S.report.owners.join(', '));
         if(S.report.accounts)filters.push('Records: '+S.report.accounts.join(', '));
         if(S.report.from||S.report.to)filters.push(`Dates: ${S.report.from||'Any'} to ${S.report.to||'Any'}`);
-        if(S.report.version===1){filters.splice(0,filters.length,window.PipeChatReports.describe(S.report,C,S.customFields));filters.push('Top KPI cards: '+(document.querySelector('[data-scope].active')?.textContent||'All records')+(S.search?' / search: '+S.search:'')+(S.filter?' / '+labels()[S.filter.field]+' '+S.filter.operator+' '+(S.filter.value??''):''));}
+        if(S.report.version===1){filters.splice(0,filters.length,window.PipeChatReports.describe(S.report,C,S.customFields));filters.push('Top KPI cards: '+(document.querySelector('[data-scope].active')?.textContent||'All records')+(S.search?' / search: '+S.search:'')+(S.filter?' / '+filterDescription(S.filter):''));}
         const snapshot=window.PipeChatDashboardPDF.capture(document,filters);
         if(await window.PipeChatDashboardPDF.download(snapshot,()=>S.generation===generation&&Boolean(S.user)))toast('Dashboard PDF exported.');
       }catch(error){if(S.generation===generation)toast('Could not export dashboard: '+error.message);}
