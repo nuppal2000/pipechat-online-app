@@ -100,6 +100,7 @@ test('compact refinement schema is separate, strict, bounded and uses request-lo
  assert.deepEqual(schema.required,['action','mode','where','replaceFields','changes']);
  assert.deepEqual(schema.properties.action.enum,['refine_report']);
  assert.deepEqual(schema.properties.mode.enum,['add_filter','replace_filter','remove_filter']);
+ assert.equal(schema.properties.changes.minItems,1);
  assert.equal(schema.properties.where.maxItems,12);assert.equal(schema.properties.where.items.maxItems,20);
  assert(schema.properties.where.items.items.properties.field.enum.includes('f_stage'));
  assert(!schema.properties.where.items.items.properties.field.enum.includes('stage'));
@@ -142,6 +143,23 @@ test('report property patches preserve unspecified measures, cohorts and explici
  assert.equal(next.scope,'visible');assert.equal(next.sort,'label_asc');assert.deepEqual(next.measures,measures);assert.deepEqual(next.where,current.where);
  const changed=refineSales(current,refinement({changes:[{field:'measures',value:[measure('sum','f_value')]}]}));
  assert.equal(changed.measures[0].metric,'sum');assert.deepEqual(changed.where,current.where);assert.equal(current.measures[0].metric,'average');
+});
+
+test('measure and grouping refinements regenerate inherited titles but preserve explicit titles',()=>{
+ const current=salesSpec({title:'Total Deal Value by Stage',measures:[{...measure('sum','f_value'),label:'Total Deal Value'}]}),before=JSON.stringify(current);
+ const average={field:'measures',value:[{...measure('average','f_value'),label:'Average Deal Value'}]};
+ const next=refineSales(current,refinement({changes:[average]}));
+ assert.equal(next.title,'');assert.equal(runSales(next).title,'Average Deal Value by Stage');
+ assert.deepEqual(next.where,current.where);assert.equal(runSales(next).count,runSales(current).count);
+ const grouped=refineSales(current,refinement({changes:[{field:'groupBy',value:'f_owner'}]}));
+ assert.equal(grouped.title,'');assert.equal(runSales(grouped).title,'Total Deal Value by Owner');
+ const ungrouped=refineSales(next,refinement({changes:[{field:'groupBy',value:null}]}));
+ assert.equal(runSales(ungrouped).title,'Average Deal Value');
+ for(const changes of [[{field:'title',value:'My comparison'},average],[average,{field:'groupBy',value:'f_owner'},{field:'title',value:'My comparison'}]]){
+  const named=refineSales(current,refinement({changes}));assert.equal(named.title,'My comparison');assert.equal(runSales(named).title,'My comparison');
+ }
+ const narrowed=refineSales(current,refinement({where:[[selectedStages]],changes:[{field:'chart',value:'kpi'}]}));
+ assert.equal(narrowed.title,current.title);assert.equal(JSON.stringify(current),before);
 });
 
 test('adding OR filters distributes AND across every existing alternative',()=>{
@@ -248,19 +266,80 @@ test('refinement composition is bounded by group, condition, value and change li
  assert.throws(()=>refineSales(salesSpec(),refinement({changes:Array(10).fill({field:'title',value:'New'})})),/bounded/);
 });
 
-const filtering=(extra={})=>({action:'filter_records',target:'pipeline_table',mode:'add_filter',where:[],replaceFields:[],...extra});
+const filtering=(extra={})=>({action:'filter_records',target:'pipeline_table',mode:'add_filter',where:[],removeFields:[],...extra});
 const refineTable=(current,action)=>R.refineTableFilter(current,action,salesCore,[],salesRows,salesOptions.today);
 const tableRows=filter=>salesRows.filter(R.tableMatches(filter,salesCore,[],salesRows,salesOptions.today));
 
 test('contextual filtering schema exposes only target and bounded typed filter operations',()=>{
  const schema=R.filteringSchema(salesCore),visit=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual([...node.required].sort(),Object.keys(node.properties).sort());}for(const v of Object.values(node))if(v&&typeof v==='object')visit(v);};visit(schema);
- assert.deepEqual(schema.required,['action','target','mode','where','replaceFields']);
+ assert.deepEqual(schema.required,['action','target','mode','where','removeFields']);
  assert.deepEqual(schema.properties.action.enum,['filter_records']);
  assert.deepEqual(schema.properties.target.enum,['context','report','pipeline_table']);
  assert.deepEqual(schema.properties.mode.enum,['add_filter','replace_filter','remove_filter']);
  assert.equal(schema.properties.where.maxItems,12);assert.equal(schema.properties.where.items.maxItems,20);
- assert(schema.properties.replaceFields.items.enum.includes('f_stage'));assert(!schema.properties.changes);
- assert(!R.filteringSchema(C).properties.replaceFields.items.enum.includes('f_stage'));
+ assert(schema.properties.removeFields.items.enum.includes('f_stage'));assert(!schema.properties.changes);assert(!schema.properties.replaceFields);
+ assert(!R.filteringSchema(C).properties.removeFields.items.enum.includes('f_stage'));
+});
+
+test('filteringRefinement produces independent canonical actions with derived replacement fields',()=>{
+ const owner=condition('f_owner','equals','Ravi'),where=[[selectedStages,owner],[condition('f_stage','equals','Negotiation'),owner]];
+ for(const target of ['context','report','pipeline_table']){
+  const action=filtering({target,mode:'replace_filter',where}),before=JSON.stringify(action);
+  const canonical=R.filteringRefinement(action);
+  assert.deepEqual(canonical,{action:'refine_report',mode:'replace_filter',where,replaceFields:['f_stage','f_owner'],changes:[]});
+  canonical.where[0][0].values.push('On Hold');canonical.replaceFields.push('f_close');
+  assert.equal(JSON.stringify(action),before);
+ }
+ const added=R.filteringRefinement(filtering({where:[[owner]]}));assert.deepEqual(added.replaceFields,[]);assert.deepEqual(added.changes,[]);
+ const action=filtering({mode:'remove_filter',removeFields:['f_owner']}),removed=R.filteringRefinement(action);
+ assert.deepEqual(removed,{action:'refine_report',mode:'remove_filter',where:[],replaceFields:['f_owner'],changes:[]});
+ removed.replaceFields.push('f_stage');assert.deepEqual(action.removeFields,['f_owner']);
+});
+
+test('only Ravi after a stage subset preserves stage/date filters on both table and report targets',()=>{
+ const records=salesRows.map(row=>({...row,f_owner:row.f_owner==='Alex'?'Ravi':row.f_owner}));
+ const base={where:[[selectedStages,closeCondition]]},owner=condition('f_owner','equals','Ravi');
+ const action=filtering({mode:'replace_filter',where:[[owner]]}),before=JSON.stringify({base,action,records});
+ const table=R.refineTableFilter(base,action,salesCore,[],records,salesOptions.today);
+ assert.deepEqual(table.where,[[selectedStages,closeCondition,owner]]);
+ assert.deepEqual(records.filter(R.tableMatches(table,salesCore,[],records,salesOptions.today)).map(row=>row.id),[1]);
+ const current=salesSpec(base),canonical=R.filteringRefinement({...action,target:'report'});
+ assert.deepEqual(canonical.replaceFields,['f_owner']);
+ const report=R.refine(current,canonical,salesCore,[],{...salesOptions,records});
+ assert.deepEqual(report.where,table.where);assert.deepEqual(report.measures,current.measures);assert.equal(report.groupBy,current.groupBy);assert.equal(report.title,current.title);
+ assert.equal(R.execute(records,report,salesCore).count,1);
+ const changed=R.refineTableFilter(table,filtering({mode:'replace_filter',where:[[condition('f_owner','equals','Sam')]]}),salesCore,[],records,salesOptions.today);
+ assert.deepEqual(changed.where,[[selectedStages,closeCondition,condition('f_owner','equals','Sam')]]);
+ assert.deepEqual(records.filter(R.tableMatches(changed,salesCore,[],records,salesOptions.today)).map(row=>row.id),[2]);
+ assert.equal(JSON.stringify({base,action,records}),before);
+});
+
+test('derived replacement and explicit removal preserve other predicates in every OR branch',()=>{
+ const qualified=condition('f_stage','equals','Qualified'),proposal=condition('f_stage','equals','Proposal Sent');
+ const current={where:[[qualified,condition('f_owner','equals','Sam'),closeCondition],[proposal,condition('f_owner','equals','Alex'),closeCondition]]};
+ const owner=condition('f_owner','equals','Alex'),replaced=refineTable(current,filtering({mode:'replace_filter',where:[[owner]]}));
+ assert.deepEqual(replaced.where,[[qualified,closeCondition,owner],[proposal,closeCondition,owner]]);
+ const removed=refineTable(replaced,filtering({mode:'remove_filter',removeFields:['f_owner']}));
+ assert.deepEqual(removed.where,[[qualified,closeCondition],[proposal,closeCondition]]);
+ assert.deepEqual(tableRows(removed).map(row=>row.id),[1,2]);
+ assert.deepEqual(current.where[0][1],condition('f_owner','equals','Sam'));
+});
+
+test('filter action conversion rejects contradictory modes, redundant fields and malformed conditions',()=>{
+ const bad=[{replaceFields:[]},{removeFields:null},{removeFields:['f_owner']},{mode:'replace_filter'},
+  {mode:'replace_filter',removeFields:['f_stage'],where:[[selectedStages]]},{mode:'remove_filter'},
+  {mode:'remove_filter',removeFields:['f_stage'],where:[[selectedStages]]},{mode:'remove_filter',removeFields:['f_stage','f_stage']},
+  {mode:'remove_filter',removeFields:['']},{mode:'remove_filter',removeFields:Array.from({length:21},(_,i)=>'f_'+i)},
+  {where:[[]]},{where:[[null]]},{where:[[condition('', 'equals','A')]]},{where:[[condition('f_owner','unknown','A')]]},
+  {where:[[condition('f_value','equals',NaN)]]},{where:[[condition('f_owner','in',null,[])]]},
+  {where:[[condition('f_owner','equals','A',['B'])]]},{where:[[condition('f_value','between',null,[1])]]},
+  {where:[[condition('f_owner','in',null,Array(2001).fill('A'))]]},{where:Array.from({length:13},()=>[selectedStages])},
+  {where:[Array(21).fill(selectedStages)]},{where:[[{...selectedStages,extra:true}]]},
+  {mode:'replace_filter',where:[Array.from({length:20},(_,i)=>condition('f_'+i,'equals','A')),[condition('f_20','equals','B')]]}
+ ];
+ for(const extra of bad)assert.throws(()=>R.filteringRefinement(filtering(extra)));
+ assert.throws(()=>R.filteringRefinement({...filtering(),removeFields:undefined}));
+ assert.throws(()=>refineTable(null,filtering({mode:'remove_filter',removeFields:['missing']})),/existing columns/);
 });
 
 test('table filtering starts unrestricted, uses membership and preserves the legacy base condition',()=>{
@@ -277,9 +356,9 @@ test('table filtering starts unrestricted, uses membership and preserves the leg
 test('conflicting table selections remain empty until explicitly replaced or removed',()=>{
  const current={field:'f_stage',operator:'equals',value:'Qualified'},proposal=condition('f_stage','equals','Proposal Sent');
  const conflict=refineTable(current,filtering({where:[[proposal]]}));assert.equal(tableRows(conflict).length,0);
- const replaced=refineTable(conflict,filtering({mode:'replace_filter',replaceFields:['f_stage'],where:[[proposal]]}));
+ const replaced=refineTable(conflict,filtering({mode:'replace_filter',where:[[proposal]]}));
  assert.deepEqual(replaced.where,[[proposal]]);assert.deepEqual(tableRows(replaced).map(r=>r.id),[2]);
- const removed=refineTable(replaced,filtering({mode:'remove_filter',replaceFields:['f_stage']}));
+ const removed=refineTable(replaced,filtering({mode:'remove_filter',removeFields:['f_stage']}));
  assert.deepEqual(removed,{where:[]});assert.equal(tableRows(removed).length,7);
  const none=refineTable(null,filtering({where:[[condition('f_stage','equals','On Hold')]]}));assert.equal(tableRows(none).length,0);
 });
@@ -289,7 +368,7 @@ test('table and report refinements share OR composition, field removal and bound
  const where=[[condition('f_stage','equals','Qualified')],[condition('f_stage','equals','Proposal Sent')]];
  const next=refineTable(current,filtering({where}));
  assert.deepEqual(next.where,refineSales(salesSpec(current),refinement({where})).where);assert.deepEqual(tableRows(next).map(r=>r.id),[1,2]);
- const removed=refineTable(next,filtering({mode:'remove_filter',replaceFields:['f_stage']}));
+ const removed=refineTable(next,filtering({mode:'remove_filter',removeFields:['f_stage']}));
  assert(removed.where.every(group=>group.length===2));assert.equal(tableRows(removed).length,6);
  const alternatives=Array.from({length:4},(_,i)=>[condition('f_value','gte',i)]);
  assert.throws(()=>refineTable({where:alternatives},filtering({where:alternatives})),/12 alternative/);
@@ -331,7 +410,7 @@ test('legacy blanks, field labels and Today retain their existing matching seman
 
 test('table helper rejects report targets, legacy actions and malformed filter operations without mutation',()=>{
  const current={where:[[closeCondition]]},before=JSON.stringify(current);
- for(const extra of [{target:'report'},{target:'unknown'},{action:'filter_view'},{changes:[]},{mode:'new'},{mode:'remove_filter'},{replaceFields:['f_stage']},{mode:'replace_filter',replaceFields:['f_owner'],where:[[selectedStages]]},{where:[[condition('f_stage','in','Qualified',['Qualified'])]]}])assert.throws(()=>refineTable(current,filtering(extra)));
+ for(const extra of [{target:'report'},{target:'unknown'},{action:'filter_view'},{changes:[]},{mode:'new'},{mode:'remove_filter'},{removeFields:['f_stage']},{mode:'replace_filter',removeFields:['f_owner'],where:[[selectedStages]]},{replaceFields:[]},{where:[[condition('f_stage','in','Qualified',['Qualified'])]]}])assert.throws(()=>refineTable(current,filtering(extra)));
  assert.throws(()=>R.refineTableFilter(null,filtering(),salesCore,[],{}),/table records/);
  assert.equal(JSON.stringify(current),before);
 });
