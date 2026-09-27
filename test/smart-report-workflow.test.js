@@ -57,3 +57,24 @@ test('the exact legacy misrouting response cannot switch away or produce a false
  assert.throws(()=>h.handleAction({crmAction:{action:'filter_records',target:'unknown',mode:'add_filter',where:[],removeFields:[]}},'Only these'),/report or the pipeline/);
  assert.equal(JSON.stringify({report:h.S.report,filter:h.S.filter,tab:h.S.tab,records:h.S.records}),before);
 });
+
+test('fresh record search leaves Dashboard, clears unrelated filters and applies sorting together without mutations',()=>{
+ const h=harness();h.handleAction({crmAction:{action:'show_report',smartReport:report}},'Show chart');
+ const saved=JSON.stringify(h.S.report),rows=JSON.stringify(h.S.records);h.S.filter={where:[[{field:'owner',operator:'equals',value:'Nobody',values:[]}]]};
+ h.handleAction({crmAction:{action:'query_records',where:[[{field:'owner',operator:'in',value:null,values:['Ravi','Sarah']}]],orderBy:'value',direction:'desc'}},'Show Ravi or Sarah deals, highest first');
+ assert.equal(h.S.tab,'table');assert.equal(h.S.focus.kind,'table');assert.equal(h.S.scope,'all');assert.equal(h.S.search,'');assert.equal(h.S.sort.field,'value');assert.equal(h.S.sort.direction,'desc');assert.match(h.messages.at(-1),/Showing 2 matching records, sorted/);
+ assert.equal(JSON.stringify(h.S.report),saved);assert.equal(JSON.stringify(h.S.records),rows);assert.equal(h.S.pending,null);
+ const prior=JSON.stringify(h.S);assert.throws(()=>h.handleAction({crmAction:{action:'query_records',where:[],orderBy:'missing',direction:'asc'}},'Bad sort'));assert.equal(JSON.stringify(h.S),prior);
+});
+
+test('one-off KPI never creates a persistent proposal or changes saved KPI definitions',()=>{
+ const h=harness(),schema=JSON.stringify(h.S.tableSchema),rows=JSON.stringify(h.S.records);
+ h.handleAction({crmAction:{action:'show_kpi',title:'One-off total',scope:'all',where:[],measures:[{label:'Total value',metric:'sum',field:'value',where:[]}]}},'Show me a KPI for total value');
+ assert.equal(h.S.tab,'dashboard');assert.equal(h.S.report.chart,'kpi');assert.equal(h.S.report.groupBy,null);assert.equal(h.S.pending,null);assert.equal(JSON.stringify(h.S.tableSchema),schema);assert.equal(JSON.stringify(h.S.records),rows);assert.match(h.node('reportKpis').innerHTML,/400/);
+});
+
+test('audit output uses computed counts/names, ignores assistant arithmetic and leaves saved cards untouched',()=>{
+ const h=harness();h.handleAction({crmAction:{action:'show_report',smartReport:report}},'Show chart');const schema=JSON.stringify(h.S.tableSchema);
+ h.handleAction({assistantMessage:'There are 999 missing owners',crmAction:{action:'audit_records',scope:'all',where:[],groups:[{label:'Missing owner',where:[[{field:'owner',operator:'is_blank',value:null,values:[]}]]},{label:'Missing date',where:[[{field:'close',operator:'is_blank',value:null,values:[]}]]}]}},'Audit owners and dates');
+ assert.equal(h.S.tab,'table');assert.equal(h.S.scope,'all');assert.equal(h.S.search,'');assert.match(h.messages.at(-1),/Missing owner \(0\)/);assert.match(h.messages.at(-1),/Missing date \(2\)/);assert.match(h.messages.at(-1),/Alpha \(#1\)/);assert.match(h.messages.at(-1),/Beta \(#2\)/);assert(!h.messages.at(-1).includes('999'));assert.equal(JSON.stringify(h.S.tableSchema),schema);assert.equal(h.S.pending,null);
+});
