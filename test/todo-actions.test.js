@@ -47,3 +47,20 @@ test('full-board membership, custom titles, duplicates on a record, no-ops and e
 test('no source confusion, malformed predicate or forged focus silently broadens selection',()=>{
   for(const selection of [{...select(),ids:['todo_1']},{...select(),focusId:'x'},select([],'ids'),select([condition('recordId','equals','1')]),select([condition('status','contains','In Progress|Done')]),select([condition('dueDate','before','tomorrow')]),select([condition('notes','is_blank','x')])])assert.throws(()=>A.select(cards,records,null,selection));
 });
+
+test('model selection variants bind focus references to the current request and cannot mix selection sources',()=>{
+ const focus=A.remember(cards.slice(0,3),'current-focus-id');
+ for(const schema of A.actionSchemas(focus)){
+  const variants=(schema.properties.selection||schema.properties.updates.items.properties.selection).anyOf;
+  assert.deepEqual(variants.map(v=>v.properties.source.enum[0]),['all','ids','focus']);
+  const selected=variants[2].properties;
+  assert.deepEqual(selected.focusId.enum,['current-focus-id']);assert.equal(selected.focusId.type,'string');assert.equal(selected.ids.maxItems,0);
+  assert.equal(variants[0].properties.ids.maxItems,0);assert.equal(variants[1].properties.ids.minItems,1);
+  assert(variants.slice(0,2).every(v=>v.properties.focusId.type==='null'));
+ }
+ for(const absent of [null,{kind:'report'},{kind:'todos',id:'',ids:[]},{kind:'todos',id:'x',ids:null}]){
+  assert.equal(A.actionSchemas(absent)[0].properties.selection.anyOf.length,2);
+ }
+ const next=A.actionSchemas({...focus,id:'next-focus-id'})[0].properties.selection.anyOf[2];
+ assert.deepEqual(next.properties.focusId.enum,['next-focus-id']);
+});

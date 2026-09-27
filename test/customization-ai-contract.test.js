@@ -96,7 +96,9 @@ test('card edits, saved focus and chart refinements have compact typed contracts
     assert(query&&edit&&report&&refine);assert.deepEqual([...query.required],['action','selection']);assert.deepEqual([...edit.required],['action','updates']);
     assert.deepEqual([...report.required],['action','smartReport']);assert.equal(find('update_todo'),undefined);assert.equal(find('move_todos'),undefined);
     assert.deepEqual([...edit.properties.updates.items.properties.changes.items.properties.field.enum],['status','nextAction','notes','dueDate']);
-    assert.deepEqual([...query.properties.selection.properties.source.enum],['all','focus','ids']);
+    assert.deepEqual([...query.properties.selection.anyOf].map(s=>s.properties.source.enum[0]),['all','ids']);
+    const focused=context.getSchema([],table,{kind:'todos',id:'current-selection',ids:['todo_1','todo_2']}).properties.crmAction.anyOf.find(b=>b.properties?.action.enum.includes('update_todos')).properties.updates.items.properties.selection.anyOf;
+    assert.deepEqual([...focused.find(s=>s.properties.source.enum[0]==='focus').properties.focusId.enum],['current-selection']);
     const filtering=find('filter_records');assert(filtering);assert.deepEqual([...filtering.properties.target.enum],['context','report','pipeline_table']);assert(filtering.required.includes('removeFields'));assert(!filtering.properties.replaceFields);assert.equal(refine.properties.changes.minItems,1);
     assert.equal(find('filter_view'),undefined);assert.equal(find('clear_view'),undefined);assert(find('clear_table_view'));
   }
