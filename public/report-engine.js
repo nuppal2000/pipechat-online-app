@@ -18,11 +18,34 @@
   }
   function refinementSchema(core,custom=[]){
     const properties=responseSchema(core,custom).anyOf[1].properties,ids=core.definitions(custom).map(f=>f.id);
-    return object({action:{type:'string',enum:['refine_report']},mode:{type:'string',enum:refinementModes},where:properties.where,replaceFields:{type:'array',maxItems:20,items:{type:'string',enum:ids}},changes:{type:'array',maxItems:refinementFields.length,items:{anyOf:refinementFields.map(field=>object({field:{type:'string',enum:[field]},value:properties[field]}))}}});
+    return object({action:{type:'string',enum:['refine_report']},mode:{type:'string',enum:refinementModes},where:properties.where,replaceFields:{type:'array',maxItems:20,items:{type:'string',enum:ids}},changes:{type:'array',minItems:1,maxItems:refinementFields.length,items:{anyOf:refinementFields.map(field=>object({field:{type:'string',enum:[field]},value:properties[field]}))}}});
   }
   function filteringSchema(core,custom=[]){
     const {mode,where,replaceFields}=refinementSchema(core,custom).properties;
-    return object({action:{type:'string',enum:['filter_records']},target:{type:'string',enum:['context','report','pipeline_table']},mode,where,replaceFields});
+    return object({action:{type:'string',enum:['filter_records']},target:{type:'string',enum:['context','report','pipeline_table']},mode,where,removeFields:replaceFields});
+  }
+  function filteringRefinement(action){
+    const keys=['action','target','mode','where','removeFields'];
+    if(!action||action.action!=='filter_records'||!['context','report','pipeline_table'].includes(action.target)||!refinementModes.includes(action.mode)||keys.some(key=>!Object.hasOwn(action,key))||Object.keys(action).some(key=>!keys.includes(key)))fail('Use filter_records with target, mode, where and removeFields.');
+    if(!Array.isArray(action.removeFields)||action.removeFields.length>20||action.removeFields.some(field=>typeof field!=='string'||!field.trim())||new Set(action.removeFields).size!==action.removeFields.length)fail('Choose up to 20 distinct fields to remove.');
+    if(!Array.isArray(action.where)||action.where.length>12)fail('Use at most 12 alternative filter groups.');
+    const fields=new Set(),scalar=value=>value===null||typeof value==='string'||typeof value==='number'&&Number.isFinite(value);
+    for(const group of action.where){
+      if(!Array.isArray(group)||!group.length||group.length>20)fail('Each filter group needs 1 to 20 conditions.');
+      for(const c of group){
+        const conditionKeys=['field','operator','value','values'];
+        if(!c||conditionKeys.some(key=>!Object.hasOwn(c,key))||Object.keys(c).some(key=>!conditionKeys.includes(key))||typeof c.field!=='string'||!c.field.trim()||!operators.includes(c.operator)||!scalar(c.value)||!Array.isArray(c.values)||c.values.length>2000||c.values.some(value=>!scalar(value)))fail('Supply complete typed filter conditions with scalar value and values.');
+        const membership=['in','not_in','between'].includes(c.operator);
+        if(membership?c.value!==null||!c.values.length:c.values.length)fail('Use values for membership/ranges with value null; use a single value for other comparisons.');
+        if(c.operator==='between'&&c.values.length!==2)fail('A between filter needs exactly two values.');
+        fields.add(c.field);
+      }
+    }
+    if(action.mode==='remove_filter'?(action.where.length||!action.removeFields.length):action.removeFields.length)fail('Only remove_filter uses nonempty removeFields, and its where must be empty.');
+    if(action.mode==='replace_filter'&&(!fields.size||fields.size>20))fail('Replacement conditions must identify between 1 and 20 fields.');
+    const replaceFields=action.mode==='remove_filter'?action.removeFields:action.mode==='replace_filter'?[...fields]:[];
+    // Schema-independent shape validation happens here; field/type validation stays in refinement.
+    return JSON.parse(JSON.stringify({action:'refine_report',mode:action.mode,where:action.where,replaceFields,changes:[]}));
   }
   function compileConditions(groups,defs,core,today,records=[]){
     if(!Array.isArray(groups)||groups.length>12)fail('Use at most 12 alternative filter groups. Which conditions matter most?');
@@ -99,6 +122,7 @@
       if(!change||!refinementFields.includes(change.field)||changed.has(change.field)||!Object.hasOwn(change,'value')||Object.keys(change).some(key=>!['field','value'].includes(key)))fail('Change each supported report property at most once, with an explicit value.');
       changed.add(change.field);next[change.field]=change.value;
     }
+    if(!changed.has('title')&&(changed.has('measures')||changed.has('groupBy')))next.title='';
     next.where=refineWhere(current.where,action,defs,core,today,records);
     if(action.mode!=='add_filter')for(const [key,role]of [['owners','owner'],['accounts','primary']])if(action.replaceFields.includes(core.role(role)))next[key]=null;
     execute(records,next,core,custom,options);
@@ -126,10 +150,10 @@
   }
   // The caller resolves conversational context before choosing this table-only helper.
   function refineTableFilter(currentFilter,action,core,custom=[],records=[],today){
-    const keys=['action','target','mode','where','replaceFields'];
-    if(!action||action.action!=='filter_records'||!['context','pipeline_table'].includes(action.target)||keys.some(key=>!Object.hasOwn(action,key))||Object.keys(action).some(key=>!keys.includes(key)))fail('Use filter_records targeting pipeline_table or a context already resolved to the table.');
+    const canonical=filteringRefinement(action);
+    if(action.target==='report')fail('Use filter_records targeting pipeline_table or a context already resolved to the table.');
     const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),day=core.date(today||new Date().toISOString().slice(0,10))?.getTime();
-    const where=refineWhere(tableWhere(currentFilter,core,custom,today),action,defs,core,day,records);
+    const where=refineWhere(tableWhere(currentFilter,core,custom,today),canonical,defs,core,day,records);
     return {where:JSON.parse(JSON.stringify(where))};
   }
   function tableMatches(filter,core,custom=[],records=[],today){
@@ -258,5 +282,5 @@
     }
     return next;
   }
-  return {execute,responseSchema,refinementSchema,filteringSchema,refine,refineTableFilter,tableMatches,tableFilterDescription,describe,selections,metrics,buckets,operators,names};
+  return {execute,responseSchema,refinementSchema,filteringSchema,filteringRefinement,refine,refineTableFilter,tableMatches,tableFilterDescription,describe,selections,metrics,buckets,operators,names};
 });
