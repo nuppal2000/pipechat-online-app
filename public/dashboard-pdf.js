@@ -15,6 +15,8 @@
       for(let i=0;i<kpis.length;i+=3)body.push(Array.from({length:3},(_,j)=>kpis[i+j]?{fillColor:palette[(i+j)%palette.length],margin:[7,7,7,7],stack:[{text:kpis[i+j].label,fontSize:10,color:'#495366'},{text:kpis[i+j].value,fontSize:19,bold:true,margin:[0,4,0,0]}]}:{text:''}));
       content.push({table:{widths:['*','*','*'],body},layout:'noBorders',margin:[0,12,0,14]});
     }
+    for(const report of snapshot.reports||[snapshot]){
+    const snapshot=report;
     content.push({text:text(snapshot.title),style:'heading',margin:[0,6,0,8]});
     if(snapshot.chart){
       if(!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(snapshot.chart))throw new Error('Invalid dashboard chart image.');
@@ -24,11 +26,13 @@
     content.push({text:text(snapshot.caption),style:'muted',margin:[0,0,0,10]});
     const headings=(snapshot.headings||[]).map(text),rows=(snapshot.rows||[]).map(r=>headings.map((_,i)=>({text:text(r[i]),margin:[0,4,0,4]})));
     if(headings.length)content.push({table:{headerRows:1,widths:headings.map((_,i)=>i===0?'*':145),body:[headings.map(h=>({text:h,bold:true,fillColor:'#eaf0f4',margin:[0,5,0,5]})),...rows]},layout:'lightHorizontalLines'});
+    }
     return {pageSize:'A4',pageOrientation:'landscape',pageMargins:[36,30,36,36],info:{title:text(snapshot.workspace)+' dashboard',creator:'PipeChat'},defaultStyle:{font:'Roboto',fontSize:10,color:'#1d2939'},styles:{title:{fontSize:22,bold:true,margin:[0,5,0,4]},heading:{fontSize:14,bold:true},muted:{fontSize:9,color:'#596579'}},content,footer:(page,total)=>({text:`PipeChat  |  ${page} / ${total}`,alignment:'right',fontSize:8,color:'#596579',margin:[36,10,36,0]})};
   }
   function capture(doc,filters=[],now=new Date()){
     const $=id=>doc.getElementById(id),cards=selector=>Array.from(doc.querySelectorAll(selector),el=>({label:el.querySelector('span')?.textContent||'',value:el.querySelector('strong')?.textContent||''}));
     if($('dashboardView').hidden)throw new Error('Open the dashboard before exporting.');
+    if($('dashboardElements')&&!$('dashboardElements').hidden)return {workspace:$('workspaceTitle').textContent,exportedAt:now.toLocaleString(),filters:['Saved KPI cards use the pipeline scope; each temporary graph has its own labeled scope.'],kpis:cards('.metrics > div'),reports:Array.from(doc.querySelectorAll('.dashboard-element'),el=>({title:el.querySelector('h4').textContent,caption:Array.from(el.querySelectorAll('.dashboard-element-scope,.dashboard-shared-filter'),p=>p.textContent).join(' / '),chart:el.querySelector('canvas')?.toDataURL('image/png')||null,chartKpis:Array.from(el.querySelectorAll('.dashboard-kpi-result'),k=>({label:k.querySelector('span').textContent,value:k.querySelector('strong').textContent})),headings:Array.from(el.querySelectorAll('th'),th=>th.textContent),rows:Array.from(el.querySelectorAll('tbody tr'),tr=>Array.from(tr.cells,td=>td.textContent))}))};
     return {workspace:$('workspaceTitle').textContent,title:$('reportTitle').textContent,exportedAt:now.toLocaleString(),filters:[...filters],kpis:cards('.metrics > div'),chart:$('chartContainer').hidden?null:$('reportCanvas').toDataURL('image/png'),chartKpis:$('reportKpis').hidden?[]:cards('#reportKpis > div'),caption:$('reportCaption').textContent,headings:Array.from(doc.querySelectorAll('.report-table th'),el=>el.textContent),rows:Array.from($('reportRows').querySelectorAll('tr'),tr=>Array.from(tr.cells,td=>td.textContent))};
   }
   let library;
