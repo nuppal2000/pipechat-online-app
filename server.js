@@ -739,6 +739,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
         todoInstructions,
         dateCalendar.instructions,
         clarificationContext.instructions,
+        selectedRoute.reason==='clarification_repair'?clarificationContext.recoveryInstructions:'',
         'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Custom-title creation is available through the Add To Do card dialog.',
         customizationInstructions,
         tableActionInstructions,
@@ -753,6 +754,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
         todoInstructions,
         dateCalendar.instructions,
         clarificationContext.instructions,
+        selectedRoute.reason==='clarification_repair'?clarificationContext.recoveryInstructions:'',
         'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Custom-title creation is available through the Add To Do card dialog.',
         customizationInstructions,
         tableActionInstructions,
@@ -863,7 +865,14 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
   }
   if (!memoryUpdate) result.memoryNote = null;
   else if (typeof result.memoryNote !== 'string' || result.memoryNote.length > 3200) result.memoryNote = null;
-  return {...aiGrounding.guardIdentity(payload, result), ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
+  const grounded=aiGrounding.guardIdentity(payload, result);
+  if (clarificationContext.repeats(pendingClarification,grounded)) {
+    if (selectedRoute.reason!=='clarification_repair' && Date.now()-startedAt<65000) {
+      return planPipeChatAction(payload,{tier:'complex',model:AI_MODELS.complex,reason:'clarification_repair'},startedAt);
+    }
+    return {crmAction:null,memoryNote:null,assistantMessage:"Sorry, I understood your reply, but couldn't safely prepare the complete change. I have stopped the repeated question. Please restate the change with the record and values you want; nothing has been saved.",ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
+  }
+  return {...grounded, ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
 }
 
 const conversationInstructions = [

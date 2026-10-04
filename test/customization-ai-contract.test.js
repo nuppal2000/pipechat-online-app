@@ -112,5 +112,5 @@ test('read intent distinguishes fresh lists, refinements, temporary KPIs, persis
  assert.match(source,/word KPI alone does not authorize/);assert.match(source,/Use add_kpi ONLY for an explicit request/);assert.match(source,/Each|EVERY requested field\/cohort/);
  assert(!source.includes('Never infer a switch to Pipeline from words'));
  assert.match(source,/never.*count samples/);assert.match(source,/not a filter or assumed answer/);
- const ui=fs.readFileSync(path.join(__dirname,'../public/todo-ui.js'),'utf8');assert.match(ui,/<label>Task<input name="nextAction"/);assert(!ui.includes('<label>To Do<input name="nextAction"'));assert.match(ui,/<span>To Do<\/span>/);
+ const ui=fs.readFileSync(path.join(__dirname,'../public/todo-ui.js'),'utf8');assert.match(ui,/<label>Task<input name="nextAction"/);assert(!ui.includes('<label>To Do<input name="nextAction"'));assert.match(ui,/<span>Task<\/span>/);
 });

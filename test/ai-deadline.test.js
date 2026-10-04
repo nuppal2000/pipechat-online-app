@@ -249,3 +249,20 @@ test('a complex request goes directly to 5.2; no speculative mini call',async()=
   assert.equal(res.status,200);assert.equal(res.body.ai.model,'gpt-5.2');assert.equal(h.requests.length,1);
   assert.deepEqual(h.calls,['reserve','commit']);
 });
+test('answered clarification repeat gets one bounded complex repair and one chat charge',async()=>{
+  const question='Should I set the account value to 25000 and follow-up to 2026-10-18?',first=deferred();let count=0;
+  const h=harness('supabase',async()=>({ok:true,json:()=>++count===1?first.promise:Promise.resolve(modelData)}));
+  const {done,res}=await h.request({userCommand:'yes',pendingClarification:{originalCommand:'Quoted 25K, follow up in two weeks',question}});
+  h.clock.advance(20000);first.resolve({output_text:JSON.stringify({crmAction:{action:'clarify',question}})});await done;
+  assert.equal(res.status,200);assert.equal(res.body.ai.reason,'clarification_repair');assert.deepEqual(h.calls,['reserve','commit']);
+  assert.deepEqual(h.clock.delays,[80000,60000]);assert.equal(h.requests.length,2);
+  const input=JSON.parse(JSON.parse(h.requests[0].options.body).input[0].content[0].text);
+  assert.equal(input.clarificationAnswer.selectedKey,'yes');assert.match(JSON.parse(h.requests[1].options.body).instructions,/previous attempt repeated/);
+});
+test('persistent model repetition is stopped rather than returning the same question indefinitely',async()=>{
+  const question='Should I set Acme owner to Sarah?';
+  const h=harness('supabase',async()=>({ok:true,json:async()=>({output_text:JSON.stringify({crmAction:{action:'clarify',question}})})}));
+  const {done,res}=await h.request({userCommand:'yes',pendingClarification:{originalCommand:'Update Acme owner',question}});await done;
+  assert.equal(res.status,200);assert.equal(h.requests.length,2);assert.equal(res.body.crmAction,null);assert(!res.body.assistantMessage.includes(question));assert.match(res.body.assistantMessage,/nothing has been saved/);
+  assert.deepEqual(h.calls,['reserve','commit']);
+});

@@ -18,3 +18,20 @@ test('invalid, mixed, non-sequential or unknown replies are not guessed',()=>{
 test('guidance leaves optional fields blank but does not guess required or ambiguous details',()=>{
   assert.match(C.instructions,/Missing OPTIONAL/);assert.match(C.instructions,/Do not repeat a question already answered/);assert.match(C.instructions,/Final confirmation still belongs to the app/);
 });
+test('yes resolves the concrete Summit suggestion, including the optional contact, for review only',()=>{
+  const p={originalCommand:'Spoke to Mike from summit insurance partners, quoted $25K for Product A, follow up in two weeks.',question:'Should I update Summit Insurance Partners with Deal Value (USD) = 25000 and Next Follow-Up Date = 2026-10-18? If you also want Mike stored, should I put him in Primary Contact?'};
+  for(const answer of ['yes','Yes please.','go ahead','yes to both']){
+    const result=C.resolve(p,answer);assert.equal(result.selectedKey,'yes');assert.equal(result.originalCommand,p.originalCommand);assert.match(result.selectedMeaning,/not authorization to save/);
+  }
+  assert.equal(C.resolve({question:'Which Atlas record should I update?'},'yes'),null);
+  assert.equal(C.resolve({question:'Should I use Sarah or Neelam?'},'yes'),null);
+  assert.equal(C.resolve({question:'Should I update this?',candidates:[{id:1},{id:2}]},'yes'),null);
+});
+test('repeat detection covers current and earlier answered questions without suppressing a different detail',()=>{
+  const p={question:'Should I set Acme owner to Sarah?',answers:[{question:'What due date should the legal review task have?',answer:'Tomorrow'}]};
+  assert(C.repeats(p,{crmAction:{action:'clarify',question:'Should I set Acme owner to Sarah?!'}}));
+  assert(C.repeats(p,{crmAction:{action:'clarify',question:'What due date should the legal review task have?'}}));
+  assert(!C.repeats(p,{crmAction:{action:'clarify',question:'Which of the two Atlas records do you mean?'}}));
+  assert(!C.sameQuestion('Should I use 2026-10-18 for the date?','Should I use 2026-10-19 for the date?'));
+  assert(!C.repeats(null,{crmAction:{action:'clarify',question:p.question}}));
+});

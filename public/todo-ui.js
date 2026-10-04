@@ -12,14 +12,14 @@
       if(draft&&!cards.some(c=>c.id===draft.card.id)){draft=null;expanded=null;}
       $('todoView').innerHTML=T.statuses.map((status,i)=>`<section class="todo-lane" data-lane="${status}" aria-label="${status}"><header><span class="todo-dot todo-dot-${i}"></span><h3>${status}</h3><span>${cards.filter(c=>c.status===status).length}</span></header><div class="todo-lane-cards">${cards.filter(c=>c.status===status).map(card=>{
         const view=T.project(card,S.records,S.tableSchema),open=expanded===card.id,edit=draft?.card.id===card.id?draft.card:card;
-        return `<article class="todo-card" data-card="${card.id}" draggable="${!disabled()&&!open}"><div class="todo-card-heading"><button class="todo-title" data-todo-open="${card.id}" aria-expanded="${open}" ${busyAttr()}>${esc(view.title)}${icon(open?'ChevronUp':'ChevronDown')}</button><button class="icon-btn todo-remove" data-todo-delete="${card.id}" aria-label="Delete card for ${esc(view.title)}" title="Delete card" ${busyAttr()}>${icon('X')}</button></div><div class="todo-next"><span>To Do</span><p>${esc(card.nextAction||'Not set')}</p></div><footer><span class="todo-due ${card.dueDate&&card.dueDate<localDate()&&status!=='Done'?'overdue':''}">${esc(card.dueDate||'No due date')}</span></footer>${open?`<form class="todo-details" data-todo-edit="${card.id}"><label>Board status<select name="status" ${busyAttr()}>${statuses(edit.status)}</select></label><label>Task<input name="nextAction" value="${esc(edit.nextAction)}" maxlength="12000" ${busyAttr()}></label><label>Due date<input name="dueDate" type="date" value="${esc(edit.dueDate)}" ${busyAttr()}></label><label>Notes<textarea name="notes" rows="5" maxlength="16000" ${busyAttr()}>${esc(edit.notes)}</textarea></label>${draft?.error?`<p class="error" role="alert">${esc(draft.error)}</p>`:''}<div class="todo-edit-actions"><button class="primary" type="submit" ${busyAttr()}>Preview changes</button><button class="secondary" type="button" data-todo-cancel ${busyAttr()}>Cancel</button></div></form>`:''}</article>`;
+        return `<article class="todo-card" data-card="${card.id}" draggable="${!disabled()&&!open}"><div class="todo-card-heading"><button class="todo-title" data-todo-open="${card.id}" aria-expanded="${open}" ${busyAttr()}>${esc(view.title)}${icon(open?'ChevronUp':'ChevronDown')}</button><button class="icon-btn todo-remove" data-todo-delete="${card.id}" aria-label="Delete card for ${esc(view.title)}" title="Delete card" ${busyAttr()}>${icon('X')}</button></div><div class="todo-next"><span>Task</span><p>${esc(card.nextAction||'Not set')}</p></div><footer><span class="todo-due ${card.dueDate&&card.dueDate<localDate()&&status!=='Done'?'overdue':''}">${esc(card.dueDate||'No due date')}</span></footer>${open?`<form class="todo-details" data-todo-edit="${card.id}"><label>Board status<select name="status" ${busyAttr()}>${statuses(edit.status)}</select></label><label>Task<input name="nextAction" value="${esc(edit.nextAction)}" maxlength="12000" ${busyAttr()}></label><label>Due date<input name="dueDate" type="date" value="${esc(edit.dueDate)}" ${busyAttr()}></label><label>Notes<textarea name="notes" rows="5" maxlength="16000" ${busyAttr()}>${esc(edit.notes)}</textarea></label>${draft?.error?`<p class="error" role="alert">${esc(draft.error)}</p>`:''}<div class="todo-edit-actions"><button class="primary" type="submit" ${busyAttr()}>Preview changes</button><button class="secondary" type="button" data-todo-cancel ${busyAttr()}>Cancel</button></div></form>`:''}</article>`;
       }).join('')||'<p class="todo-empty">No cards</p>'}</div></section>`).join('');
       $('addTodoBtn').disabled=disabled();$('todoSuggestion').hidden=true;
     }
     function openForm(){
       if(disabled())return;
       if(S.pending||S.clarification||draft?.dirty){toast('Preview or cancel the current card edit or proposal first.');return;}
-      dialogVersion=S.revision;$('todoDialogTitle').textContent='New To Do card';
+      dialogVersion=S.revision;$('todoDialogTitle').textContent='New task';
       $('todoCustomTitle').value='';renderRecordOptions(S.records.length?'':'custom');toggleCustomTitle();
       $('todoStatus').innerHTML=statuses('To Do');$('todoNext').value='';$('todoNotes').value='';$('todoDue').value='';$('todoFormError').textContent='';$('todoDialog').showModal();
     }
@@ -100,27 +100,37 @@
     window.addEventListener('blur',stopDrag);
     function preview(p){
       if(p.updates){
-        const labels={status:'Board status',nextAction:'To Do',notes:'Notes',dueDate:'Due date'};
-        $('trustTitle').textContent='Update To Do cards';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
+        const labels={status:'Board status',nextAction:'Task',notes:'Notes',dueDate:'Due date'};
+        $('trustTitle').textContent='Update tasks';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
         $('trustBody').innerHTML=`<p>${p.selectedCount} selected; ${p.count} cards to update.</p>${p.updates.map(({before,after,fields})=>`<section class="proposal-record"><h3>${esc(T.project(after,S.records,S.tableSchema).title)}</h3><p>${esc(before.nextAction||'Not set')}</p>${fields.map(field=>`<div class="field-diff"><span>${labels[field]}</span><div class="todo-preview-value">${esc(before[field]||'Not set')} &rarr; ${esc(after[field]||'Not set')}</div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} card updates</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
         return;
       }
       if(p.moves){
-        $('trustTitle').textContent='Move To Do cards';$('trustStatus').textContent='Only board status changes. CRM fields stay unchanged.';
+        $('trustTitle').textContent='Move tasks';$('trustStatus').textContent='Only board status changes. CRM fields stay unchanged.';
         $('trustBody').innerHTML=`<p>${p.count} cards to move.</p>${p.moves.map(({before,after})=>`<section class="proposal-record"><h3>${esc(T.project(after,S.records,S.tableSchema).title)}</h3><p>${esc(after.nextAction||'Not set')}</p><div class="field-diff"><span>Board status</span><div>${esc(before.status)} &rarr; ${esc(after.status)}</div></div></section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} moves</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
         return;
       }
       if(p.additions){
-        $('trustTitle').textContent='Add To Do cards';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
-        $('trustBody').innerHTML=`<p>${p.count} cards to add. Existing cards will be kept.</p>${p.additions.map(card=>`<section class="proposal-record"><h3>${esc(T.project(card,S.records,S.tableSchema).title)}</h3>${[['Board status',card.status],['To Do',card.nextAction],['Notes',card.notes],['Due date',card.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} cards</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+        $('trustTitle').textContent='Add tasks';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
+        $('trustBody').innerHTML=`<p>${p.count} cards to add. Existing cards will be kept.</p>${p.additions.map(card=>`<section class="proposal-record"><h3>${esc(T.project(card,S.records,S.tableSchema).title)}</h3>${[['Board status',card.status],['Task',card.nextAction],['Notes',card.notes],['Due date',card.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}</section>`).join('')}<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm ${p.count} cards</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
         return;
       }
       const after=p.after;
-      $('trustTitle').textContent=!after?'Delete To Do card':p.before?'Update To Do card':'Add To Do card';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
-      $('trustBody').innerHTML=`<h3>${esc(T.project(after||p.before,S.records,S.tableSchema).title)}</h3>${!after?'<p class="error">Remove this card? No CRM records will be changed.</p>':[['Board status',after.status],['To Do',after.nextAction],['Notes',after.notes],['Due date',after.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}<div class="proposal-actions"><button class="${after?'primary':'danger'}" data-confirm ${S.saving?'disabled':''}>${after?'Confirm card':'Delete card'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+      $('trustTitle').textContent=!after?'Delete task':p.before?'Update task':'Add task';$('trustStatus').textContent='Card-only changes. CRM fields stay unchanged.';
+      $('trustBody').innerHTML=`<h3>${esc(T.project(after||p.before,S.records,S.tableSchema).title)}</h3>${!after?'<p class="error">Remove this card? No CRM records will be changed.</p>':[['Board status',after.status],['Task',after.nextAction],['Notes',after.notes],['Due date',after.dueDate]].map(([label,value])=>`<div class="field-diff"><span>${label}</span><div class="todo-preview-value">${esc(value||'Not set')}</div></div>`).join('')}<div class="proposal-actions"><button class="${after?'primary':'danger'}" data-confirm ${S.saving?'disabled':''}>${after?'Confirm card':'Delete card'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
     }
     function clear(){expanded=null;stopDrag();draft=null;closeForm();}
+    function open(id){
+      if(disabled()||S.pending||S.clarification||draft?.dirty){toast('Finish the current edit or proposal first.');return false;}
+      const card=S.todoCards.find(c=>c.id===id);if(!card){toast('This task no longer exists.');return false;}
+      expanded=id;draft={card:{...card},revision:S.revision,dirty:false};return true;
+    }
+    function complete(id){
+      if(disabled()||draft?.dirty)throw new Error('Finish the current task edit first.');
+      const before=S.todoCards.find(c=>c.id===id);if(!before||before.status==='Done')return;
+      propose({...before,status:'Done'},before,S.revision);render();
+    }
     window.addEventListener('beforeunload',event=>{if(draft?.dirty){event.preventDefault();event.returnValue='';}});
-    return {draw,preview,clear};
+    return {draw,preview,clear,open,complete,dirty:()=>Boolean(draft?.dirty)};
   }
 })(window);

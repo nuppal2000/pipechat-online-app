@@ -74,6 +74,7 @@
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];S.focus=null;let todoUI=null;
   let inspectorUI=null,activityLimit=150;
+  let notificationsUI=null;
   S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sheetDraft=null;S.sheetTypeReview=[];S.sort=null;S.fieldDialog=null;
   let spreadsheetPicker=null;
   S.settingsOpen=false;S.resetConfirmation=null;S.resetting=false;
@@ -245,7 +246,7 @@
     document.querySelectorAll('[data-scope]').forEach(button=>button.classList.toggle('active',button.dataset.scope===S.scope));
     document.querySelectorAll('[data-tab]').forEach(button=>{button.classList.toggle('active',button.dataset.tab===S.tab);button.setAttribute('aria-current',button.dataset.tab===S.tab?'page':'false');});
     ['table','todo','dashboard','activity','share'].forEach(tab=>$(tab+'View').hidden=S.tab!==tab);
-    $('centerTitle').textContent=({table:tailored()?S.tableSchema.title:'Deals',todo:'To Do',dashboard:'Dashboard',activity:'Activity',share:'Shared views'})[S.tab];
+    $('centerTitle').textContent=({table:tailored()?S.tableSchema.title:'Deals',todo:'Tasks',dashboard:'Dashboard',activity:'Activity',share:'Shared views'})[S.tab];
     $('viewFilters').hidden=['todo','activity','share'].includes(S.tab);
     $('filterStrip').hidden=S.tab==='todo'||!S.filter;
     $('shareBtn').hidden=S.tab==='todo';$('addTodoBtn').hidden=S.tab!=='todo';
@@ -287,7 +288,7 @@
       if(generation!==S.generation)return;
       if(!Array.isArray(saved.deals)||saved.deals.length||!Array.isArray(saved.customFields)||saved.customFields.length||saved.tableSchema?.status!=='pending'||typeof saved.updatedAt!=='string'||saved.updatedAt===confirmation.updatedAt)throw new Error('The server did not confirm an empty workspace.');
       useSchema(saved.tableSchema);S.records=[];S.customFields=[];S.updatedAt=saved.updatedAt;S.revision++;
-      S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();
+      S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();notificationsUI?.clear();
       S.history=[];S.focus=null;S.pending=null;S.clarification=null;S.sourceAction=null;S.undo=null;S.failedEdit=null;keepFailedEdit();
       conversation?.stop();conversation=null;restoredProposal=null;
       S.scope='all';S.search='';S.filter=null;S.sort=null;S.expanded=null;S.dashboard=null;dashboardViews=[];dashboardRevision=-1;S.report=defaultReport();S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.tab='table';
@@ -424,9 +425,25 @@
     $('activityCount').textContent=`${entries.length} ${entries.length===1?'entry':'entries'}`;$('activityMore').hidden=entries.length<=activityLimit;
     $('activityList').innerHTML=entries.slice(0,activityLimit).map(item=>`<div class="activity-item"><button class="record-link" data-inspect="${item.recordId}">${esc(names.get(item.recordId))}</button>${item.at?`<time datetime="${esc(item.at)}">${esc(new Date(item.at).toLocaleString())}</time>`:''}<p>${esc((item.type==='note'?'Note added. ':'')+H.displayText(item))}</p></div>`).join('')||'<p class="empty-table">No activity for these dates.</p>';
   }
-  function focusTrust() {if(innerWidth<1200)document.querySelector('.trust-pane').scrollIntoView({behavior:'smooth',block:'start'});}
+  function focusTrust() {
+    const pane=document.querySelector('.trust-pane');
+    if(pane&&!pane.hidden){$('trustTitle').focus({preventScroll:true});if(innerWidth<761)pane.scrollIntoView({behavior:'smooth',block:'start'});}
+    else if(S.clarification?.candidates)$('chatClarification')?.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+  function syncWorkspacePanes(){
+    const chat=document.querySelector('.chat-pane'),review=document.querySelector('.trust-pane');if(!chat||!review)return;
+    const open=Boolean(S.pending||S.failedEdit||restoredProposal),wasOpen=!review.hidden;
+    chat.hidden=open;review.hidden=!open;document.querySelector('.workspace').classList.toggle('review-open',open);
+    if(open&&!wasOpen){$('trustTitle').focus({preventScroll:true});if(innerWidth<761)review.scrollIntoView({behavior:'smooth',block:'start'});}
+    $('chatClarification').hidden=!S.clarification?.candidates||open;
+    if($('chatClarification').hidden)$('chatClarification').innerHTML='';
+    $('reviseRequestBtn').hidden=!S.pending||S.pending.kind==='editor'||Boolean(S.failedEdit)||Boolean(restoredProposal);
+    if(!open){$('reviewChatForm').hidden=true;$('reviewChatInput').value='';if(wasOpen)$('chatInput').focus({preventScroll:true});}
+    notificationsUI?.draw();
+  }
   function renderTrust() {
     saveChatState();
+    syncWorkspacePanes();
     const panel=$('trustBody');$('changeCount').hidden=true;$('trustTitle').textContent='Proposed changes';
     $('trustStatus').textContent='No changes pending.';
     if(S.failedEdit){renderFailedEdit();return;}
@@ -439,6 +456,7 @@
     if(S.clarification?.candidates){
       $('trustTitle').textContent='Choose a record';
       panel.innerHTML=`<p class="proposal-intro">${esc(S.clarification.question||'More than one record matches. Which one did you mean?')}</p>${S.clarification.candidates.map(candidateRecord).map(record=>`<button class="candidate" data-candidate="${record.id}"><strong>${esc(rowName(record))}</strong><small>${esc(record[C.role('owner')]||'Unassigned')} / ${esc(record[C.role('status')]||'')} / #${record.id}</small></button>`).join('')}<button class="secondary" data-cancel>Cancel request</button>`;
+      if($('chatClarification')){$('chatClarification').innerHTML=panel.innerHTML;panel.innerHTML='';}
       $('trustStatus').textContent='Your request is kept while you choose.';return;
     }
     if(S.pending?.kind==='editor'){renderEditor();return;}
@@ -513,7 +531,7 @@
       catch(error){S.pending=null;S.sourceAction=C.clone(action);S.clarification={originalCommand:S.clarification?.originalCommand||originalCommand,question:error.message,previousAction:C.clone(action)};say('Quick clarification. '+error.message);renderTrust();focusTrust();return;}
       proposal.revision=S.revision;proposal.generation=S.generation;
       S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;
-      say(`Review the complete plan: ${proposal.addedFields.length} new columns, ${proposal.patches.length} changed records and ${proposal.addedCards.length} new To Do cards. Selections and date calculations are included. Nothing is saved until you confirm the entire plan.`);renderTrust();focusTrust();return;
+      say(`Review the complete plan: ${proposal.addedFields.length} new columns, ${proposal.patches.length} changed records and ${proposal.addedCards.length} new tasks. Selections and date calculations are included. Nothing is saved until you confirm the entire plan.`);renderTrust();focusTrust();return;
     }else if(action.action==='move_record'){
       const change=C.moveRecord(S.records,action,visible().map(row=>row.id));
       if(change.noChange){clearDraft();say('That record is already at the requested row. No changes are needed.');return;}
@@ -582,8 +600,8 @@
         say('Quick clarification. '+error.message);renderTrust();focusTrust();return;
       }
     } else throw new Error('This request is not an editable table action.');
-    if(proposal.clarification){S.pending=null;S.sourceAction=C.clone(action);S.clarification={...proposal.clarification,originalCommand:S.clarification?.originalCommand||originalCommand};say(proposal.clarification.question||'I found more than one matching record. Choose the intended record in the review panel; I have kept the rest of your request.');}
-    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(['move-record','move-field'].includes(proposal.kind)?`Review the move to ${proposal.kind==='move-record'?'row':'column'} ${proposal.change.toPosition} before confirming. Cell values will stay unchanged.`:proposal.kind==='todo'?'Review the To Do card change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
+    if(proposal.clarification){S.pending=null;S.sourceAction=C.clone(action);S.clarification={...proposal.clarification,originalCommand:S.clarification?.originalCommand||originalCommand};say(proposal.clarification.question||'I found more than one matching record. Choose the intended record below; I have kept the rest of your request.');}
+    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(['move-record','move-field'].includes(proposal.kind)?`Review the move to ${proposal.kind==='move-record'?'row':'column'} ${proposal.change.toPosition} before confirming. Cell values will stay unchanged.`:proposal.kind==='todo'?'Review the task change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
     if(S.tab==='todo'||proposal?.kind?.endsWith('-kpi'))render();else renderTrust();focusTrust();
   }
   function chooseCandidate(id) {
@@ -615,7 +633,7 @@
       const saved=await api('/api/crm-data',{method:'PUT',body:JSON.stringify({deals:next,customFields,todoCards:cards,...(tableSchema?{tableSchema}:{}),expectedUpdatedAt:S.updatedAt})});
       if(generation!==S.generation)return false;
       if(verifyHistory&&next.some(row=>JSON.stringify(saved.deals?.find(r=>r.id===row.id)?.history)!==JSON.stringify(row.history)))throw new Error('Storage did not confirm the note history. Reload before retrying.');
-      if(JSON.stringify(saved.todoCards||[])!==JSON.stringify(cards))throw new Error('Storage did not confirm the To Do board. Reload before retrying.');
+      if(JSON.stringify(saved.todoCards||[])!==JSON.stringify(cards))throw new Error('Storage did not confirm the Tasks board. Reload before retrying.');
       if(customFields.length&&JSON.stringify(saved.customFields)!==JSON.stringify(customFields))throw new Error('The storage service did not confirm the custom fields. Reload before trying again.');
       if(tableSchema&&JSON.stringify(saved.tableSchema)!==JSON.stringify(tableSchema))throw new Error('Storage did not confirm the table schema. Reload before retrying.');
       if(exactRecords&&(!Array.isArray(saved.deals)||saved.deals.length!==next.length||next.some((row,i)=>row.id!==saved.deals[i]?.id||window.PipelineCore.create(tableSchema).definitions(customFields).some(f=>row[f.id]!==saved.deals[i]?.[f.id]))))throw new Error('Storage did not confirm the row order and every cell. Reload before retrying.');
@@ -649,7 +667,7 @@
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
       if(p.kind==='workspace-plan'){
         if(p.revision!==S.revision||p.generation!==S.generation||p.before!==window.PipeChatPlan.snapshot({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards}))throw new Error('The workspace changed. Review the complete plan again.');
-        if(await persist(p.next.records,'Complete plan saved',{customFields:p.next.customFields,tableSchema:p.next.tableSchema,todoCards:p.next.todoCards,exactRecords:true}))say(`Saved together: ${p.addedFields.length} new columns, ${p.patches.length} changed records and ${p.addedCards.length} new To Do cards.`);
+        if(await persist(p.next.records,'Complete plan saved',{customFields:p.next.customFields,tableSchema:p.next.tableSchema,todoCards:p.next.todoCards,exactRecords:true}))say(`Saved together: ${p.addedFields.length} new columns, ${p.patches.length} changed records and ${p.addedCards.length} new tasks.`);
         return;
       }
       if(['move-record','move-field'].includes(p.kind)){
@@ -665,13 +683,13 @@
       if(p.kind==='todo'){
         if(p.revision!==S.revision||p.generation!==undefined&&p.generation!==S.generation)throw new Error('The workspace changed. Prepare this card preview again.');
         if(p.updates){
-          if(await persistTodo(p.cards,`${p.count} To Do cards updated`)){
+          if(await persistTodo(p.cards,`${p.count} tasks updated`)){
             S.focus={kind:'todos',id:crypto.randomUUID(),ids:p.selectedIds};
-            say(`Saved. ${p.count} To Do cards updated together; ${p.selectedCount} selected. CRM records are unchanged.`);
+            say(`Saved. ${p.count} tasks updated together; ${p.selectedCount} selected. CRM records are unchanged.`);
           }
           return;
         }
-        if(await persistTodo(p.cards,p.moves?`${p.count} To Do cards moved`:p.additions?`${p.count} To Do cards added`:p.after?p.before?'To Do card updated':'To Do card added':'To Do card deleted'))say(p.moves?`Saved. ${p.count} To Do cards moved. CRM records are unchanged.`:p.additions?`Saved. ${p.count} To Do cards added. Linked CRM records are unchanged.`:'Saved. The To Do board is updated; the linked CRM record is unchanged.');
+        if(await persistTodo(p.cards,p.moves?`${p.count} tasks moved`:p.additions?`${p.count} tasks added`:p.after?p.before?'task updated':'task added':'task deleted'))say(p.moves?`Saved. ${p.count} tasks moved. CRM records are unchanged.`:p.additions?`Saved. ${p.count} tasks added. Linked CRM records are unchanged.`:'Saved. The Tasks board is updated; the linked CRM record is unchanged.');
         return;
       }
       if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(p.kind)){
@@ -769,7 +787,7 @@
   function renderShare() {
     $('trustTitle').textContent='Recipient preview';$('trustStatus').textContent='Read-only local preview. Not published.';
     const rows=C.share(visible(),shareFields()), fields=shareFields();
-    $('trustBody').innerHTML=`<span class="badge">View only</span><h3 style="margin-top:17px">Pipeline review</h3><p class="subtle" style="margin-top:8px">For ${esc($('shareRecipient').value||'your recipient')} / ${rows.length} records</p><p class="share-note">${esc($('shareMessage').value||"Here's the latest pipeline. I'd love your feedback.")}</p><div class="share-table-wrap"><table class="share-table"><thead><tr>${shareHeaders(fields)}</tr></thead><tbody>${rows.map(r=>`<tr>${fields.map(f=>`<td>${esc(display(f,r[f]))}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${fields.length}">No records in this view.</td></tr>`}</tbody></table></div>${$('shareAccess').value==='team'?'<p class="share-note">Team collaboration is a future upgrade. This preview remains read-only.</p>':''}`;
+    ($('sharePreview')||$('trustBody')).innerHTML=`<span class="badge">View only</span><h3 style="margin-top:17px">Pipeline review</h3><p class="subtle" style="margin-top:8px">For ${esc($('shareRecipient').value||'your recipient')} / ${rows.length} records</p><p class="share-note">${esc($('shareMessage').value||"Here's the latest pipeline. I'd love your feedback.")}</p><div class="share-table-wrap"><table class="share-table"><thead><tr>${shareHeaders(fields)}</tr></thead><tbody>${rows.map(r=>`<tr>${fields.map(f=>`<td>${esc(display(f,r[f]))}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${fields.length}">No records in this view.</td></tr>`}</tbody></table></div>${$('shareAccess').value==='team'?'<p class="share-note">Team collaboration is a future upgrade. This preview remains read-only.</p>':''}`;
   }
   function exportShare() {
     const fields=shareFields(),rows=C.share(visible(),fields);
@@ -801,7 +819,7 @@
       clearClarification();S.tab='todo';render();say(window.PipeChatTodoActions.describe(matches,S.records,S.tableSchema));return;
     }
     if(['add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo'].includes(action.action)){prepare(action,command);return;}
-    if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your To Do board is open.');return;}
+    if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your Tasks board is open.');return;}
     if(action.action==='query_records'){
       const result=window.PipeChatReports.queryRecords(S.records,action,C,S.customFields,{today:localDate()});
       S.filter=result.filter;S.sort=result.sort;S.scope='all';S.search='';$('dealSearch').value='';S.focus={kind:'table'};S.tab='table';clearClarification();render();
@@ -1046,7 +1064,7 @@
     clearActivity();
     closeProfileMenu();S.settingsOpen=false;S.resetting=false;S.resetConfirmation=null;if($('resetDialog')?.open)$('resetDialog').close();
     S.generation++;S.user=user;S.history=[];S.focus=null;S.pending=null;S.clarification=null;S.undo=null;S.sourceAction=null;S.loaded=false;S.scope='all';S.search='';S.filter=null;S.tab='table';S.dashboard=null;dashboardViews=[];dashboardRevision=-1;S.report=defaultReport();S.busy=false;S.expanded=null;
-    S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();
+    S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();notificationsUI?.clear();
     const generation=S.generation;
     spreadsheetPicker?.close();clearSheetPreview();closeFieldDialog();S.sort=null;useSchema(null);S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.records=[];S.customFields=[];S.updatedAt=null;S.usage=null;S.health=null;
     S.failedEdit=null;S.saving=false;$('authRetryBtn').hidden=true;
@@ -1345,9 +1363,16 @@
       }catch(error){if(S.generation===generation)toast('Could not export dashboard: '+error.message);}
       finally{exportDashboard.disabled=false;exportDashboard.removeAttribute('aria-busy');}
     };
-    const addTodo=document.createElement('button');addTodo.id='addTodoBtn';addTodo.className='icon-btn';addTodo.title='Add To Do card';addTodo.setAttribute('aria-label','Add To Do card');addTodo.innerHTML=icon('Plus');addTodo.hidden=true;$('shareBtn').after(addTodo);
+    const addTodo=document.createElement('button');addTodo.id='addTodoBtn';addTodo.className='icon-btn';addTodo.title='Add task';addTodo.setAttribute('aria-label','Add task');addTodo.innerHTML=icon('Plus');addTodo.hidden=true;$('shareBtn').after(addTodo);
     todoUI=window.PipeChatTodoUI.create({S,esc,icon,persistTodo,prepare,render,toast,localDate});
     inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast,editRecord,clearActivity});
+    const sharePreview=document.createElement('section');sharePreview.id='sharePreview';sharePreview.setAttribute('aria-label','Recipient preview');$('shareView').append(sharePreview);
+    notificationsUI=window.PipeChatNotificationsUI.create({S,esc,icon,core:()=>C,localDate,toast,refresh:refreshInspector,prepare,
+      blocked:()=>!S.loaded||S.saving||S.busy||S.resetting||Boolean(S.failedEdit||S.pending||S.clarification||restoredProposal)||todoUI.dirty()||Boolean(document.querySelector('dialog[open]:not(#notificationDateDialog)'))||Boolean(document.activeElement?.closest('#dealRows input,#dealRows textarea,#dealRows select')),
+      openRecord:(id,target)=>inspectorUI.open(id,target),openTask:id=>{if(todoUI.open(id)){setTab('todo');document.querySelector(`[data-card="${id}"]`)?.scrollIntoView({block:'nearest'});}},completeTask:id=>{todoUI.complete(id);focusTrust();}});
+    $('reviseRequestBtn').onclick=()=>{$('reviewChatForm').hidden=!$('reviewChatForm').hidden;if(!$('reviewChatForm').hidden)$('reviewChatInput').focus();};
+    $('closeReviewChat').onclick=()=>{$('reviewChatForm').hidden=true;$('reviseRequestBtn').focus();};
+    $('reviewChatForm').onsubmit=async event=>{event.preventDefault();if(S.busy||S.saving)return;const text=$('reviewChatInput').value.trim();if(!text)return;$('sendRevision').disabled=true;try{await send(text);$('reviewChatInput').value='';}finally{$('sendRevision').disabled=false;}};
     document.addEventListener('click',event=>{const target=event.target.closest('[data-inspect]');if(target)inspectorUI.open(Number(target.dataset.inspect),target);});
     for(const id of ['activityFrom','activityTo'])$(id).onchange=()=>{activityLimit=150;renderActivity();};
     $('activityResetDates').onclick=()=>{$('activityFrom').value='';$('activityTo').value='';activityLimit=150;renderActivity();};
@@ -1392,6 +1417,7 @@
     $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
     $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(event.target.closest('[data-import-primary]')){chooseImportPrimary();return;}const duplicateChoice=event.target.closest('[data-import-duplicates]');if(duplicateChoice){chooseImportDuplicates(duplicateChoice.dataset.importDuplicates);return;}if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
     $('trustBody').addEventListener('input',event=>{if(event.target.id==='failedEditValue'&&S.failedEdit){S.failedEdit.raw=event.target.value;S.failedEdit.reviewed=false;keepFailedEdit();$('failedEditForm').querySelector('[type="submit"]').disabled=true;}});
+    $('chatClarification').onclick=$('trustBody').onclick;
     $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
     $('addAccountBtn').onclick=()=>{if(S.pending||S.clarification){toast('Confirm or cancel the current draft first.');return;}S.pending={kind:'editor'};renderTrust();focusTrust();$('dealEditor').elements[C.role('primary')].focus();};
     $('undoBtn').onclick=undo;$('quickUndoBtn').onclick=undo;$('dismissToast').onclick=()=>$('toast').hidden=true;
