@@ -4,7 +4,7 @@ const source=fs.readFileSync(require.resolve('../public/pipechat.js'),'utf8').re
 function harness(multiple=false){
  const nodes=new Map(),charts=[],messages=[];const node=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',value:'',innerHTML:'',style:{},setAttribute(){}});return nodes.get(id);};
  class Chart{constructor(canvas,config){charts.push(config);}destroy(){}}
- const window={PipeChatReports:R,PipelineCore:C,PipeChatIcons:{},Chart,PipeChatCustomize:require('../public/workspace-customization')};
+ const window={PipeChatReports:R,PipeChatDashboard:require('../public/dashboard-board'),PipelineCore:C,PipeChatIcons:{},Chart,PipeChatCustomize:require('../public/workspace-customization')};
  const context={window,document:{getElementById:node,querySelector:node},Chart};
  // The browser exposes globalThis and window as the same object.
  vm.runInNewContext(fs.readFileSync(require.resolve('../public/report-ui'),'utf8'),{...context,globalThis:window});
@@ -79,9 +79,9 @@ test('fresh record search leaves Dashboard, clears unrelated filters and applies
 });
 
 test('one-off KPI never creates a persistent proposal or changes saved KPI definitions',()=>{
- const h=harness(),schema=JSON.stringify(h.S.tableSchema),rows=JSON.stringify(h.S.records);
+ const h=harness(),schema=JSON.stringify(h.S.tableSchema),rows=JSON.stringify(h.S.records),prior=JSON.stringify({tab:h.S.tab,report:h.S.report,dashboard:h.S.dashboard});
  h.handleAction({crmAction:{action:'show_kpi',title:'One-off total',scope:'all',where:[],measures:[{label:'Total value',metric:'sum',field:'value',where:[]}]}},'Show me a KPI for total value');
- assert.equal(h.S.tab,'dashboard');assert.equal(h.S.report.chart,'kpi');assert.equal(h.S.report.groupBy,null);assert.equal(h.S.pending,null);assert.equal(JSON.stringify(h.S.tableSchema),schema);assert.equal(JSON.stringify(h.S.records),rows);assert.match(h.node('reportKpis').innerHTML,/400/);
+ assert.equal(JSON.stringify({tab:h.S.tab,report:h.S.report,dashboard:h.S.dashboard}),prior);assert.equal(h.S.pending,null);assert.equal(JSON.stringify(h.S.tableSchema),schema);assert.equal(JSON.stringify(h.S.records),rows);assert.match(h.messages.at(-1),/400/);
 });
 
 test('audit output uses computed counts/names, ignores assistant arithmetic and leaves saved cards untouched',()=>{

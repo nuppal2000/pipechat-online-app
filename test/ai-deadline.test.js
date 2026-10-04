@@ -15,6 +15,8 @@ const action = { assistantMessage: 'Offline reply', crmAction: null, memoryNote:
 const modelData = { output_text: JSON.stringify(action) };
 const secret = 'TEST_ONLY_PROVIDER_DETAIL_DO_NOT_EXPOSE';
 const settle = () => new Promise(resolve => setImmediate(resolve));
+const readAction={assistantMessage:'Computed below',crmAction:{action:'query_records',where:[],orderBy:null,direction:null},memoryNote:null};
+const completeReview={requirements:[{description:'Show records',stepIds:['root'],satisfied:true}],issues:[],clarificationQuestion:null};
 
 function deferred() {
   let resolve;
@@ -130,6 +132,28 @@ function assertReleased(h, res) {
   assert.equal(h.clock.timers.size, 0);
 }
 
+test('independent completeness review commits one allowance for planner plus reviewer',async()=>{
+  const h=harness('supabase',async(url,options)=>({ok:true,json:async()=>({output_text:JSON.stringify(JSON.parse(options.body).text.format.name==='pipechat_action_review'?completeReview:readAction)})}));
+  const {done,res}=await h.request({userCommand:'Show all accounts'});await done;
+  assert.equal(res.status,200);assert.deepEqual(JSON.parse(JSON.stringify(res.body.coverage)),{requested:1,compiled:1});assert.equal(h.requests.length,2);assert.deepEqual(h.calls,['reserve','commit']);
+});
+test('a stalled reviewer shares the original deadline and releases rather than accepting partial output',async()=>{
+  const h=harness('supabase',async(url,options)=>JSON.parse(options.body).text.format.name==='pipechat_action_review'?new Promise(()=>{}):{ok:true,json:async()=>({output_text:JSON.stringify(readAction)})});
+  const {done,res}=await h.request({userCommand:'Show all accounts'});await settle();assert.equal(h.requests.length,2);
+  h.clock.advance(80000);await done;assert.equal(res.status,502);assert.deepEqual(h.calls,['reserve','release']);assert.equal(h.clock.timers.size,0);
+});
+test('an omitted outcome triggers one whole-plan repair with feedback, not partial execution',async()=>{
+  let reviews=0;
+  const h=harness('supabase',async(url,options)=>{
+    const body=JSON.parse(options.body),review=body.text.format.name==='pipechat_action_review';
+    if(!review&&reviews)assert.match(JSON.stringify(body.input),/compilerRepair/);
+    const output=review?(++reviews===1?{...completeReview,issues:['Missing requested record output']}:completeReview):readAction;
+    return {ok:true,json:async()=>({output_text:JSON.stringify(output)})};
+  });
+  const {done,res}=await h.request({userCommand:'Show all accounts'});await done;
+  assert.equal(res.status,200);assert.equal(res.body.ai.reason,'completeness_repair');assert.equal(h.requests.length,4);assert.deepEqual(h.calls,['reserve','commit']);
+});
+
 for (const provider of ['supabase']) {
   test(`${provider}: stalled fetch aborts at the unchanged 80-second deadline and releases quota`, { timeout: 2000 }, async () => {
     const h = harness(provider, async () => new Promise(() => {}));
@@ -243,10 +267,10 @@ test('mini escalation uses the remaining deadline and commits only one allowance
   assert.deepEqual(h.clock.delays,[80000,50000]);assert.deepEqual(h.calls,['reserve','commit']);assert.equal(h.meter.used,1);
 });
 
-test('a complex request goes directly to 5.2; no speculative mini call',async()=>{
-  const h=harness('supabase',async()=>({ok:true,json:async()=>modelData}));
-  const {done,res}=await h.request({userCommand:'Set priority High and create a task for each account'});await done;
-  assert.equal(res.status,200);assert.equal(res.body.ai.model,'gpt-5.2');assert.equal(h.requests.length,1);
+test('a complex request goes directly to 5.2 before its independent mini review',async()=>{
+  const h=harness('supabase',async(url,options)=>({ok:true,json:async()=>({output_text:JSON.stringify(JSON.parse(options.body).text.format.name==='pipechat_action_review'?completeReview:readAction)})}));
+  const {done,res}=await h.request({userCommand:'Show highest accounts'});await done;
+  assert.equal(res.status,200);assert.equal(res.body.ai.model,'gpt-5.2');assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.2','gpt-5.4-mini']);
   assert.deepEqual(h.calls,['reserve','commit']);
 });
 test('answered clarification repeat gets one bounded complex repair and one chat charge',async()=>{

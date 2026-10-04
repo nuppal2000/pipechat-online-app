@@ -13,6 +13,10 @@ global.fetch = async (url, options) => {
     if (schema.anyOf) schema.anyOf.forEach(check);
   }
   check(request.text.format.schema);
+  if(request.text.format.name==='pipechat_action_review'){
+    const reviewed=JSON.parse(request.input);assert([undefined,'add_field'].includes(reviewed.compiled?.action));
+    return {ok:true,json:async()=>({output_text:JSON.stringify({requirements:[{description:'Test column contract',stepIds:['root'],satisfied:true}],issues:[],clarificationQuestion:null})})};
+  }
   const data = JSON.parse(request.input[0].content[0].text);
   if(data.columns&&!data.headers){
     assert.match(request.instructions,/untrusted data/);assert.match(request.instructions,/primary column must remain text/);

@@ -38,12 +38,12 @@ test('monthly/weekly/quarterly trends and split series are calculated, not model
  assert.equal(run(spec({groupBy:'close',bucket:'week',sort:'label_asc'})).labels[0],'2025-12-29');
  const multi=run(spec({measures:[measure('sum'),measure('average')]}));assert.equal(multi.datasets.length,2);
 });
-test('conditional metrics and percentages use a defined within-group denominator',()=>{
+test('conditional metrics and percentages use one complete filtered denominator',()=>{
  const won=[[condition('stage','equals','Won')]],s=spec({chart:'kpi',measures:[measure('percentage',null,won),measure('count',null,won)]});
- const result=run(s);assert.equal(result.datasets[0].values[result.labels.indexOf('Sarah')],2/3*100);
+ const result=run(s);assert.equal(result.datasets[0].values[result.labels.indexOf('Sarah')],2/7*100);
  assert.equal(result.datasets[1].values[result.labels.indexOf('Sarah')],2);
  assert.equal(run(spec({groupBy:null,chart:'kpi',measures:[measure('percentage',null,won)],where:[[condition('owner','equals','Nobody')]]})).datasets[0].values[0],null);
- assert.throws(()=>run(spec({measures:[measure('percentage',null)]})),/Which records/);
+ assert(Math.abs(run(spec({measures:[measure('percentage',null)]})).datasets[0].values.reduce((a,b)=>a+b,0)-100)<1e-7);
 });
 test('date, blank, text, range and negative filters have deterministic semantics',()=>{
  assert.equal(run(spec({where:[[condition('close','between',null,['2026-01-01','2026-03-31'])]]})).count,4);
@@ -145,16 +145,16 @@ test('report property patches preserve unspecified measures, cohorts and explici
  assert.equal(changed.measures[0].metric,'sum');assert.deepEqual(changed.where,current.where);assert.equal(current.measures[0].metric,'average');
 });
 
-test('measure and grouping refinements regenerate inherited titles but preserve explicit titles',()=>{
+test('metric and grouping edits preserve titles until explicitly renamed',()=>{
  const current=salesSpec({title:'Total Deal Value by Stage',measures:[{...measure('sum','f_value'),label:'Total Deal Value'}]}),before=JSON.stringify(current);
  const average={field:'measures',value:[{...measure('average','f_value'),label:'Average Deal Value'}]};
  const next=refineSales(current,refinement({changes:[average]}));
- assert.equal(next.title,'');assert.equal(runSales(next).title,'Average Deal Value by Stage');
+ assert.equal(next.title,current.title);assert.equal(runSales(next).title,current.title);
  assert.deepEqual(next.where,current.where);assert.equal(runSales(next).count,runSales(current).count);
  const grouped=refineSales(current,refinement({changes:[{field:'groupBy',value:'f_owner'}]}));
- assert.equal(grouped.title,'');assert.equal(runSales(grouped).title,'Total Deal Value by Owner');
+ assert.equal(grouped.title,current.title);assert.equal(runSales(grouped).title,current.title);
  const ungrouped=refineSales(next,refinement({changes:[{field:'groupBy',value:null}]}));
- assert.equal(runSales(ungrouped).title,'Average Deal Value');
+ assert.equal(runSales(ungrouped).title,current.title);
  for(const changes of [[{field:'title',value:'My comparison'},average],[average,{field:'groupBy',value:'f_owner'},{field:'title',value:'My comparison'}]]){
   const named=refineSales(current,refinement({changes}));assert.equal(named.title,'My comparison');assert.equal(runSales(named).title,'My comparison');
  }
