@@ -15,6 +15,8 @@ test('both model tiers are explicit; simple operations use mini and compound req
   for(const command of ['Add Risk Level and populate it by deal value','Take the two highest-value open deals and set priority High; for each create a task due two business days from today','Create two graphs of value and count','Audit every record for missing owner and stage'])assert.equal(Router.route({userCommand:command}).tier,'complex',command);
   assert.equal(Router.route({userCommand:'a',pendingClarification:{originalCommand:'Create two graphs and compare them'}}).tier,'complex');
   assert.equal(Router.route({csvImport:{}}).tier,'complex');
+  assert.equal(Router.route({userCommand:'Set both Atlas accounts Primary Contact to Jon. Preview only.'}).reason,'bulk_mutation');
+  assert.equal(Router.route({userCommand:'Show all accounts owned by Sarah'}).tier,'simple');
   assert(Router.needsEscalation({crmAction:{action:'workspace_plan'}}));
   assert(!Router.needsEscalation({crmAction:{action:'query_records'}}));
 });
@@ -64,6 +66,8 @@ test('exact names, explicit cohorts, cancellation and numbered clarification rep
   const edit={crmAction:{action:'update_records'}};
   assert.equal(G.guardIdentity(grounded('set Atlas Field Services owner to Sarah'),edit),edit);
   assert.equal(G.guardIdentity(grounded('set both Atlas accounts owner to Sarah'),edit),edit);
+  assert.equal(G.identityContext(grounded('set both Atlas accounts owner to Sarah')).references[0].selection,'all_matching_candidates');
+  assert.equal(G.identityContext(grounded('set Atlas owner to Sarah')).references[0].selection,'single_record');
   const original=grounded('add jon to atlas as the primary contact'),question=G.guardIdentity(original,edit).crmAction;
   const pending={originalCommand:original.userCommand,question:question.question,options:question.clarificationOptions};
   assert.equal(G.guardIdentity(grounded('2',{pendingClarification:pending}),edit),edit);
