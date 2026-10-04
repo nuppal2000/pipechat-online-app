@@ -26,6 +26,7 @@ function fakeClock() {
   let now = 0, nextId = 1;
   const timers = new Map(), delays = [];
   return {
+    get now() { return now; },
     delays, timers,
     setTimeout(callback, delay) {
       const id = nextId++;
@@ -50,6 +51,7 @@ function harness(provider, fetchImpl, { failRelease = false } = {}) {
   const usage = () => ({ ...meter, limit: 1, remaining: 1 - meter.used - meter.reserved,
     paymentRequired: meter.used + meter.reserved === 1, updatedAt: null });
   const backend = {
+    async readCrm() { return {deals:[],customFields:[],tableSchema:null,todoCards:[],updatedAt:null}; },
     async getUser() { return { id: 'offline-user', email: 'offline@example.invalid', name: 'Offline' }; },
     async reserveUsage(token, requestId) {
       assert.equal(typeof requestId, 'string');
@@ -68,6 +70,7 @@ function harness(provider, fetchImpl, { failRelease = false } = {}) {
     }
   };
   const context = {
+    Date: class extends Date { static now() { return clock.now; } },
     __dirname: path.dirname(serverPath), Buffer, URL, structuredClone, AbortController, AbortSignal,
     setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     process: { env: { PIPECHAT_STORAGE_PROVIDER: provider, OPENAI_API_KEY: 'TEST_ONLY_OFFLINE_KEY',
@@ -92,7 +95,7 @@ function harness(provider, fetchImpl, { failRelease = false } = {}) {
   // Execute the real route and model code, but never start a listener or a backend probe.
   vm.runInNewContext(source.slice(0, startup) + '\nglobalThis.planForTest = planPipeChatAction;', context, { filename: serverPath });
 
-  async function request() {
+  async function request(payload = {userCommand: 'Offline timeout probe'}) {
     const req = new EventEmitter();
     req.method = 'POST'; req.url = '/api/pipechat-ai';
     req.headers = { host: 'pipechat.example.invalid', origin: 'https://pipechat.example.invalid',
@@ -107,7 +110,7 @@ function harness(provider, fetchImpl, { failRelease = false } = {}) {
     const done = handler(req, res);
     await settle();
     assert(req.listenerCount('data') > 0, 'Authentication reaches the real request-body reader');
-    req.emit('data', Buffer.from(JSON.stringify({ userCommand: 'Offline timeout probe' })));
+    req.emit('data', Buffer.from(JSON.stringify(payload)));
     req.emit('end');
     await settle();
     return { done, res };
@@ -225,7 +228,24 @@ for (const provider of ['supabase']) {
 
 test('JSON-only backend retains its existing model request behavior', { timeout: 2000 }, async () => {
   const h = harness('json', async () => ({ ok: true, json: async () => modelData }));
-  assert.equal((await h.plan({ userCommand: 'Offline local probe' })).assistantMessage, action.assistantMessage);
+  assert.equal((await h.plan({ userCommand: 'Offline local probe',pipeline:{records:[],primaryField:'account'} })).assistantMessage, action.assistantMessage);
   assert.equal(h.requests[0].options.signal, undefined);
   assert.deepEqual(h.clock.delays, []);
+});
+
+test('mini escalation uses the remaining deadline and commits only one allowance',async()=>{
+  const first=deferred();let count=0;
+  const h=harness('supabase',async()=>({ok:true,json:()=>++count===1?first.promise:Promise.resolve(modelData)}));
+  const {done,res}=await h.request();h.clock.advance(30000);
+  first.resolve({output_text:JSON.stringify({...action,crmAction:{action:'workspace_plan'}})});await done;
+  assert.equal(res.status,200);assert.equal(res.body.ai.model,'gpt-5.2');
+  assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.4-mini','gpt-5.2']);
+  assert.deepEqual(h.clock.delays,[80000,50000]);assert.deepEqual(h.calls,['reserve','commit']);assert.equal(h.meter.used,1);
+});
+
+test('a complex request goes directly to 5.2; no speculative mini call',async()=>{
+  const h=harness('supabase',async()=>({ok:true,json:async()=>modelData}));
+  const {done,res}=await h.request({userCommand:'Set priority High and create a task for each account'});await done;
+  assert.equal(res.status,200);assert.equal(res.body.ai.model,'gpt-5.2');assert.equal(h.requests.length,1);
+  assert.deepEqual(h.calls,['reserve','commit']);
 });

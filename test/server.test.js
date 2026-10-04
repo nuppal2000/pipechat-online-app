@@ -72,6 +72,8 @@ test('server isolation, validation, persistence, schema/context, and usage lock'
     assert.deepEqual(retained.body.customFields,fields);assert.equal(retained.body.deals[0].cf_contact,'Taylor');
     const c=await request('/api/auth/signup','POST',{name:'Test C',email:'c@example.test',password:'testing-only-123'});
     const d=await request('/api/auth/signup','POST',{name:'Test D',email:'d@example.test',password:'testing-only-123'});
+    const seeded=await request('/api/crm-data','PUT',{deals:[],customFields:fields,tableSchema:require('../public/table-schema').legacySchema(),expectedUpdatedAt:null},c.cookie);
+    assert.equal(seeded.status,200,JSON.stringify(seeded.body));
     const customChat=await request('/api/pipechat-ai','POST',{userCommand:'Custom schema test',pipeline:{customFields:fields}},c.cookie);
     assert.equal(customChat.status,200,JSON.stringify(customChat.body));assert.equal(customChat.body.crmAction.action,'add_field');
     assert.equal((await request('/api/pipechat-ai','POST',{userCommand:'Clean schema test',pipeline:{customFields:[]}},d.cookie)).status,200);
