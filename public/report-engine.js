@@ -168,7 +168,6 @@
       if(!change||!refinementFields.includes(change.field)||changed.has(change.field)||!Object.hasOwn(change,'value')||Object.keys(change).some(key=>!['field','value'].includes(key)))fail('Change each supported report property at most once, with an explicit value.');
       changed.add(change.field);next[change.field]=change.value;
     }
-    if(!changed.has('title')&&(changed.has('measures')||changed.has('groupBy')))next.title='';
     next.where=refineWhere(current.where,action,defs,core,today,records);
     if(action.mode!=='add_filter')for(const [key,role]of [['owners','owner'],['accounts','primary']])if(action.replaceFields.includes(core.role(role)))next[key]=null;
     execute(records,next,core,custom,options);
@@ -178,7 +177,8 @@
     if(filter==null)return [];
     if(typeof filter!=='object'||Array.isArray(filter))fail('Supply a legacy filter or an object containing typed where conditions.');
     if(Object.hasOwn(filter,'where')){
-      if(Object.keys(filter).some(key=>key!=='where'))fail('Do not combine legacy and typed table filters.');
+      if(Object.keys(filter).some(key=>!['where','ids'].includes(key)))fail('Do not combine legacy and typed table filters.');
+      if(filter.ids!==undefined&&(!Array.isArray(filter.ids)||filter.ids.length>2000||filter.ids.some(id=>!Number.isSafeInteger(id)||id<1)||new Set(filter.ids).size!==filter.ids.length))fail('The saved record selection is invalid. Select those records again.');
       return filter.where;
     }
     if(Object.keys(filter).some(key=>!['field','operator','value'].includes(key))||!Object.hasOwn(filter,'value'))fail('The legacy table filter is incomplete or has unsupported properties.');
@@ -200,12 +200,13 @@
     if(action.target==='report')fail('Use filter_records targeting pipeline_table or a context already resolved to the table.');
     const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),day=core.date(today||new Date().toISOString().slice(0,10))?.getTime();
     const where=refineWhere(tableWhere(currentFilter,core,custom,today),canonical,defs,core,day,records);
-    return {where:JSON.parse(JSON.stringify(where))};
+    return {where:JSON.parse(JSON.stringify(where)),...(currentFilter?.ids?{ids:[...currentFilter.ids]}:{})};
   }
   function tableMatches(filter,core,custom=[],records=[],today){
     if(!Array.isArray(records))fail('Supply table records when validating filters.');
     const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),day=core.date(today||new Date().toISOString().slice(0,10))?.getTime();
-    return compileConditions(tableWhere(filter,core,custom,today),defs,core,day,records);
+    const matches=compileConditions(tableWhere(filter,core,custom,today),defs,core,day,records);
+    return row=>(!filter?.ids||filter.ids.includes(row.id))&&matches(row);
   }
   function describeConditions(groups,fields){
     return groups.map(and=>and.map(c=>`${fields[c.field]||c.field} ${c.operator.replaceAll('_',' ')} ${['in','not_in','between'].includes(c.operator)?c.values.join(', '):c.value??''}`).join(' AND ')).map(s=>'('+s+')').join(' OR ');
@@ -214,7 +215,7 @@
     const where=tableWhere(filter,core,custom),fields=core.fieldsFor(custom);
     // Formatting needs no row snapshot; matching/refinement validate categorical literals.
     if(!Array.isArray(where)||where.length>12||where.some(group=>!Array.isArray(group)||!group.length||group.length>20||group.some(c=>!c||!Object.hasOwn(fields,c.field)||!operators.includes(c.operator)||!Array.isArray(c.values)||c.values.length>2000)))fail('The table filter cannot be described until its conditions are valid.');
-    return describeConditions(where,fields);
+    return [filter?.ids?`${filter.ids.length} selected records`:'',describeConditions(where,fields)].filter(Boolean).join(' AND ');
   }
   function dateBucket(value,bucket,core){
     const date=core.date(value);if(!date)return null;
@@ -237,7 +238,6 @@
       const field=defs.get(m.field),numeric=['number','currency'].includes(field?.type);
       if(['count','percentage'].includes(m.metric)?m.field!==null:!field)fail('Choose a valid measure column, or no column for record count/percentage.');
       if(!['count','percentage','count_distinct'].includes(m.metric)&&!numeric)fail(`Which numeric column should I use for ${m.label}?`);
-      if(m.metric==='percentage'&&!m.where?.length)fail(`Which records should count toward ${m.label}, and what should they be compared against?`);
       return {...m,fieldDef:field,matches:compileConditions(m.where,defs,core,today,records),type:m.metric==='percentage'?'percent':['count','count_distinct'].includes(m.metric)?'number':field.type};
     });
     if(spec.chart==='stage'&&(measures.length!==1||spec.splitBy))fail('A stage chart needs one measure and no split series. Which measure should I use, or would you prefer a bar chart?');
@@ -279,7 +279,7 @@
     if(series.size*measures.length>24)fail('This would create more than 24 series. Which categories or measures should I compare?');
     function aggregate(part,m){
       const selected=part.filter(m.matches);if(m.metric==='count')return selected.length;
-      if(m.metric==='percentage')return part.length?selected.length/part.length*100:null;
+      if(m.metric==='percentage')return rows.length?selected.length/rows.length*100:null;
       const values=selected.map(r=>r[m.field]).filter(v=>!blank(v));
       if(m.metric==='count_distinct')return new Set(values.map(norm)).size;
       const nums=values.filter(v=>(typeof v==='number'||typeof v==='string')&&Number.isFinite(Number(v))).map(Number);
@@ -302,13 +302,21 @@
       datasets.push({label,values,type:m.type});
     }
     const represented=data.flatMap(g=>g.rows);
+    // Groups partition the cohort. A single denominator is shared by every group/series.
+    // Numerator filters, top-N and undated exclusions legitimately represent less than 100%.
+    for(const [index,m] of measures.entries()){
+      if(m.metric!=='percentage')continue;
+      const expected=rows.length?represented.filter(m.matches).length/rows.length*100:null;
+      const actual=datasets.filter((_,i)=>i%measures.length===index).flatMap(d=>d.values).reduce((sum,value)=>sum+(value??0),0);
+      if(expected!==null&&Math.abs(actual-expected)>1e-7)fail('The percentage groups do not reconcile to their shared population. No report was changed.');
+    }
     return {labels:data.map(g=>g.label),datasets,table,rows,count:rows.length,representedIds:represented.map(r=>r.id),summaries:measures.map(m=>({label:m.label,metric:m.metric,field:m.field,type:m.type,value:aggregate(represented,m),count:represented.filter(m.matches).length})),undated,totalGroups,shownGroups:data.length,description:describe(spec,core,custom),title:spec.title.trim()||measures.map(m=>m.label).join(' / ')+(spec.groupBy?' by '+defs.get(spec.groupBy).name:'')};
   }
   function describe(spec,core,custom=[]){
     const fields=core.fieldsFor(custom),groups=g=>describeConditions(g,fields);
     const parts=[spec.scope==='all'?'All table records':'Current pipeline view'];
     if(spec.where.length)parts.push(groups(spec.where));
-    for(const m of spec.measures)if(m.where.length)parts.push(`${m.label}: ${groups(m.where)}${m.metric==='percentage'?' / all matching records in each group':''}`);
+    for(const m of spec.measures){if(m.where.length)parts.push(`${m.label}: ${groups(m.where)}`);if(m.metric==='percentage')parts.push(`${m.label} denominator: the complete base-filtered population, shared across every group`);}
     for(const [key,role]of [['owners','owner'],['accounts','primary']])if(spec[key]!=null)parts.push(`${fields[core.role(role)]}: ${spec[key].join(', ')||'none'}`);
     if(spec.bucket!=='none')parts.push(`${spec.bucket} by ${fields[spec.groupBy]}`);
     if(spec.splitBy)parts.push('Split by '+fields[spec.splitBy]);

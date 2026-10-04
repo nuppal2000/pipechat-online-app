@@ -165,7 +165,7 @@
   function visible() {
     const query=C.normalize(S.search), matches=tablePredicate();
     const rows=tailored()?S.records.filter(record=>matches(record)&&(S.scope!=='mine'||!C.role('owner')||[S.user?.name,S.user?.email].filter(Boolean).some(name=>C.normalize(name)===C.normalize(record[C.role('owner')])) )&&(S.scope!=='open'||!S.tableSchema.legacy||!['Won','Lost'].includes(record.stage))&&(!query||Object.keys(labels()).some(field=>C.normalize(record[field]).includes(query)))):S.records.filter(record=>matches(record) && (S.scope!=='mine'||[S.user?.name,S.user?.email].filter(Boolean).some(name=>C.normalize(name)===C.normalize(record.owner))) && (S.scope!=='open'||!['Won','Lost'].includes(record.stage)) && (!query||['account','owner','stage','next','notes'].some(field=>C.normalize(record[field]).includes(query))));
-    return C.sortRecords(rows,S.sort,S.customFields);
+    return !S.sort&&S.filter?.ids?rows.sort((a,b)=>S.filter.ids.indexOf(a.id)-S.filter.ids.indexOf(b.id)):C.sortRecords(rows,S.sort,S.customFields);
   }
   function selectScope(scope){
     S.scope=scope;
@@ -523,13 +523,24 @@
   function clearDraft() {restoredProposal=null;S.pending=null;S.clarification=null;S.sourceAction=null;renderTrust();}
   function clearClarification(){S.clarification=null;if(!S.pending)S.sourceAction=null;renderTrust();}
   function cancelDraft() {if(S.saving)return;clearDraft();say('Cancelled. No changes were made to the table.');}
+  function publishPlanResults(plan){
+    for(const effect of plan.effects||[]){
+      if(effect.kind==='table'){
+        S.focus={kind:'table',ids:[...effect.ids]};
+        if(effect.show){S.filter={where:[],ids:[...effect.ids]};S.sort=null;S.scope='all';S.search='';$('dealSearch').value='';S.tab='table';}
+      }else if(effect.kind==='dashboard')setDashboard({board:effect.board,views:window.PipeChatDashboard.evaluate(effect.board,S.records,C,S.customFields,dashboardOptions())});
+    }
+    clearClarification();render();if(plan.answers?.length)say(plan.answers.join('\n\n'));saveChatState();
+  }
   function prepare(action, originalCommand) {
-    if(!['add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
+    if(!['workspace_plan','add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
     let proposal;
     if(action.action==='workspace_plan'){
-      try{proposal=window.PipeChatPlan.prepare({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards},action,{today:localDate(),nonce:crypto.randomUUID().replaceAll('-','')});}
+      try{proposal=window.PipeChatPlan.prepare({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards},action,{today:localDate(),nonce:crypto.randomUUID().replaceAll('-',''),visibleIds:visible().map(r=>r.id),focus:S.focus,dashboard:dashboardBase()});}
       catch(error){S.pending=null;S.sourceAction=C.clone(action);S.clarification={originalCommand:S.clarification?.originalCommand||originalCommand,question:error.message,previousAction:C.clone(action)};say('Quick clarification. '+error.message);renderTrust();focusTrust();return;}
-      proposal.revision=S.revision;proposal.generation=S.generation;
+      proposal.revision=S.revision;proposal.generation=S.generation;proposal.viewState=JSON.stringify({view:tableView(),focus:S.focus,report:S.report,dashboard:S.dashboard});
+      if(!proposal.mutates){clearDraft();publishPlanResults(proposal);return;}
+      if(proposal.patches.length||proposal.addedFields.length)S.tab='table';else if(proposal.addedCards.length||proposal.taskPatches.length)S.tab='todo';
       S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;
       say(`Review the complete plan: ${proposal.addedFields.length} new columns, ${proposal.patches.length} changed records and ${proposal.addedCards.length} new tasks. Selections and date calculations are included. Nothing is saved until you confirm the entire plan.`);renderTrust();focusTrust();return;
     }else if(action.action==='move_record'){
@@ -667,7 +678,8 @@
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
       if(p.kind==='workspace-plan'){
         if(p.revision!==S.revision||p.generation!==S.generation||p.before!==window.PipeChatPlan.snapshot({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards}))throw new Error('The workspace changed. Review the complete plan again.');
-        if(await persist(p.next.records,'Complete plan saved',{customFields:p.next.customFields,tableSchema:p.next.tableSchema,todoCards:p.next.todoCards,exactRecords:true}))say(`Saved together: ${p.addedFields.length} new columns, ${p.patches.length} changed records and ${p.addedCards.length} new tasks.`);
+        if(p.viewState!==JSON.stringify({view:tableView(),focus:S.focus,report:S.report,dashboard:S.dashboard}))throw new Error('The selected table or dashboard view changed. Review the complete plan again.');
+        if(await persist(p.next.records,'Complete plan saved',{customFields:p.next.customFields,tableSchema:p.next.tableSchema,todoCards:p.next.todoCards,exactRecords:true})){publishPlanResults(p);say(`Saved together: ${p.addedFields.length} new columns, ${p.patches.length} changed records, ${p.addedCards.length} new tasks and ${p.taskPatches.length} updated tasks.`);}
         return;
       }
       if(['move-record','move-field'].includes(p.kind)){
@@ -822,7 +834,7 @@
     if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your Tasks board is open.');return;}
     if(action.action==='query_records'){
       const result=window.PipeChatReports.queryRecords(S.records,action,C,S.customFields,{today:localDate()});
-      S.filter=result.filter;S.sort=result.sort;S.scope='all';S.search='';$('dealSearch').value='';S.focus={kind:'table'};S.tab='table';clearClarification();render();
+      S.filter=result.filter;S.sort=result.sort;S.scope='all';S.search='';$('dealSearch').value='';S.focus={kind:'table',ids:result.rows.map(row=>row.id)};S.tab='table';clearClarification();render();
       say(`Showing ${result.rows.length} matching records${result.sort?`, sorted by ${labels()[result.sort.field]}, ${result.sort.direction==='asc'?'ascending':'descending'}`:''}. Table values are unchanged.`);return;
     }
     if(action.action==='audit_records'){
@@ -831,7 +843,9 @@
       S.focus={kind:'table'};S.tab='table';clearClarification();render();say(window.PipeChatReports.describeAudit(result));return;
     }
     if(action.action==='show_kpi'){
-      handleAction({crmAction:{action:'show_report',smartReport:window.PipeChatReports.kpiReport(action)}},command);return;
+      const spec=window.PipeChatReports.kpiReport(action),board={version:1,elements:[{id:'answer',spec,visibleIds:visible().map(row=>row.id)}],sharedFilters:[],activeId:'answer'};
+      const views=window.PipeChatDashboard.evaluate(board,S.records,C,S.customFields,dashboardOptions());
+      S.focus={kind:'table',ids:views[0].snapshot.recordIds};clearClarification();say(window.PipeChatDashboard.analyze([{kind:'summary',elementIds:['answer']}],views));return;
     }
     if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','add_records','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){
