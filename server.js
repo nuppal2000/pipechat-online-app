@@ -10,6 +10,7 @@ const todoActions = require('./public/todo-actions.js');
 const reportEngine = require('./public/report-engine.js');
 const dashboardBoard = require('./public/dashboard-board.js');
 const workspacePlan = require('./public/workspace-plan.js');
+const actionReview = require('./lib/action-review.js');
 const dateCalendar = require('./lib/date-context.js');
 const clarificationContext = require('./lib/clarification-context.js');
 const modelRouter = require('./lib/model-router.js');
@@ -25,9 +26,9 @@ const reportInstructions = [
   'For categorical selections, a follow-up naming the desired values means set that field selection: use replace_filter, even when the user does not say replace or instead. This applies to any owner, stage, account, region, or other categorical column and to both tables and reports. Preserve filters on unrelated fields. For example, after Region is East, now only West means replace the Region predicate, not Region East AND West. After a stage subset, only an owner means set that owner while retaining the stage subset; then only a different owner replaces just the owner. Use add_filter for an additional independent condition or an explicitly requested intersection, including adding an upper bound to an existing lower bound. Do not combine mutually exclusive single-valued selections unless the user explicitly requests that intersection. Before returning a filter, compare its field and intended scope with the active saved filters, not just the most recent chat text.',
   'For report-property changes to the active or explicitly named currentReport.version 1, use the compact refine_report action, not a rebuilt show_report. Filter-only follow-ups use filter_records instead. refine_report has mode add_filter/replace_filter/remove_filter, where, replaceFields, and at least one changes item. add_filter ANDs where with existing filters (replaceFields []); use it for additional constraints. replace_filter removes predicates only on replaceFields then adds the new where, for a changed field selection; the user need not literally say replace. remove_filter has where [] and removes only specified fields. Unspecified filters, measure, aggregation, group, scope, dates, sorting and limit remain unchanged. changes is an array of only requested report-property edits {field,value}, using field title/chart/scope/groupBy/bucket/splitBy/measures/sort/limit. For a chart-type change use changes [{field:chart,value:...}], mode add_filter and where []. Never change sum to count just because the chart type changed. Use show_report for a fresh unrelated chart or to convert a legacy report (without version 1), preserving that legacy report context when refining it.',
   'A follow-up only Qualified and Proposal Sent means an in condition with values [Qualified, Proposal Sent], NOT contains Qualified|Proposal Sent, not one joined string, and not two AND equals conditions. This rule applies to any set of categorical choices, owners or account names. Choice fields require equals/in/not_equals/not_in with actual option values. If requested categories do not exist, clarify and keep the previous chart rather than displaying a false empty result. Do not invent a regex or encode OR with punctuation; text substring searches are literal.',
-  'For a new chart use show_report with smartReport (version 1). For a temporary numerical answer or one-off KPI use show_kpi, with title, scope, where and 1-6 measures. It creates an ad hoc KPI report with no grouping, never a persistent top dashboard card. Show me a KPI, what is the total, how many, and average are read-only by default; the word KPI alone does not authorize adding a saved card. Use add_kpi ONLY for an explicit request to add/save/pin/keep a KPI on the dashboard, configure_kpi for editing a named saved card, delete_kpi for removing a saved card. If persistence is unclear, default to a temporary answer; do not ask to add a card. An explicit persistent change still requires confirmation. For counts AND affected names, including several missing-field counts, use audit_records, not a graph or assistant-authored arithmetic. pipeline.records contains the FULL authorized table, independent of dashboard controls or visibleIds. Default scope is all; visible only for the explicitly requested current filtered pipeline view. Never fabricate totals, count samples, or return calculated numbers or affected-name lists in assistantMessage: the app calculates the typed action from rows.',
+  'For a new chart use show_report with smartReport (version 1). For a temporary numerical answer or one-off KPI use show_kpi, with title, scope, where and 1-6 measures. It answers directly in chat without changing the Dashboard or adding any card. Show me a KPI, what is the total, how many, and average are read-only by default; the word KPI alone does not authorize adding a saved card. Use add_kpi ONLY for an explicit request to add/save/pin/keep a KPI on the dashboard, configure_kpi for editing a named saved card, delete_kpi for removing a saved card. If persistence is unclear, default to a temporary answer; do not ask to add a card. An explicit persistent change still requires confirmation. For counts AND affected names, including several missing-field counts, use audit_records, not a graph or assistant-authored arithmetic. pipeline.records contains the FULL authorized table, independent of dashboard controls or visibleIds. Default scope is all; visible only for the explicitly requested current filtered pipeline view. Never fabricate totals, count samples, or return calculated numbers or affected-name lists in assistantMessage: the app calculates the typed action from rows.',
   'audit_records has scope all/visible, where for the base cohort, and groups [{label,where}]. Include EVERY requested field/cohort as its own independent group, including zero-result groups. A missing-field audit uses one is_blank condition with the actual field ID in each group; blanks include null, missing and whitespace, never zero. Records can belong to multiple groups: do not deduplicate across groups or partition by the first missing field. The app returns each count and all affected primary names/IDs. A user-stated total such as all 42 is not a filter or assumed answer: use all rows and let the app report the actual count. Group labels must accurately describe their predicates. For several counts without names use show_kpi with independent measure.where predicates; preserve different cohorts rather than collapsing them into a shared filter. Do not answer audits from older messages, summaries or previously displayed report totals.',
-  'smartReport supports bar, line, stage (doughnut), and kpi. groupBy and splitBy are any existing field IDs or null. Default groupBy is the primary-role field, with sum of the selected numeric Measure (or record count if none). measures contains 1-6 distinctly labeled measures with metric count/sum/average/min/max/median/count_distinct/percentage, field, and where. count and percentage have field null. Sum/average/min/max/median require numeric or currency columns; count_distinct accepts any column. Do not infer numeric types from ambiguous text. percentage is matching records / all base-filtered records within each group; its measure.where defines the numerator. Clarify other ratio definitions rather than approximating them.',
+  'smartReport supports bar, line, stage (doughnut), and kpi. groupBy and splitBy are any existing field IDs or null. Default groupBy is the primary-role field, with sum of the selected numeric Measure (or record count if none). measures contains 1-6 distinctly labeled measures with metric count/sum/average/min/max/median/count_distinct/percentage, field, and where. count and percentage have field null. Sum/average/min/max/median require numeric or currency columns; count_distinct accepts any column. Do not infer numeric types from ambiguous text. percentage is matching group records / the complete base-filtered population, with one denominator shared by every group; optional measure.where defines a conditional numerator. Clarify other ratio definitions rather than approximating them.',
   'where is an OR array of AND arrays of conditions. [] means no conditions. Conditions use field, operator, value and values; use values for in/not_in/between, otherwise []. Use null for unused value. Operators: equals, not_equals, in, not_in, contains, not_contains, is_blank, is_not_blank, gt, gte, lt, lte, between, before_today, older_than_days. Numeric/date ordered comparisons require a matching typed column. Date literals use YYYY-MM-DD. before_today and blank checks use value null; older_than_days uses a nonnegative integer. Missing values are not zero and do not satisfy negated comparisons; explicitly OR an is_blank condition when intended.',
   'A requested subset (only these accounts/owners, exclude incomplete rows) belongs in smartReport.where, NOT just measures[].where. This determines which categories exist and the matching-record count. Measure-specific where is only for differing cohorts or percentage numerators. If all non-percentage measures use the same filter, it is a report-level filter: excluded categories must not appear as empty results.',
   'Example: compare total value for reps Ravi, Sarah and Daniel: groupBy the representative column, one sum measure of the value column, where [[{field:representativeID,operator:in,value:null,values:[Ravi,Sarah,Daniel]}]]. Never use a comma-separated contains filter. Account comparisons group by primary ID with an in selection on that field. Partial, unknown or ambiguous names require clarification; inspect actual values, do not silently drop names or broaden the selection. Compound requests can filter any columns and compare multiple measures or splitBy another category.',
@@ -414,7 +415,7 @@ function responseSchema(customFields,tableSchema,conversationFocus=null) {
   });
   action.properties.action.enum=action.properties.action.enum.filter(name=>!['update_record','bulk_update','update_records','update_todo','move_todos','show_report','filter_view','clear_view'].includes(name));
   schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['update_records']},changes:{type:'array',minItems:1,maxItems:200,items:{anyOf:selectors}}},required:['action','changes']});
-  schema.properties.crmAction.anyOf.push(workspacePlan.responseSchema());
+  schema.properties.crmAction.anyOf.push(workspacePlan.responseSchema(core,customFields,conversationFocus));
   schema.properties.crmAction.anyOf.push(...todoActions.actionSchemas(conversationFocus));
   schema.properties.crmAction.anyOf.push(reportEngine.refinementSchema(core,customFields));
   schema.properties.crmAction.anyOf.push(reportEngine.filteringSchema(core,customFields));
@@ -714,11 +715,31 @@ async function serveStatic(req, res) {
   }
 }
 
+async function reviewCompiledAction(input,startedAt){
+  const controller=new AbortController();let timer;
+  const deadline=new Promise((resolve,reject)=>{timer=setTimeout(()=>{reject(new RequestError('The completeness review timed out. No changes were prepared.',502));controller.abort();},Math.max(1,80000-(Date.now()-startedAt)));});
+  try{
+    return await Promise.race([deadline,(async()=>{
+      const response=await fetch('https://api.openai.com/v1/responses',{
+        method:'POST',signal:controller.signal,
+        headers:{'Content-Type':'application/json',Authorization:`Bearer ${OPENAI_API_KEY}`},
+        body:JSON.stringify({model:AI_MODELS.simple,store:false,instructions:actionReview.instructions,input:JSON.stringify(input),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schema}}})
+      });
+      controller.signal.throwIfAborted();
+      if(!response.ok)throw new RequestError('The completeness review could not finish. No changes were prepared.',502);
+      const data=await response.json();controller.signal.throwIfAborted();
+      return JSON.parse(extractOutputText(data));
+    })()]);
+  }catch(error){throw error instanceof RequestError?error:new RequestError('The completeness review could not finish. No changes were prepared.',502);}
+  finally{clearTimeout(timer);}
+}
+
 async function planPipeChatAction(payload, selectedRoute = modelRouter.route(payload, AI_MODELS), startedAt = Date.now()) {
   const {userCommand, pipeline, conversationHistory = [], conversationMemory = '', recalledMessages = [], memoryUpdate = null, pendingClarification = null, pendingAction = null, currentReport = null, csvImport = null, tableBuild=null, spreadsheetBuild=null} = payload;
   if (!OPENAI_API_KEY) {
     throw new RequestError("OPENAI_API_KEY is not set", 503);
   }
+  if(!csvImport&&!tableBuild&&!spreadsheetBuild){const clarification=actionReview.graphQuestion(payload);if(clarification)return {...clarification,ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};}
 
   const csv = csvImport ? csvImportCore.validateDescription(csvImport) : null;
   const tableSchema=tableSchemaCore.validate(pipeline?.tableSchema),core=pipelineCore.create(tableSchema),customFields=core.validateCustomFields(pipeline?.customFields);
@@ -740,7 +761,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
         dateCalendar.instructions,
         clarificationContext.instructions,
         selectedRoute.reason==='clarification_repair'?clarificationContext.recoveryInstructions:'',
-        'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Custom-title creation is available through the Add To Do card dialog.',
+        'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Use workspace_plan add_unlinked_task to create a custom-title task without a linked record.',
         customizationInstructions,
         tableActionInstructions,
         aiGrounding.instructions,
@@ -755,7 +776,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
         dateCalendar.instructions,
         clarificationContext.instructions,
         selectedRoute.reason==='clarification_repair'?clarificationContext.recoveryInstructions:'',
-        'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Custom-title creation is available through the Add To Do card dialog.',
+        'Exception: a custom-title card has recordId null and customTitle, with no linked CRM record. Identify it by todoId from todoView when updating or deleting it. Never invent a CRM record for it. Its title and task data survive unrelated CRM changes. Use workspace_plan add_unlinked_task to create a custom-title task without a linked record.',
         customizationInstructions,
         tableActionInstructions,
         aiGrounding.instructions,
@@ -816,6 +837,13 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
       }
     })
   };
+  if(!csv&&!tableBuild&&!spreadsheetBuild){
+    const body=JSON.parse(requestOptions.body);
+    body.instructions+='\n'+actionReview.compilerInstructions;
+    const input=JSON.parse(body.input[0].content[0].text);
+    if(payload._reviewFeedback)input.compilerRepair=payload._reviewFeedback;
+    body.input[0].content[0].text=JSON.stringify(input);requestOptions.body=JSON.stringify(body);
+  }
   let timer;
   const deadline = controller ? new Promise((resolve, reject) => {
     timer = setTimeout(() => {
@@ -871,6 +899,26 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
       return planPipeChatAction(payload,{tier:'complex',model:AI_MODELS.complex,reason:'clarification_repair'},startedAt);
     }
     return {crmAction:null,memoryNote:null,assistantMessage:"Sorry, I understood your reply, but couldn't safely prepare the complete change. I have stopped the repeated question. Please restate the change with the record and values you want; nothing has been saved.",ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
+  }
+  if(grounded===result&&actionReview.needsReview(payload,result)){
+    let review,coverage;
+    try{
+      const computed=actionReview.evidence(payload,result);
+      review=await reviewCompiledAction({userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,computed},startedAt);
+      coverage=actionReview.validateReview(review,result);
+    }catch(error){
+      if(error instanceof RequestError)throw error;
+      // Structural execution errors are repairable; transport failures cannot authorize a partial plan.
+      review={issues:[error.name==='TimeoutError'?'The request reached its time limit.':error.message],requirements:[],clarificationQuestion:null};coverage={ok:false};
+    }
+    if(!coverage.ok){
+      if(!payload._reviewAttempt&&Date.now()-startedAt<55000&&!review.clarificationQuestion){
+        return planPipeChatAction({...payload,_reviewAttempt:1,_reviewFeedback:review},{tier:'complex',model:AI_MODELS.complex,reason:'completeness_repair'},startedAt);
+      }
+      if(review.clarificationQuestion){return {assistantMessage:review.clarificationQuestion,crmAction:{action:'clarify',question:review.clarificationQuestion},memoryNote:null,ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};}
+      return {assistantMessage:"Sorry, I couldn't verify the whole request without dropping or changing part of it. I haven't prepared a partial change. Please try again or split the request into smaller steps.",crmAction:null,memoryNote:null,ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
+    }
+    grounded.coverage={requested:coverage.requested,compiled:coverage.compiled};
   }
   return {...grounded, ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
 }

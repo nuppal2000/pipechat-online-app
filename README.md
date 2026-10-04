@@ -57,6 +57,20 @@ in `SUPABASE-MIGRATION.md` and requires an explicitly approved test account.
 
 ### AI Routing and Grounding
 
+Operational replies now receive an independent completeness review against the original request,
+current workspace and deterministic execution results. Missing outcomes or scope conflicts allow
+one whole-plan repair; an unverified partial plan is not returned. Planning and review share the
+80-second deadline and one chat allowance, but can incur multiple provider requests. This is an
+additional probabilistic language check, not a guarantee of perfect interpretation.
+
+Workspace plans reuse materialized record selections for conditional updates, linked-task
+exclusions, standalone tasks, independent task edits and computed answers. Table/schema/task
+writes remain one version-checked database transaction after confirmation. Temporary dashboard
+effects and answers are validated before preview and published only after a successful workspace
+save; conversation/view persistence is separate from that database transaction. Pure analytical
+questions do not change the Dashboard. Grouped percentages share the complete filtered population
+as their denominator; numerator filters, top-N or excluded dates may produce a total below 100%.
+
 `PIPECHAT_SIMPLE_MODEL` defaults to `gpt-5.4-mini` for short single-operation requests.
 `PIPECHAT_COMPLEX_MODEL` defaults to `PIPECHAT_MODEL` (legacy setting), then `gpt-5.2`.
 Imports, schema design, conditional/multi-step actions, audits and cross-chart analysis
