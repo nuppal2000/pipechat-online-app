@@ -70,3 +70,12 @@ test('completeness review requires every requested outcome mapped to real steps 
   assert.equal(Review.validateReview(review,result).ok,true);
   for(const changed of [{...review,requirements:[requirement,{description:'Missing total',satisfied:false,stepIds:[]}]},{...review,issues:['Open scope omitted']},{...review,requirements:[{...requirement,stepIds:['invented']}]}])assert.equal(Review.validateReview(changed,result).ok,false);
 });
+
+test('failed reviews explain bounded unmet outcomes instead of an opaque refusal',()=>{
+  const result={crmAction:F.plan([F.select('select')])};
+  const review={requirements:[{description:'Keep selected accounts',satisfied:true,stepIds:['wrong']}],issues:[],clarificationQuestion:null};
+  const checked=Review.validateReview(review,result);assert.equal(checked.mappingIssues.length,1);
+  assert.match(Review.failureMessage({...review,issues:checked.mappingIssues}),/Keep selected accounts/);
+  assert.match(Review.failureMessage({issues:['Missing date predicate'],requirements:[]}),/Missing date predicate/);
+  assert(Review.failureMessage({issues:['x'.repeat(4000)]}).length<1100);
+});
