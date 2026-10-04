@@ -76,8 +76,8 @@
   }
   function remember(matches,id){return {kind:'todos',id,ids:matches.map(c=>c.id)};}
   function describe(matches,records,schema){
-    if(!matches.length)return 'No To Do cards match those conditions. No cards were changed.';
-    return `${matches.length} matching To Do ${matches.length===1?'card':'cards'}:\n`+matches.map(c=>{const v=T.project(c,records,schema);return `- ${v.title} - ${v.nextAction||'No To Do text'} (${v.status}); due ${v.dueDate||'not set'}`;}).join('\n')+'\nNo cards were changed.';
+    if(!matches.length)return 'No tasks match those conditions. No cards were changed.';
+    return `${matches.length} matching ${matches.length===1?'task':'tasks'}:\n`+matches.map(c=>{const v=T.project(c,records,schema);return `- ${v.title} - ${v.nextAction||'No task text'} (${v.status}); due ${v.dueDate||'not set'}`;}).join('\n')+'\nNo cards were changed.';
   }
   return {actionSchemas,select,plan,remember,describe};
 });

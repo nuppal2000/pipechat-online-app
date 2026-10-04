@@ -1,0 +1,30 @@
+.workspace{grid-template-columns:minmax(280px,320px) minmax(0,1fr) minmax(260px,290px);height:calc(100dvh - 187px);min-height:580px}
+.workspace.notifications-collapsed{grid-template-columns:minmax(280px,320px) minmax(0,1fr)}
+.workspace>.chat-pane,.workspace>.trust-pane{grid-column:1;grid-row:1;border-right:1px solid var(--line);border-top:0;height:100%;min-height:0}
+.workspace>.main-pane{grid-column:2;grid-row:1;height:100%;border-right:0;min-height:0}
+.workspace>.notifications-pane{grid-column:3;grid-row:1;border-left:1px solid var(--line);background:#fcfdfd;min-height:0}
+.workspace .trust-body{max-height:none;min-height:0}
+.workspace .pane-header{min-height:73px}
+.workspace .trust-pane .pane-header{gap:8px;flex-wrap:wrap}
+.center-heading{flex-wrap:wrap}.toolbar{flex-wrap:wrap}.center-heading>div:first-child{max-width:100%}
+.notifications-pane .pane-header{gap:8px;padding:16px}.notifications-pane .pane-header>div{flex:1;min-width:0}
+.notifications-pane .pane-header h2{font-size:16px}.notifications-pane .pane-header p{font-size:11px;color:var(--muted);margin-top:5px}
+.notifications-body{flex:1;overflow:auto;min-height:0;padding:0 16px 16px}
+.notification-section{padding:18px 0 0}.notification-section>h3{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:#475669;padding-bottom:7px;gap:8px}
+.notification-section>h3>span{font-weight:400;font-size:11px;color:#798492}
+.notification-item{padding:13px 0;border-top:1px solid #e6ebed;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:start}
+.notification-item .notification-title{display:block;text-align:left;padding:0;min-height:24px;font-size:12px;font-weight:600;line-height:1.5;overflow-wrap:anywhere;color:#283e4b;max-width:100%}
+.notification-item p{font-size:11px;line-height:1.6;color:#6b7581;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:3px}
+.notification-item time{font-size:10px;color:#557775;display:block;margin-top:7px}.notification-section[data-section=overdue] time{color:#a75042}
+.notification-item .icon-btn{color:#397d70;width:28px;height:28px;min-height:28px;padding:5px}
+.notifications-empty{padding:35px 3px;font-size:12px;line-height:1.8;color:#687784}
+.notifications-footer{display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--line);font-size:10px;color:#788493;min-height:50px}.notifications-footer>span{flex:1}
+.notification-summary{font-size:11px;line-height:1.6;color:#6a7886;padding:15px 0 0}
+#showNotifications{position:relative;color:#397d70}#notificationBadge{position:absolute;top:-5px;right:-4px;min-width:17px;height:17px;padding:0 3px;background:#e3f2ed;color:#246a5c;border:1px solid #bedccf;border-radius:4px;font-size:9px;line-height:15px}
+.chat-clarification{padding:0 15px 12px;max-height:230px;overflow:auto;border-top:1px solid var(--line);font-size:12px}.chat-clarification .candidate{font-size:11px;padding:8px}.chat-clarification .proposal-intro{margin-top:10px}
+.review-chat-action{font-size:11px;min-height:28px;padding:4px 6px;color:var(--accent)}
+.review-composer{padding:12px 16px;border-top:1px solid var(--line)}.review-composer textarea{min-height:66px;font-size:12px}.review-composer>div{display:flex;justify-content:flex-end;gap:5px;margin-top:8px}
+#sharePreview{margin-top:22px;border-top:1px solid var(--line);padding-top:18px}
+@media(min-width:1700px){.workspace{grid-template-columns:350px minmax(0,1fr) 310px}.workspace.notifications-collapsed{grid-template-columns:350px minmax(0,1fr)}}
+@media(max-width:1100px) and (min-width:761px){.workspace{grid-template-columns:265px minmax(0,1fr) 240px;margin-inline:10px}.workspace.notifications-collapsed{grid-template-columns:265px minmax(0,1fr)}.notifications-pane .pane-header{padding:12px}.notifications-body{padding-inline:12px}.center-heading{padding-inline:15px}}
+@media(max-width:760px){.workspace{display:flex;min-height:0;height:auto}.workspace>.main-pane{order:1;min-height:450px;height:auto}.workspace>.chat-pane,.workspace>.trust-pane{order:2;height:560px;border-right:0;border-top:1px solid var(--line)}.workspace>.notifications-pane{order:3;border-left:0;border-top:1px solid var(--line);max-height:450px}.workspace.review-open>.trust-pane{order:0}.notifications-body{max-height:350px}.workspace .trust-body{max-height:none}.workspace .chat-feed{min-height:0}.view-tabs{overflow-x:auto}.view-tabs button{flex:none}.center-heading{gap:12px}.toolbar{gap:5px}.notifications-pane .pane-header{min-height:65px}}
