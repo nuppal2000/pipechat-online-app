@@ -25,8 +25,8 @@ global.fetch = async (url, options) => {
     assert.equal(action.properties.field.enum.includes('cf_contact'),hasCustom);
     assert.equal(action.properties.changes.anyOf[1].items.properties.field.enum.includes('cf_contact'),hasCustom);
     assert.equal(action.properties.filter.anyOf[1].properties.field.enum.includes('cf_contact'),hasCustom);
-    assert.match(request.instructions,/blank column for EVERY record/);
-    assert.match(request.instructions,/targetType choice, dropdownOptions/);
+    assert.match(request.instructions,/blank column for EVERY record|creates a blank column/);
+    assert.match(request.instructions,/targetType choice(?:,| and) dropdownOptions/);
     return {ok:true,json:async()=>({output_text:JSON.stringify({assistantMessage:'Review the new column',crmAction:{action:'add_field',newFieldName:'Contact'},memoryNote:null})})};
   }
   if (data.headers) {
@@ -35,6 +35,9 @@ global.fetch = async (url, options) => {
     return {ok:true,json:async()=>({output_text:JSON.stringify({columnMap:{account:'Business',stage:null,value:null,close:null,owner:null,next:null,follow:null,notes:null},stageMappings:[]})})};
   }
   assert.equal(data.pendingAction.action, 'update_records');
+  assert.equal(data.pipeline.records[0].account,'Private account A');
+  assert.equal(data.pipeline.records[0].close,'2026-11-30','Saved values override the legacy client snapshot');
+  assert.equal(data.pipeline.primaryField,'account');
   assert.equal(data.dateContext.today,'2026-09-24');
   assert.equal(data.dateContext.tomorrow,'2026-09-25');
   assert.equal(data.dateContext.nextWeekdays.Monday,'2026-09-28');

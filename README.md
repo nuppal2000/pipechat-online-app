@@ -55,6 +55,27 @@ in `SUPABASE-MIGRATION.md` and requires an explicitly approved test account.
 
 ## Deploy and Verify
 
+### AI Routing and Grounding
+
+`PIPECHAT_SIMPLE_MODEL` defaults to `gpt-5.4-mini` for short single-operation requests.
+`PIPECHAT_COMPLEX_MODEL` defaults to `PIPECHAT_MODEL` (legacy setting), then `gpt-5.2`.
+Imports, schema design, conditional/multi-step actions, audits and cross-chart analysis
+use the complex route. Clarification replies retain the original request's complexity.
+The router is deterministic and makes no separate classification API call. If mini
+returns a complex structured plan, it is replanned once by the complex model within
+the same 80-second hosted deadline and one chat allowance. This can incur two provider
+requests; transport failures are not automatically retried against another model.
+
+Every authenticated AI request reloads that user's saved CRM/schema/cards. Table-view
+filters and dashboard results are recomputed from those rows; browser-authored totals,
+card projections and schema labels are not authoritative. Stale workspace versions are
+rejected before reserving usage. Ambiguous partial primary names require account
+selection before value clarification. Current field validation, previews, explicit
+confirmation and optimistic database version checks remain in place. The model still
+interprets language probabilistically; these checks are not a guarantee that every
+natural-language interpretation is correct. Hover a newly generated chat reply to see
+the model used; `/api/health` lists both configured tiers.
+
 Follow [SUPABASE-DEPLOYMENT.md](SUPABASE-DEPLOYMENT.md) for the existing Render
 service. Deploy the complete app, not just its HTML. Keep Supabase configuration,
 secure cookies, exact HTTPS origin, signup restrictions, model and usage settings.
