@@ -906,6 +906,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
       const computed=actionReview.evidence(payload,result);
       review=await reviewCompiledAction({userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,computed},startedAt);
       coverage=actionReview.validateReview(review,result);
+      review.issues.push(...coverage.mappingIssues);
     }catch(error){
       if(error instanceof RequestError)throw error;
       // Structural execution errors are repairable; transport failures cannot authorize a partial plan.
@@ -916,7 +917,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
         return planPipeChatAction({...payload,_reviewAttempt:1,_reviewFeedback:review},{tier:'complex',model:AI_MODELS.complex,reason:'completeness_repair'},startedAt);
       }
       if(review.clarificationQuestion){return {assistantMessage:review.clarificationQuestion,crmAction:{action:'clarify',question:review.clarificationQuestion},memoryNote:null,ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};}
-      return {assistantMessage:"Sorry, I couldn't verify the whole request without dropping or changing part of it. I haven't prepared a partial change. Please try again or split the request into smaller steps.",crmAction:null,memoryNote:null,ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
+      return {assistantMessage:actionReview.failureMessage(review),crmAction:null,memoryNote:null,ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
     }
     grounded.coverage={requested:coverage.requested,compiled:coverage.compiled};
   }
