@@ -13,6 +13,7 @@ function harness(){
     return {ok:true,json:async()=>structuredClone(saved)};
   }};
   context.window.messages=messages;context.window.PipeChatPlan=require('../public/workspace-plan.js');
+  context.window.PipeChatDashboard=require('../public/dashboard-board.js');context.window.PipeChatReports=require('../public/report-engine.js');
   const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`render=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};say=(text,role='assistant')=>{S.history.push({role,content:text});window.messages.push(text);};window.test={S,useSchema,prepare,send,confirmDraft,undo,dismissUndo,cancelDraft,openFieldDialog,submitFieldDialog,openColumnMenu,renderTrust,renderTable,renderDashboardKpis,fieldInput,resizeTextCell,moveColumn,selectScope,visible,fieldHeader};`),context);
   const h=context.window.test;h.useSchema(schema);Object.assign(h.S,{records:structuredClone(records),customFields:[],updatedAt:'v1',loaded:true,user:{id:1,name:'QA'},usage:{remaining:20},health:{aiConfigured:true}});
@@ -22,6 +23,22 @@ const plain=v=>JSON.parse(JSON.stringify(v));
 const additionsFixture=require('./fixtures/record-additions.cjs');
 const assistantFixture=require('./fixtures/assistant-actions.cjs');
 const planFixture=require('./fixtures/workspace-plans.cjs');
+
+test('computed multi-output answer preserves dashboard, and showing those records preserves sorted identities',async()=>{
+  const h=harness(),w=planFixture.workspace();h.useSchema(w.tableSchema);Object.assign(h.S,w,{tab:'todo'});const before=plain({report:h.S.report,dashboard:h.S.dashboard});
+  const outputs=[{kind:'count',field:null},{kind:'names',field:null},{kind:'sum',field:'f_value'},{kind:'average',field:'f_value'}];
+  h.prepare(planFixture.plan([planFixture.select('rows',[],{orderBy:'f_value',direction:'desc',limit:3}),{op:'read_records',id:'answer',label:'Answer',selection:'rows',showTable:false,outputs}]),'Totals');
+  assert.equal(h.S.pending,null);assert.equal(h.S.tab,'todo');assert.deepEqual(plain({report:h.S.report,dashboard:h.S.dashboard}),before);assert.match(h.messages.at(-1),/220,000/);assert.deepEqual(plain(h.S.focus.ids),[3,6,4]);
+  h.prepare(planFixture.plan([planFixture.select('rows',[],{source:'focus'}),{op:'read_records',id:'answer',label:'Show',selection:'rows',showTable:true,outputs:[{kind:'count',field:null}]}]),'Show those three');
+  assert.equal(h.S.tab,'table');assert.deepEqual(plain(h.visible().map(row=>row.id)),[3,6,4]);assert(!h.calls.some(c=>c.url==='/api/crm-data'));assert.equal(h.S.pending,null);
+});
+
+test('independent task edits share the workspace confirmation, cancellation, CAS save and Undo',async()=>{
+  const h=harness(),w=planFixture.workspace(),T=require('../public/todo-core');w.todoCards=[T.create('todo_one',1),T.create('todo_two',2)];h.useSchema(w.tableSchema);Object.assign(h.S,w);const before=plain(w.records);
+  const action=planFixture.plan(['todo_one','todo_two'].map((id,i)=>({op:'update_tasks',id:'edit'+i,label:'Due date',selection:{source:'ids',ids:[id],focusId:null,conditions:[]},changes:[{field:'dueDate',operation:'set',value:'2026-10-0'+(5+i)}]})));
+  h.prepare(action);assert.equal(h.S.pending.taskPatches.length,2);assert.match(h.node('trustBody').innerHTML,/2026-10-06/);h.cancelDraft();assert.equal(h.S.todoCards[0].dueDate,'');
+  h.prepare(action);await h.confirmDraft();assert.deepEqual(plain(h.S.records),before);assert.deepEqual(plain(h.S.todoCards.map(c=>c.dueDate)),['2026-10-05','2026-10-06']);await h.undo();assert.deepEqual(plain(h.S.todoCards.map(c=>c.dueDate)),['','']);
+});
 
 test('concrete proposals replace chat on the left; cancel restores chat while clarification stays conversational',()=>{
   const h=harness();h.prepare({action:'update_record',ids:[1],field:'f_score',value:42});h.renderTrust();
