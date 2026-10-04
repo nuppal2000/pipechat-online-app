@@ -37,7 +37,7 @@ test('bulk card moves preview/cancel, save atomically, undo, and reject stale re
   const before=plain(h.S.todoCards),rows=plain(h.S.records),action={action:'move_todos',todoMoves:before.map(c=>({todoId:c.id,todoStatus:'Done'}))};
   h.prepare(action);assert.equal(h.S.pending.count,2);assert.deepEqual(plain(h.S.todoCards),before);h.cancelDraft();assert.deepEqual(plain(h.S.todoCards),before);
   h.prepare(action);h.fail(true);await h.confirmDraft();assert.equal(h.S.pending.count,2);assert.deepEqual(plain(h.S.todoCards),before);
-  h.fail(false);await h.confirmDraft();assert(h.S.todoCards.every(c=>c.status==='Done'));assert.match(h.S.undo.label,/2 To Do cards moved/);await h.undo();assert.deepEqual(plain(h.S.todoCards),before);
+  h.fail(false);await h.confirmDraft();assert(h.S.todoCards.every(c=>c.status==='Done'));assert.match(h.S.undo.label,/2 tasks moved/);await h.undo();assert.deepEqual(plain(h.S.todoCards),before);
   h.prepare(action);h.S.revision++;const count=h.calls.length;await h.confirmDraft();assert.equal(h.calls.length,count);assert.deepEqual(plain(h.S.records),rows);assert(h.calls.every(c=>c.url==='/api/todo-cards'));
 });
 

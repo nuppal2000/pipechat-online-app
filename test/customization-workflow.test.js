@@ -23,6 +23,13 @@ const additionsFixture=require('./fixtures/record-additions.cjs');
 const assistantFixture=require('./fixtures/assistant-actions.cjs');
 const planFixture=require('./fixtures/workspace-plans.cjs');
 
+test('concrete proposals replace chat on the left; cancel restores chat while clarification stays conversational',()=>{
+  const h=harness();h.prepare({action:'update_record',ids:[1],field:'f_score',value:42});h.renderTrust();
+  assert.equal(h.node('.chat-pane').hidden,true);assert.equal(h.node('.trust-pane').hidden,false);assert.match(h.node('trustBody').innerHTML,/Confirm changes/);
+  h.cancelDraft();assert.equal(h.node('.chat-pane').hidden,false);assert.equal(h.node('.trust-pane').hidden,true);
+  h.S.clarification={question:'Which account do you mean?'};h.renderTrust();assert.equal(h.node('.chat-pane').hidden,false);assert.equal(h.node('.trust-pane').hidden,true);
+});
+
 test('complete plans preview all outcomes, cancel without writes, confirm once and Undo table/schema/cards together',async()=>{
   const h=harness(),w=planFixture.workspace();h.useSchema(w.tableSchema);Object.assign(h.S,{...w,tab:'todo'});const before=plain(h.S.records),action=planFixture.risk();action.steps.push(planFixture.tasks('tasks','medium'));action.goals.push({description:'Medium risk tasks',stepIds:['tasks']});
   h.reply(action);await h.send('Add Risk Level, populate open deals by value, and create tasks for Medium risks');assert.equal(h.S.tab,'table');assert.equal(h.S.pending.kind,'workspace-plan');assert.match(h.node('trustBody').innerHTML,/Confirm entire plan/);assert.match(h.node('trustBody').innerHTML,/High-value follow-up/);assert.equal(h.S.customFields.length,0);assert.equal(h.S.todoCards.length,0);h.cancelDraft();assert.deepEqual(plain(h.S.records),before);assert(!h.calls.some(c=>c.url==='/api/crm-data'));
@@ -55,8 +62,9 @@ test('bulk dropdown, text and date previews confirm, cancel and undo with dynami
 test('current names and owners render and resolve even for previously saved legacy-shaped clarification candidates',async()=>{
   const h=harness();h.useSchema(additionsFixture.schema);h.S.records=[{...additionsFixture.records[0],id:1,history:[]},{...additionsFixture.records[0],id:2,f_deal:'Northstar Labs',f_owner:'Sam',history:[]}];
   h.prepare({action:'update_records',changes:[{recordMatch:'Northstar',ids:[1],field:'f_stage',value:'Negotiation',operation:'set'},{recordMatch:'Northstar',field:'f_follow',value:'2026-10-10',operation:'set'}]});
-  assert.equal(h.S.clarification.candidates.length,2);h.renderTrust();assert.match(h.node('trustBody').innerHTML,/Northstar Design/);assert.match(h.node('trustBody').innerHTML,/Alex/);assert.match(h.node('trustBody').innerHTML,/Northstar Labs/);assert.match(h.node('trustBody').innerHTML,/Sam/);
-  h.S.clarification.candidates=h.S.clarification.candidates.map(c=>({id:c.id,account:c.f_deal,owner:c.f_owner}));h.S.records[0].f_deal='Renamed Northstar';h.S.records[0].f_owner='Ravi';h.renderTrust();assert.match(h.node('trustBody').innerHTML,/Renamed Northstar/);assert.match(h.node('trustBody').innerHTML,/Ravi/);assert(!h.node('trustBody').innerHTML.includes('Unassigned'));
+  assert.equal(h.S.clarification.candidates.length,2);h.renderTrust();assert.match(h.node('chatClarification').innerHTML,/Northstar Design/);assert.match(h.node('chatClarification').innerHTML,/Alex/);assert.match(h.node('chatClarification').innerHTML,/Northstar Labs/);assert.match(h.node('chatClarification').innerHTML,/Sam/);
+  assert.equal(h.node('.chat-pane').hidden,false);assert.equal(h.node('.trust-pane').hidden,true);
+  h.S.clarification.candidates=h.S.clarification.candidates.map(c=>({id:c.id,account:c.f_deal,owner:c.f_owner}));h.S.records[0].f_deal='Renamed Northstar';h.S.records[0].f_owner='Ravi';h.renderTrust();assert.match(h.node('chatClarification').innerHTML,/Renamed Northstar/);assert.match(h.node('chatClarification').innerHTML,/Ravi/);assert(!h.node('chatClarification').innerHTML.includes('Unassigned'));
   await h.send('Renamed Northstar');assert.equal(h.calls.filter(c=>c.url==='/api/pipechat-ai').length,0);assert.equal(h.S.pending.count,1);assert.equal(h.S.pending.patches[0].id,1);assert.equal(h.S.pending.patches[0].account,'Renamed Northstar');assert.equal(h.S.pending.patches[0].after.f_follow,'2026-10-10');assert(h.messages.some(m=>m==='Use Renamed Northstar.'));assert.equal(h.S.clarification,null);
 });
 test('missing bulk replacement keeps the complete request pending and accepts a corrected literal value',async()=>{

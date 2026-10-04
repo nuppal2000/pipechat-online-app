@@ -36,5 +36,5 @@ test('date arithmetic skips weekends across month/year boundaries and leap day w
 });
 test('review facts cannot be contradicted by guessed dates, counts or names in model prose',()=>{
   const action=F.top();action.title='3 records due 2026-09-30';action.goals[0].description='3 records due 2026-09-30';action.steps[3].label='3 tasks due 2026-09-30';
-  const html=P.render(run(action),String,false);assert(!html.includes('2026-09-30'));assert(html.includes('2026-09-29'));assert(html.includes('2 changed records, 1 new To Do cards'));assert(html.includes('Create 1 linked To Do cards'));
+  const html=P.render(run(action),String,false);assert(!html.includes('2026-09-30'));assert(html.includes('2026-09-29'));assert(html.includes('2 changed records, 1 new tasks'));assert(html.includes('Create 1 linked tasks'));
 });
