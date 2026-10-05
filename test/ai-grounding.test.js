@@ -18,6 +18,8 @@ test('both model tiers are explicit; simple operations use mini and compound req
   assert.equal(Router.route({userCommand:'Set both Atlas accounts Primary Contact to Jon. Preview only.'}).reason,'bulk_mutation');
   assert.equal(Router.route({userCommand:'Show all accounts owned by Sarah'}).tier,'simple');
   assert(Router.needsEscalation({crmAction:{action:'workspace_plan'}}));
+  assert(!Router.needsEscalation({crmAction:{action:'workspace_plan',steps:[{op:'select_records',relatedTasks:'any'},{op:'update_records',assignments:[{}]}]}}));
+  assert(Router.needsEscalation({crmAction:{action:'workspace_plan',steps:[{op:'update_tasks'},{op:'update_tasks'}]}}));
   assert(!Router.needsEscalation({crmAction:{action:'query_records'}}));
 });
 
@@ -27,6 +29,14 @@ test('every request replaces forged browser rows, fields, cards and report stati
   assert.deepEqual(p.pipeline.todoView,[]);assert.deepEqual(p.pipeline.dashboard.displayed,[]);
   assert.deepEqual(p.pipeline.visibleIds,[1,2,3]);
   assert.throws(()=>grounded('update',{pipeline:{workspaceVersion:'old'}}),/workspace changed/);
+});
+
+test('current-state grounding excludes old cell history and supplies a schema-based open predicate',()=>{
+  const data=structuredClone(current);data.deals[0].history=['Stage changed from Won to Warm'];data.deals[0].internalMetadata='not a cell';
+  const p=G.prepare({userCommand:'update open deals'},data,{},null);
+  assert.equal(p.pipeline.records[0].history,undefined);assert.equal(p.pipeline.records[0].internalMetadata,undefined);assert.equal(p.pipeline.records[0].stage,'Warm');
+  assert.deepEqual(p.pipeline.semanticScopes.open,{field:'stage',label:'Stage',operator:'in',values:['Discovery','Warm','Proposal Sent','Negotiation','At Risk'],excludeBlank:true});
+  assert.equal(data.deals[0].history.length,1);
 });
 
 test('server recomputes table filters and linked task titles from current primary values',()=>{
