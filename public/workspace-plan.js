@@ -57,7 +57,8 @@
     if(!Array.isArray(action.goals)||!action.goals.length||action.goals.length>20)fail('Please list every requested outcome in the plan.');
     const covered=new Set();
     for(const goal of action.goals){
-      if(typeof goal?.description!=='string'||!goal.description.trim()||goal.description.length>1000||!Array.isArray(goal.stepIds)||!goal.stepIds.length||goal.stepIds.some(id=>!ids.has(id)))fail('Every requested outcome must refer to valid plan steps.');
+      if(typeof goal?.description!=='string'||!goal.description.trim()||goal.description.length>1000||!Array.isArray(goal.stepIds)||!goal.stepIds.length)fail('Every requested outcome needs a description and at least one compiled step ID.');
+      if(goal.stepIds.some(id=>!ids.has(id)))fail(`Every requested outcome must refer to valid plan steps. Unrecognized references: ${goal.stepIds.filter(id=>!ids.has(id)).join(', ')}. Available steps: ${[...ids].join(', ')}.`);
       goal.stepIds.forEach(id=>covered.add(id));
     }
     if([...ids].some(id=>!covered.has(id)))fail('Some plan steps are not included in the requested-outcomes review.');
