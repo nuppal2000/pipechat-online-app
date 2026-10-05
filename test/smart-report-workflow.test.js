@@ -14,6 +14,12 @@ function harness(multiple=false){
  return {...h,node,charts,messages};
 }
 const report={version:1,title:'Selected reps',chart:'bar',scope:'all',groupBy:'owner',bucket:'none',splitBy:null,measures:[{label:'Total value',metric:'sum',field:'value',where:[]}],where:[[{field:'owner',operator:'in',value:null,values:['Ravi','Sarah']}]],sort:'value_desc',limit:null};
+
+test('saved reports can be analyzed from Tasks before dashboard rendering without changing configuration',()=>{
+ const h=harness(true);h.S.tab='todo';h.S.report=structuredClone(report);const before=JSON.stringify(h.S.report);
+ h.handleAction({crmAction:{action:'analyze_dashboard',questions:[{kind:'summary',elementIds:['current_graph']}]}},'Analyze the saved report');
+ assert.match(h.messages.at(-1),/400/);assert.equal(h.S.tab,'todo');assert.equal(JSON.stringify(h.S.report),before);assert.equal(h.S.dashboard,null);assert.equal(h.charts.length,0);
+});
 test('chat graph uses full table despite pipeline search/mine, stays read-only and preserves manual controls',()=>{
  const h=harness(),before=JSON.stringify(h.S.records);h.handleAction({crmAction:{action:'show_report',smartReport:report}},'Compare Ravi and Sarah');
  assert.equal(h.S.tab,'dashboard');assert.deepEqual(Array.from(h.charts[0].data.labels),['Sarah','Ravi']);assert.deepEqual(Array.from(h.charts[0].data.datasets[0].data),[300,100]);
