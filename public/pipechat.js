@@ -542,7 +542,7 @@
       if(!proposal.mutates){clearDraft();publishPlanResults(proposal);return;}
       if(proposal.patches.length||proposal.addedFields.length)S.tab='table';else if(proposal.addedCards.length||proposal.taskPatches.length)S.tab='todo';
       S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;
-      say(`Review the complete plan: ${proposal.addedFields.length} new columns, ${proposal.patches.length} changed records and ${proposal.addedCards.length} new tasks. Selections and date calculations are included. Nothing is saved until you confirm the entire plan.`);renderTrust();focusTrust();return;
+      say(`Review the complete plan: ${proposal.addedFields.length} new columns, ${proposal.patches.length} changed records, ${proposal.addedCards.length} new tasks and ${proposal.taskPatches.length} updated tasks. Selections and date calculations are included. Nothing is saved until you confirm the entire plan.`);renderTrust();focusTrust();return;
     }else if(action.action==='move_record'){
       const change=C.moveRecord(S.records,action,visible().map(row=>row.id));
       if(change.noChange){clearDraft();say('That record is already at the requested row. No changes are needed.');return;}
@@ -819,8 +819,10 @@
       const result=window.PipeChatDashboard.apply(dashboardBase(),action,S.records,C,S.customFields,dashboardOptions());setDashboard(result);say(result.answer);return;
     }
     if(action?.action==='analyze_dashboard'){
-      if(dashboardRevision!==S.revision||!dashboardViews.length||S.reportError)throw new Error('Please open a current dashboard report before asking me to analyze it.');
-      const answer=window.PipeChatDashboard.analyze(action.questions,dashboardViews);S.focus={kind:'report'};clearClarification();say(answer);return;
+      if(dashboardViews.length&&dashboardRevision!==S.revision)throw new Error('Please open a current dashboard report before asking me to analyze it.');
+      const views=dashboardRevision===S.revision&&dashboardViews.length&&!S.reportError?dashboardViews:window.PipeChatDashboard.evaluate(dashboardBase(),S.records,C,S.customFields,dashboardOptions());
+      if(!views.length)throw new Error('There is no current dashboard report to analyze. Which report would you like?');
+      const answer=window.PipeChatDashboard.analyze(action.questions,views);S.focus={kind:'report'};clearClarification();say(answer);return;
     }
     if(action?.action==='workspace_plan'){prepare(action,command);return;}
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
