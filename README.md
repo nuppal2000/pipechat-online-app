@@ -63,6 +63,12 @@ one whole-plan repair; an unverified partial plan is not returned. Planning and 
 80-second deadline and one chat allowance, but can incur multiple provider requests. This is an
 additional probabilistic language check, not a guarantee of perfect interpretation.
 
+New model responses use one workspace-plan path for record selection, cell edits, task creation
+and task edits. Older action formats remain readable for existing saved conversations, but are
+not offered as competing choices to the model. Current-state grounding excludes record history
+and internal metadata; schema-derived open-stage predicates are supplied explicitly. Simple
+two-step select/edit plans can stay on mini; dependent or multiple-write plans escalate.
+
 Workspace plans reuse materialized record selections for conditional updates, linked-task
 exclusions, standalone tasks, independent task edits and computed answers. Table/schema/task
 writes remain one version-checked database transaction after confirmation. Temporary dashboard
