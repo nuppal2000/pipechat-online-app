@@ -41,7 +41,7 @@ test('model guidance distinguishes KPI changes from charts and requires dropdown
   assert.match(source,/What options would you like the dropdown menu to have\?/);assert.match(source,/Stale is ambiguous/);assert.match(source,/dashboardKpis:customization.kpis/);
   assert.match(source,/persistent top dashboard card, not show_report/);assert.match(source,/KPI changes must never alter row data/);
   assert.match(source,/Never use configure_kpi for an add request/);assert.match(source,/delete only that card, never a table field or records/);
-  assert.match(source,/supportedActions: actionSchema.properties.action.enum/);assert.match(source,/Positions are one-based/);assert.match(source,/never edit primary names to simulate movement/);assert.match(source,/Database flexibility does not grant arbitrary SQL/);assert.match(source,/save atomically with one Undo/);
+  assert.match(source,/supportedActions:modelResponseSchema/);assert.match(source,/Positions are one-based/);assert.match(source,/never edit primary names to simulate movement/);assert.match(source,/Database flexibility does not grant arbitrary SQL/);assert.match(source,/save atomically with one Undo/);
 });
 
 test('customized CRM field enums never replace independent card condition fields',()=>{
@@ -113,4 +113,13 @@ test('read intent distinguishes fresh lists, refinements, temporary KPIs, persis
  assert(!source.includes('Never infer a switch to Pipeline from words'));
  assert.match(source,/never.*count samples/i);assert.match(source,/not a filter or assumed answer/);
  const ui=fs.readFileSync(path.join(__dirname,'../public/todo-ui.js'),'utf8');assert.match(ui,/<label>Task<input name="nextAction"/);assert(!ui.includes('<label>To Do<input name="nextAction"'));assert.match(ui,/<span>Task<\/span>/);
+});
+
+test('live model contract uses one plan path while legacy actions remain interpretable',()=>{
+  const Review=require('../lib/action-review'),legacy=context.getSchema([],require('./fixtures/record-additions.cjs').schema),before=JSON.stringify(legacy),compiled=Review.modelSchema(legacy);
+  const names=compiled.properties.crmAction.anyOf.flatMap(b=>b.properties?.action?.enum||[]);
+  for(const name of ['update_records','add_todo','add_todos','update_todos','query_records','filter_records','show_kpi','show_report','refine_report'])assert(!names.includes(name),name);
+  for(const name of ['workspace_plan','query_todos','audit_records','dashboard_plan','analyze_dashboard','add_records','delete_records','rename_field','clear_table_view'])assert(names.includes(name),name);
+  assert.equal(JSON.stringify(legacy),before);
+  assert.match(source,/schema:modelResponseSchema/);assert.match(source,/supportedActions:modelResponseSchema/);
 });
