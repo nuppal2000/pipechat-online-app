@@ -95,3 +95,12 @@ test('dashboard analysis review validates references and supplies computed answe
   const evidence=Review.evidence(payload,result);assert.match(evidence.answer,/295,000/);assert.equal(evidence.dashboardChanged,false);
   result.crmAction.questions[0].elementIds=['missing'];assert.throws(()=>Review.evidence(payload,result),/not currently displayed/);
 });
+
+test('model emits complete steps before outcome references and repair identifies bad references',()=>{
+  const branch={properties:{action:{enum:['workspace_plan']},goals:{type:'array'},steps:{type:'array'}},required:['action','goals','steps']};
+  const model=Review.modelSchema({properties:{crmAction:{anyOf:[branch]}}});
+  assert.deepEqual(Object.keys(model.properties.crmAction.anyOf[0].properties),['action','steps','goals']);
+  assert.deepEqual(Object.keys(branch.properties),['action','goals','steps']);
+  const action=F.plan([F.select('actual')]);action.goals[0].stepIds=['missing'];
+  assert.throws(()=>Plan.prepare(F.workspace(),action,options),/Unrecognized references: missing.*Available steps: actual/);
+});
