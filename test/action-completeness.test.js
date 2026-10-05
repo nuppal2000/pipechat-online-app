@@ -87,3 +87,11 @@ test('review output can reference only actual compiled steps, never invented roo
   assert.deepEqual(Review.schemaFor({action:'dashboard_plan'}).properties.requirements.items.properties.stepIds.items.enum,['root']);
   assert.equal(Review.schema.properties.requirements.items.properties.stepIds.items.enum,undefined);
 });
+
+test('dashboard analysis review validates references and supplies computed answers',()=>{
+  const w=F.workspace(),board={version:1,elements:[{id:'existing',spec:spec(),visibleIds:[]}],sharedFilters:[],activeId:'existing'};
+  const payload={pipeline:{...w,currentDate:options.today,dashboard:{board}}};
+  const result={crmAction:{action:'analyze_dashboard',questions:[{kind:'summary',elementIds:['existing']}]}};
+  const evidence=Review.evidence(payload,result);assert.match(evidence.answer,/295,000/);assert.equal(evidence.dashboardChanged,false);
+  result.crmAction.questions[0].elementIds=['missing'];assert.throws(()=>Review.evidence(payload,result),/not currently displayed/);
+});
