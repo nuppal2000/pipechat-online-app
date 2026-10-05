@@ -45,6 +45,14 @@ test('server recomputes table filters and linked task titles from current primar
   assert.deepEqual(p.pipeline.visibleIds,[1,3]);assert.equal(p.pipeline.todoView[0].title,'Atlas Field Services');
 });
 
+test('named account grounding keeps each actual linked task ID distinct',()=>{
+  const data=structuredClone(current);data.todoCards=[1,2].map(id=>({id:'todo_'+id,recordId:id,status:'To Do',nextAction:'Call',notes:'',dueDate:''}));
+  const p=G.prepare({userCommand:'Set Atlas Field Services task to today and Atlas Maintenance Services task to tomorrow'},data,{},null);
+  const matches=G.identityContext(p).linkedTasks;
+  assert.equal(matches.length,2);
+  assert.deepEqual(matches.map(ref=>ref.candidates[0].tasks[0].id),['todo_1','todo_2']);
+});
+
 test('saved single charts and multiple graphs retain their scope with recomputed statistics',()=>{
   const spec={version:1,title:'Value by owner',chart:'bar',scope:'all',groupBy:'owner',bucket:'none',splitBy:null,where:[],measures:[{label:'Value',metric:'sum',field:'value',where:[]}],sort:'value_desc',limit:null};
   const state={report:{...spec,dashboard:null},view:'dashboard',focus:{kind:'report'}};
