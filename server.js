@@ -723,7 +723,7 @@ async function reviewCompiledAction(input,startedAt){
       const response=await fetch('https://api.openai.com/v1/responses',{
         method:'POST',signal:controller.signal,
         headers:{'Content-Type':'application/json',Authorization:`Bearer ${OPENAI_API_KEY}`},
-        body:JSON.stringify({model:AI_MODELS.simple,store:false,instructions:actionReview.instructions,input:JSON.stringify(input),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schema}}})
+        body:JSON.stringify({model:AI_MODELS.simple,store:false,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled)}}})
       });
       controller.signal.throwIfAborted();
       if(!response.ok)throw new RequestError('The completeness review could not finish. No changes were prepared.',502);
