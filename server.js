@@ -744,6 +744,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
   const csv = csvImport ? csvImportCore.validateDescription(csvImport) : null;
   const tableSchema=tableSchemaCore.validate(pipeline?.tableSchema),core=pipelineCore.create(tableSchema),customFields=core.validateCustomFields(pipeline?.customFields);
   const csvCore=csvImportCore.forTable(tableSchema,customFields);
+  const modelResponseSchema=spreadsheetBuild?spreadsheetTypes.responseSchema:tableBuild?tableSchemaCore.designSchema:csv?csvCore.schema:actionReview.modelSchema(responseSchema(customFields,tableSchema,pipeline?.conversationFocus));
   const controller = cloudBackend ? new AbortController() : null;
   const requestOptions = {
     method: "POST",
@@ -799,8 +800,8 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
               type: "input_text",
               text: JSON.stringify({
                 task: "Respond as a conversational CRM assistant. Propose a supported CRM action when the user requests a table, field, layout, view, report or task change; you may also suggest propose_field for a recurring workflow concept with no equivalent existing field. Clarify missing details; explain unsupported requests conversationally.",
-                supportedActions: actionSchema.properties.action.enum.filter(name=>!['update_record','bulk_update','update_todo','move_todos','filter_view','clear_view'].includes(name)).concat('workspace_plan','query_todos','update_todos','refine_report','filter_records','clear_table_view','query_records','show_kpi','audit_records','dashboard_plan','analyze_dashboard'),
-                readOnlyContext:{object:pipeline?.conversationFocus?.kind|| (pipeline?.currentView==='dashboard'?'report':'table'),contextualRefinement:'filter_records',freshRecordSearch:'query_records',temporaryMetric:'show_kpi',countsAndNames:'audit_records',savedKpiRequiresExplicitRequest:true},
+                supportedActions:modelResponseSchema.properties.crmAction.anyOf.flatMap(branch=>branch.properties?.action?.enum||[]),
+                readOnlyContext:{object:pipeline?.conversationFocus?.kind|| (pipeline?.currentView==='dashboard'?'report':'table'),contextualRefinement:'workspace_plan',freshRecordSearch:'workspace_plan',temporaryMetric:'workspace_plan',countsAndNames:'audit_records',savedKpiRequiresExplicitRequest:true},
                 userCommand,
                 pipeline:{...pipeline,primaryField:core.role('primary'),identityResolution:aiGrounding.identityContext(payload)},
                 dateContext:dateCalendar.dateContext(pipeline?.currentDate),
@@ -832,7 +833,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
           type: "json_schema",
           name: "pipechat_response",
           strict: true,
-          schema: spreadsheetBuild ? spreadsheetTypes.responseSchema : tableBuild ? tableSchemaCore.designSchema : csv ? csvCore.schema : responseSchema(customFields,tableSchema,pipeline?.conversationFocus)
+          schema:modelResponseSchema
         }
       }
     })
