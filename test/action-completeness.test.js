@@ -79,3 +79,11 @@ test('failed reviews explain bounded unmet outcomes instead of an opaque refusal
   assert.match(Review.failureMessage({issues:['Missing date predicate'],requirements:[]}),/Missing date predicate/);
   assert(Review.failureMessage({issues:['x'.repeat(4000)]}).length<1100);
 });
+
+test('review output can reference only actual compiled steps, never invented root IDs',()=>{
+  const action=F.plan([F.select('actual_selection'),read('actual_selection',[['count']])]);
+  const choices=Review.schemaFor(action).properties.requirements.items.properties.stepIds.items.enum;
+  assert.deepEqual(choices,['actual_selection','answer']);
+  assert.deepEqual(Review.schemaFor({action:'dashboard_plan'}).properties.requirements.items.properties.stepIds.items.enum,['root']);
+  assert.equal(Review.schema.properties.requirements.items.properties.stepIds.items.enum,undefined);
+});
