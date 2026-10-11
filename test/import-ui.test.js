@@ -36,6 +36,15 @@ test('XLSX import UI exposes both raw invalid cells, original coordinates, and e
   await h.confirmDraft();assert.equal(h.calls.length,0);assert.deepEqual(h.S.records,fixture.records);
 });
 
+test('a pending import shows saving, not the retry message reserved for uncertain failures',async()=>{
+  let release,started;const waiting=new Promise(resolve=>release=resolve),entered=new Promise(resolve=>started=resolve);
+  const h=harness({save:async()=>{started();await waiting;}});h.start([fixture.matrix[0],fixture.matrix[2]]);
+  const saving=h.confirmDraft();await entered;
+  assert.equal(h.S.pending.importConfirmPending,true);assert.equal(h.node('trustStatus').textContent,'Saving the reviewed import...');
+  assert.match(h.html(),/>Saving\.\.\.<\/button>/);assert.doesNotMatch(h.html(),/Retry same import/);
+  release();await saving;assert.equal(h.S.pending,null);assert.equal(h.calls.length,1);
+});
+
 test('merge UI corrects raw cells, resolves field conflicts, and persists actual updates with receipt metadata',async()=>{
   const h=harness();const draft=h.start();h.chooseImportDuplicates('merge');
   assert.match(h.html(),/Conflict choice/);assert.match(h.html(),/Original notes/);
