@@ -23,7 +23,7 @@
         step('add_unlinked_task',{customTitle:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('update_tasks',{selection:TaskActions.actionSchemas(focus)[1].properties.updates.items.properties.selection,changes:{type:'array',minItems:1,maxItems:4,items:object({field:{type:'string',enum:['status','nextAction','notes','dueDate']},operation:{type:'string',enum:['set','append']},value:{anyOf:[str,date]}})}}),
         step('read_records',{selection:str,showTable:{type:'boolean'},outputs:{type:'array',minItems:1,maxItems:40,items:object({kind:{type:'string',enum:['count','names','fields','sum','average','median','distinct','min','max']},field:{type:['string','null']}})}}),
-        step('report',{spec:Reports.responseSchema(core,custom).anyOf[1],questions:Dashboard.schemas(core,custom)[1].properties.questions,showDashboard:{type:'boolean'}}),
+        step('report',{selection:{type:['string','null'],description:'A preceding select_records step ID, or null for an independent report population.'},spec:Reports.responseSchema(core,custom).anyOf[1],questions:Dashboard.schemas(core,custom)[1].properties.questions,showDashboard:{type:'boolean'}}),
         step('dashboard',{plan:Dashboard.schemas(core,custom)[0]})
       ]}}
     });
@@ -185,16 +185,26 @@
             const ordered=values.map(row=>row[field]).sort((a,b)=>a-b),mid=Math.floor(ordered.length/2);
             const value=output.kind==='sum'?sum:!values.length?null:output.kind==='average'?sum/values.length:output.kind==='median'?ordered.length%2?ordered[mid]:(ordered[mid-1]+ordered[mid])/2:output.kind==='min'?Math.min(...ordered):Math.max(...ordered);
             const formatted=value===null?'Not set':new Intl.NumberFormat('en-US',{maximumFractionDigits:2,...(def.type==='currency'?{style:'currency',currency:'USD'}:{})}).format(value);
-            return `${{sum:'Total',average:'Average',median:'Median',min:'Lowest',max:'Highest'}[output.kind]} ${def.name}: ${formatted}${['min','max'].includes(output.kind)&&value!==null?' ('+values.filter(row=>row[field]===value).map(name).join(', ')+')':''}. ${values.length} numeric values across ${rows.length} records.`;
+            return `${{sum:'Total',average:'Average',median:'Median',min:'Lowest',max:'Highest'}[output.kind]} ${def.name}: ${formatted}${['min','max'].includes(output.kind)&&value!==null?' ('+values.filter(row=>row[field]===value).map(name).join(', ')+')':''}. ${values.length} numeric values across ${rows.length} records. Blank/non-numeric values excluded; zeroes included.`;
           });
           queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),projected,viewEffect:step.showTable?'show_table':'answer_only'});
           answers.push(lines.join('\n'));effects.push({kind:'table',show:step.showTable,ids:recordIds});review.push({id:step.id,op:step.op,label:step.label,count:rows.length});
         }else if(step.op==='report'){
-          const reportBoard={version:1,elements:[{id:step.id,spec:step.spec,visibleIds}],sharedFilters:[],activeId:step.id};
+          const selection=Object.hasOwn(step,'selection')?step.selection:null;
+          if(selection!==null&&typeof selection!=='string')fail('A report selection must reference a prior select_records step or be null.');
+          const reportIds=selection===null?visibleIds.slice():selected(selection).slice();
+          if(!['all','visible'].includes(step.spec?.scope))fail('Choose all or visible for the report scope.');
+          const spec=clone(step.spec);
+          // Persist the selected cohort as visible scope so later evaluation cannot broaden it.
+          if(selection!==null)spec.scope='visible';
+          const reportBoard={version:1,elements:[{id:step.id,spec,visibleIds:reportIds}],sharedFilters:[],activeId:step.id};
           const views=Dashboard.evaluate(reportBoard,next.records,core,next.customFields,{today});
           answers.push(Dashboard.analyze(step.questions,views));
           if(step.showDashboard){board=reportBoard;effects.push({kind:'dashboard',board});}
-          review.push({id:step.id,op:step.op,label:step.label,count:views[0].snapshot.recordCount});
+          const recordIds=views[0].snapshot.recordIds.slice();
+          if(!step.showDashboard)effects.push({kind:'table',show:false,ids:recordIds.slice()});
+          queryResults.push({id:step.id,selection,recordIds,viewEffect:step.showDashboard?'show_dashboard':'answer_only'});
+          review.push({id:step.id,op:step.op,label:step.label,count:views[0].snapshot.recordCount,selection,recordIds:recordIds.slice()});
         }else if(step.op==='dashboard'){
           const result=Dashboard.apply(board,step.plan,next.records,core,next.customFields,{today,visibleIds});board=result.board;
           answers.push(result.answer);effects.push({kind:'dashboard',board});review.push({id:step.id,op:step.op,label:step.label,count:step.plan.operations.length});

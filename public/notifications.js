@@ -13,6 +13,11 @@
     // Do not invent a specific day for imprecise values such as "next week".
     return day(value);
   }
+  function windows(today){
+    const now=day(today);if(now===null)return null;
+    const stamp=offset=>new Date(now+offset*dayMs).toISOString().slice(0,10);
+    return {overdue:{before:stamp(0)},today:{on:stamp(0)},nextSevenDays:{from:stamp(1),through:stamp(7)}};
+  }
   function collect({records=[],cards=[],core,customFields=[],today,history}){
     const now=day(today);if(now===null)return [];
     const defs=core.definitions(customFields),primary=core.role('primary'),status=core.role('status'),follow=core.role('followup');
@@ -43,5 +48,5 @@
     const order={overdue:0,today:1,upcoming:2,stale:3};
     return items.sort((a,b)=>order[a.section]-order[b.section]||a.date.localeCompare(b.date)||String(a.title).localeCompare(String(b.title))||a.key.localeCompare(b.key));
   }
-  return {day,due,collect};
+  return {day,due,collect,windows};
 });
