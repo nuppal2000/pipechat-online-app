@@ -19,6 +19,10 @@
   function rememberTurn(value) { try { sessionStorage.setItem(pendingTurnKey(value.turn.threadId),JSON.stringify(value)); } catch { /* The durable receipt remains on the server. */ } }
   function forgetTurn(threadId) { try { sessionStorage.removeItem(pendingTurnKey(threadId)); } catch {} }
   function storedTurn() { try { return JSON.parse(sessionStorage.getItem(pendingTurnKey(chatThread)) || 'null'); } catch { return null; } }
+  function draftSignature() {
+    const state=restoredProposal||chatState();
+    return JSON.stringify({action:state.sourceAction,clarification:state.clarification,workspaceVersion:state.workspaceVersion});
+  }
   function showTurnWaiting(text='Reply pending. Check saved reply.') {
     $('conversationStatus').textContent=text;$('chatRetryBtn').hidden=false;$('chatRetryBtn').title='Check saved reply';updateUsage();
   }
@@ -46,6 +50,8 @@
     // Rebase the outbox's version on the server-owned assistant append. Do not
     // replace current view state with the request's earlier draft.
     const page=await current.load();if(current!==conversation||!page)return;
+    const requestDraft=turnAwaiting?.draftSignature;
+    const ownsDraft=interpret||typeof requestDraft==='string'&&requestDraft===draftSignature();
     turnAwaiting=null;forgetTurn(chatThread);S.usage=response.usage||S.usage;
     restoringChat=true;$('chatFeed').innerHTML='';S.history=page.messages.map(({role,content})=>({role,content}));
     page.messages.forEach(message=>paintMessage(message.content,message.role));$('chatEarlierBtn').hidden=!page.before;restoringChat=false;
@@ -57,6 +63,10 @@
       else if(response.crmAction&&response.ai?.workspaceVersion===S.updatedAt){
         restoredProposal={...chatState(),sourceAction:response.crmAction,originalCommand:command,workspaceVersion:response.ai.workspaceVersion};renderTrust();
       }
+    }else if(['failed','interrupted','cancelled'].includes(response.turn.status)&&response.turn.epoch===page.epoch&&ownsDraft){
+      // A failed revision must not leave its superseded proposal confirmable.
+      // A newer proposal or another thread's draft must remain untouched.
+      clearDraft();
     }
     saveChatState();$('chatFeed').scrollTop=$('chatFeed').scrollHeight;updateUsage();return true;
   }
@@ -1160,7 +1170,7 @@
     try{
       saveChatState();const reference=await conversation?.flush();if(generation!==S.generation||requestChat!==conversation)return;
       const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}
-      if(reference&&S.health.conversationThreads){payload.turn={threadId:chatThread,requestId:crypto.randomUUID(),userMessageId,assistantMessageId:crypto.randomUUID()};turnAwaiting={turn:payload.turn,conversation:reference,command};rememberTurn(turnAwaiting);}
+      if(reference&&S.health.conversationThreads){payload.turn={threadId:chatThread,requestId:crypto.randomUUID(),userMessageId,assistantMessageId:crypto.randomUUID()};turnAwaiting={turn:payload.turn,conversation:reference,command,draftSignature:draftSignature()};rememberTurn(turnAwaiting);}
       const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});
       if(generation!==S.generation||requestChat!==conversation)return;
       S.usage=response.usage||S.usage;
