@@ -152,6 +152,12 @@
     return clone(input);
   }
 
+  function workflowTriggerText(trigger, schema, customFields = []) {
+    const labels = Core.create(schema).fieldsFor(customFields);
+    const label = Object.hasOwn(labels, trigger.field) && labels[trigger.field].trim() ? labels[trigger.field] : `Unavailable field (${trigger.field})`;
+    return `${label} changes to ${trigger.to}`;
+  }
+
   function workflowPreview(spec, schema, customFields = []) {
     spec = validateWorkflowSpec(spec, schema, customFields);
     const label = schema === undefined ? spec.trigger.field : Core.create(schema).fieldsFor(customFields)[spec.trigger.field];
@@ -186,17 +192,18 @@
       }
       if (action.active) validateWorkflowSpec(workflow.spec, context.schema ?? null, context.customFields);
       return {kind:'workflow', operation:'activation', workflowId:workflow.id, baseRevision:workflow.revision,
-        active:action.active, count:1, preview:{kind:'workflow_activation', title:workflow.spec.name, active:action.active}};
+        active:action.active, count:1, preview:{kind:'workflow_activation', title:workflow.spec.name, active:action.active,
+          trigger:workflowTriggerText(workflow.spec.trigger, context.schema, context.customFields)}};
     }
     fail('Unsupported business action.');
   }
 
   const instructions = [
     'For an actual downloadable proposal, return create_document with the resolved canonical record ID, documentType proposal and format html. Do not return none or claim a file was sent. The application generates the artifact from its trusted fact bundle; never put invented pricing, currency, payment, delivery or validity terms into an action.',
-    'For automation, return create_workflow with a typed choice-field transition, one no_open_qualifying_task condition, and create_linked_task with an explicit event_date calendar-day offset and timezone. Use actual current field IDs/options and the task wording requested by the user. Ask for clarification when those inputs are missing; do not substitute a report or claim the workflow is active.',
+    'For automation, return create_workflow with a typed choice-field transition, one no_open_qualifying_task condition, and create_linked_task with an explicit event_date calendar-day offset and timezone. Use actual current field IDs/options. Open tasks mean To Do or In Progress, excluding Done; this is a fixed application rule, not a question for the user. For a new draft with no explicit timezone use the validated pipeline.timezone when available and disclose it in the review; otherwise ask. Use supplied task wording, or propose a concise task phrase faithful to the requested work when no exact title was specified. Missing trigger identity, business condition or delay still needs clarification. Do not substitute a report or claim the workflow is active.',
     'Workflow proposals create drafts only. set_workflow_activation is a separate reviewable action; workflow_history reads saved executions. Business actions do not email, publish, execute code, or deliver anything externally.'
   ].join('\n');
 
   return {actionSchemas, instructions, plan, validateDocumentAction, validateFactBundle, documentPreview, documentArtifact,
-    documentDownload, validateWorkflowSpec, workflowPreview, taskMatches, validTimezone, escapeHtml, exact, text, recordId, workflowId};
+    documentDownload, validateWorkflowSpec, workflowPreview, workflowTriggerText, taskMatches, validTimezone, escapeHtml, exact, text, recordId, workflowId};
 });

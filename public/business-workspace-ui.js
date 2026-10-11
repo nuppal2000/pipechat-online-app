@@ -20,7 +20,8 @@
    * navigation. Parent must also match workspaceId to its own CRM workspace.
    * Shared viewers AND workspace editors inspect read-only primary values here;
    * neither can invoke the parent's legacy inspector through this callback.
-   * Returns {load,setSnapshot,show,inspect,getSnapshot,destroy}; mount does not fetch.
+   * Returns {load,setSnapshot,clear,show,inspect,getSnapshot,destroy}; mount does not fetch.
+   * clear() invalidates pending UI work and resets private state without fetching.
    */
   function mount({ element, api, workspaceId = null, icon, onChange = () => {}, onInspectPrimary,
     confirm = message => root.confirm(message) } = {}) {
@@ -151,7 +152,9 @@
       if (busy) return;
       const generation = epoch, current = snapshot;
       try { if (await confirm(message) && generation === epoch && current === snapshot && !destroyed) await action(); }
-      catch (e) { error = e.message || 'Request failed.'; drawStatus(); }
+      catch (e) {
+        if (!destroyed && generation === epoch && current === snapshot) { error = e.message || 'Request failed.'; drawStatus(); }
+      }
     }
     async function load(id = workspaceId) {
       if (destroyed) return;
@@ -167,6 +170,12 @@
     function setSnapshot(value) {
       const validated = value === null ? null : validateSnapshot(value);
       ++epoch; busy = false; closeDialog(); snapshot = validated; workspaceId = value?.workspaceId ?? null; error = ''; notice = ''; draw();
+    }
+    function clear() {
+      if (destroyed) return;
+      ++epoch; busy = false; closeDialog(); snapshot = null; workspaceId = null;
+      tab = 'Entities'; selectedType = 'all'; query = ''; limit = 100; error = ''; notice = '';
+      shell.setAttribute('aria-busy', 'false'); draw();
     }
     function drawStatus() {
       const status = body.querySelector('[data-business-status]');
@@ -248,8 +257,11 @@
       choice.disabled = Boolean(existing); let values = [];
       const container = node('div');
       const fields = form(existing ? 'Edit entity' : 'New entity', 'Save entity', () => {
-        const data = Object.fromEntries(values.map(({ def, control }) => [def.id, def.type === 'boolean' ? control.checked :
-          def.type === 'number' ? control.value === '' ? null : Number(control.value) : control.value]));
+        // An untouched optional Boolean keeps its original null/blank/missing value.
+        const data = Object.fromEntries(values.filter(({ def, control, initialValue }) =>
+          def.type !== 'boolean' || def.required || control.value !== initialValue).map(({ def, control }) =>
+          [def.id, def.type === 'boolean' ? def.required ? control.checked : control.value === '' ? null : control.value === 'true' :
+            def.type === 'number' ? control.value === '' ? null : Number(control.value) : control.value]));
         return commit([existing ? { op: 'update_entity', id: existing.id, values: data } :
           { op: 'create_entity', entity: { id: newId('ent'), typeId: choice.value, values: data } }]);
       });
@@ -257,12 +269,13 @@
         container.replaceChildren(); values = [];
         for (const def of snapshot.state.entityTypes.find(t => t.id === choice.value)?.fields || []) {
           const value = existing?.values[def.id];
-          const control = def.type === 'choice' ? select([['', 'Not set'], ...def.options.map(v => [v, v])], value || '') :
+          const control = def.type === 'boolean' && !def.required ? select([['', 'Not set'], ['true', 'True'], ['false', 'False']], typeof value === 'boolean' ? String(value) : '') :
+            def.type === 'choice' ? select([['', 'Not set'], ...def.options.map(v => [v, v])], value || '') :
             input(def.type === 'boolean' ? 'checkbox' : def.type === 'number' ? 'number' : def.type === 'date' ? 'date' : 'text', value);
-          if (def.type === 'boolean') control.checked = value === true; else control.required = def.required;
+          if (def.type === 'boolean' && def.required) control.checked = value === true; else control.required = def.required;
           if (def.type === 'number') { control.step = 'any'; control.min = '-1000000000000'; control.max = '1000000000000'; }
           if (def.type === 'text') control.maxLength = 12000;
-          container.append(field(def.name, control)); values.push({ def, control });
+          container.append(field(def.name, control)); values.push({ def, control, initialValue: control.value });
         }
       };
       choice.onchange = drawFields; fields.append(field('Entity type', choice), container); drawFields();
@@ -508,7 +521,7 @@
       body.append(views.wrapper);
     }
     draw();
-    return { load, setSnapshot, inspect,
+    return { load, setSnapshot, clear, inspect,
       show(name) { if (!['Entities', 'Relationships', 'Sharing'].includes(name)) throw new Error('Unknown business view.'); tab = name; draw(); },
       getSnapshot() { return snapshot ? copy(snapshot) : null; },
       destroy() { destroyed = true; ++epoch; snapshot = null; closeDialog(); shell.remove(); }

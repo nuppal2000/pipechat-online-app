@@ -7,7 +7,7 @@
   // relationshipName}]. Navigation receives the selected item, never an HTML string.
   function create({S,esc,icon,rowName,persist,refresh,toast,editRecord,clearActivity=()=>{},onLoadRelationships,onRelationships}){
     const H=root.PipeChatInspector,$=id=>document.getElementById(id),dialog=$('inspectorDialog'),key='pipechat.inspector-drafts.v1';
-    let recordId=null,returnFocus=null,limit=100,error='',needsReview=false,drafts={},identity='',nameEdit=null;
+    let recordId=null,returnFocus=null,limit=100,error='',needsReview=false,drafts={},identity='',nameEdit=null,epoch=0;
     let relatedSection=null,relatedRequest=0;
     function clearRelationships(){++relatedRequest;if(relatedSection){relatedSection.remove();relatedSection=null;}}
     async function reloadRelationships(){
@@ -57,11 +57,11 @@
     }
     async function saveName(event){
       event.preventDefault();if(!nameEdit||$('inspectorNameSave').disabled)return;
-      const field=primaryField(),row=S.records.find(r=>r.id===nameEdit.id),generation=S.generation;
+      const field=primaryField(),row=S.records.find(r=>r.id===nameEdit.id),generation=S.generation,request=epoch;
       if(!row||JSON.stringify(field)!==nameEdit.field||row[field.id]!==nameEdit.before){$('inspectorNameError').textContent='The record or primary field changed. Cancel and reopen the name editor to review the latest value.';return;}
       if(S.pending||S.clarification){$('inspectorNameError').textContent='Confirm or cancel the proposed changes before renaming this record.';return;}
       const saved=await editRecord(row.id,field.id,$(field.type==='choice'?'inspectorNameChoice':'inspectorNameInput').value);
-      if(generation!==S.generation)return;
+      if(generation!==S.generation||request!==epoch)return;
       if(saved){cancelName();draw();$('inspectorTitle').focus();}
       else {$('inspectorNameError').textContent='Name save was not confirmed. Close the inspector to review and recover the retained edit.';controls();}
     }
@@ -115,18 +115,26 @@
       if(!dialog.open)dialog.showModal();draw();$('inspectorTitle').focus();
     }
     function close(){if(S.saving)return;clearRelationships();cancelName();if(dialog.open)dialog.close();returnFocus?.isConnected&&returnFocus.focus();recordId=null;}
-    function clear(){clearRelationships();if(dialog.open)dialog.close();cancelName();clearActivity();recordId=null;drafts={};identity='';$('inspectorNote').value='';$('inspectorTimeline').innerHTML='';$('inspectorTitle').textContent='';try{sessionStorage.removeItem(key);}catch{}}
+    function clear({preserveDrafts=false}={}){
+      ++epoch;clearRelationships();if(dialog.open)dialog.close();cancelName();clearActivity();
+      recordId=null;returnFocus=null;limit=100;error='';needsReview=false;drafts={};identity='';
+      $('inspectorNote').value='';$('inspectorNote').placeholder='';$('inspectorTimeline').innerHTML='';
+      for(const id of ['inspectorTitle','inspectorRecordType','inspectorNoteStatus','inspectorCount','inspectorNameLabel'])$(id).textContent='';
+      $('inspectorFrom').value='';$('inspectorTo').value='';$('inspectorKind').value='all';$('inspectorMore').hidden=true;controls();
+      // Startup restores only identity-matched drafts; logout/reset keep the destructive default.
+      if(!preserveDrafts)try{sessionStorage.removeItem(key);}catch{}
+    }
     async function save(event){
       event.preventDefault();if($('inspectorSave').disabled||recordId==null)return;
       if(S.pending||S.clarification){error='Confirm or cancel the current proposed changes before saving a note.';controls();return;}
-      input();const id=recordId,draft=drafts[id],generation=S.generation;
+      input();const id=recordId,draft=drafts[id],generation=S.generation,request=epoch;
       try{
         const next=H.addNote(S.records,id,draft.text,S.user.name||S.user.email,draft.id);
         if(await persist(next,'Note saved',{undo:false,verifyHistory:true})){
-          if(generation!==S.generation)return;
+          if(generation!==S.generation||request!==epoch)return;
           delete drafts[id];store();$('inspectorNote').value='';error='';$('inspectorNoteStatus').textContent='Note saved';draw();
-        }else if(generation===S.generation){needsReview=true;error='Note save was not confirmed. Your draft is retained. Reload the latest history before retrying.';controls();}
-      }catch(e){error=e.message;controls();}
+        }else if(generation===S.generation&&request===epoch){needsReview=true;error='Note save was not confirmed. Your draft is retained. Reload the latest history before retrying.';controls();}
+      }catch(e){if(generation===S.generation&&request===epoch){error=e.message;controls();}}
     }
     $('inspectorForm').addEventListener('submit',save);$('inspectorNote').addEventListener('input',input);
     $('inspectorEditName').onclick=beginName;$('inspectorNameForm').addEventListener('submit',saveName);
@@ -136,13 +144,13 @@
     $('inspectorClearDates').onclick=()=>{$('inspectorFrom').value='';$('inspectorTo').value='';limit=100;timeline();};
     $('inspectorMore').onclick=()=>{limit+=100;timeline();};
     $('inspectorReload').onclick=async()=>{
-      const generation=S.generation,id=recordId;
-      try{await refresh();if(generation!==S.generation||id!==recordId)return;needsReview=false;error='';
+      const generation=S.generation,id=recordId,request=epoch;
+      try{await refresh();if(generation!==S.generation||request!==epoch||id!==recordId)return;needsReview=false;error='';
         const draft=drafts[id],row=S.records.find(r=>r.id===id);
         if(draft&&row?.history.some(item=>H.parse(item).id===draft.id)){delete drafts[id];store();$('inspectorNote').value='';$('inspectorNoteStatus').textContent='Note was already saved';}
         else $('inspectorNoteStatus').textContent='Latest history loaded. Review your draft, then save.';
         draw();
-      }catch(e){error=e.message;controls();}
+      }catch(e){if(generation===S.generation&&request===epoch&&id===recordId){error=e.message;controls();}}
     };
     window.addEventListener('beforeunload',event=>{if(Object.values(drafts).some(d=>d.text)&&!store()){event.preventDefault();event.returnValue='';}});
     return {open,draw,clear,reloadRelationships};

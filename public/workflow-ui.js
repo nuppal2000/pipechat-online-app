@@ -59,10 +59,10 @@
         ${loading ? '<p role="status">Loading workflows...</p>' : ''}${error ? `<p class="error" role="alert">${esc(error)}</p>` : ''}
         ${stale ? `<p class="wf-stale">The workspace has changed. <button type="button" class="secondary" data-wf-workspace ${locked() ? 'disabled' : ''}>Refresh workspace</button></p>` : ''}
         ${snapshot?.workflows.length ? snapshot.workflows.map(w => `<article class="wf-row"><div class="wf-summary"><h3>${esc(w.spec.name)}</h3>
-          <p>${esc(w.spec.trigger.field)} changes to ${esc(w.spec.trigger.to)}</p><p>${esc(w.spec.action.nextAction)}</p>
+          <p>${esc(Actions.workflowTriggerText(w.spec.trigger, S.tableSchema, S.customFields))}</p><p>${esc(w.spec.action.nextAction)}</p>
           <p>Event date + ${esc(w.spec.action.due.offsetDays)} days / ${esc(w.spec.timezone)}</p></div>
           <div class="wf-controls"><span class="wf-status wf-${esc(w.status)}">${esc(w.status)}</span>
-          <label class="wf-toggle"><input type="checkbox" role="switch" data-wf-activation="${esc(w.id)}" aria-label="Activate ${esc(w.spec.name)}" ${w.status === 'active' ? 'checked' : ''} ${locked() || stale ? 'disabled' : ''}>Active</label>
+          <label class="wf-toggle"><input type="checkbox" role="switch" data-wf-activation="${esc(w.id)}" aria-label="Enable ${esc(w.spec.name)}" ${w.status === 'active' ? 'checked' : ''} ${locked() || stale ? 'disabled' : ''}>Enable workflow</label>
           <button type="button" class="icon-btn" data-wf-history="${esc(w.id)}" title="View saved history" aria-label="History for ${esc(w.spec.name)}" ${loading ? 'disabled' : ''}>${icon('Eye')}</button></div>${historyMarkup(w)}</article>`).join('') : !loading && !error ? '<p>No saved workflows.</p>' : ''}`;
     }
     async function load() {
