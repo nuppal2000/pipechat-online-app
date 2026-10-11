@@ -4,10 +4,21 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
   const fs = require('node:fs/promises');
   global.fetch = async (url,options) => {
     if (url !== 'https://api.openai.com/v1/responses') throw new Error('Offline fixture forbids external requests');
-    const request = JSON.parse(options.body), input = JSON.parse(request.input[0].content[0].text);
+    const request = JSON.parse(options.body), input = JSON.parse(typeof request.input === 'string' ? request.input : request.input[0].content[0].text);
     await fs.appendFile(process.env.CONVERSATION_CAPTURE,JSON.stringify(input)+'\n');
     await new Promise(resolve=>setTimeout(resolve,450));
     if (input.userCommand.includes('fixture failure')) throw new Error('PRIVATE_PROVIDER_EXCEPTION');
+    if (input.userCommand.includes('fixture canonical')) {
+      const F = require('./fixtures/workspace-plans.cjs');
+      const result = request.text.format.name === 'pipechat_action_review'
+        ? {requirements:[{description:'Compute requested record statistics',stepIds:input.allowedStepIds,satisfied:true}],issues:[],clarificationQuestion:null}
+        : {assistantMessage:'I will calculate those numbers. Count: 99999.',memoryNote:null,crmAction:F.plan([
+          F.select('population'),
+          {op:'read_records',id:'statistics',label:'Saved amounts',selection:'population',showTable:false,
+            outputs:[{kind:'count',field:null},{kind:'sum',field:'f_value'},{kind:'average',field:'f_value'}]}
+        ])};
+      return {ok:true,json:async()=>({usage:{input_tokens:20,output_tokens:10},output_text:JSON.stringify(result)})};
+    }
     return {ok:true,json:async()=>({usage:{input_tokens:20,output_tokens:10},output_text:JSON.stringify({assistantMessage:'Saved reply: '+input.userCommand,crmAction:null,memoryNote:null})})};
   };
 } else {
@@ -90,6 +101,29 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
     await store.beginConversationTurn({...pending.turn,...pending.conversation,leaseSeconds:1});
     const recovered=await f.lookup(pending);assert.equal(recovered.body.turn.status,'interrupted');
     const replay=await f.api('/api/pipechat-ai','POST',pending);assert.equal(replay.body.turn.status,'interrupted');assert.equal((await f.calls()).length,3);
+  });
+
+  test('durable replies store canonical calculations instead of model draft claims', {timeout:30000}, async t=>{
+    const f=await fixture(t), w=require('./fixtures/workspace-plans.cjs').workspace();
+    const current=(await f.api('/api/crm-data')).body;
+    const setup=await f.api('/api/crm-data','PUT',{deals:[],tableSchema:w.tableSchema,customFields:[],todoCards:[],expectedUpdatedAt:current.updatedAt});
+    assert.equal(setup.status,200,JSON.stringify(setup.body));
+    const saved=await f.api('/api/crm-data','PUT',{deals:w.records,tableSchema:w.tableSchema,customFields:[],todoCards:[],expectedUpdatedAt:setup.body.updatedAt});
+    assert.equal(saved.status,200,JSON.stringify(saved.body));
+    const beforeRead=(await f.api('/api/crm-data')).body;
+    const r=await f.prepare('fixture canonical: give count, total and average of all records');
+    const reply=await f.api('/api/pipechat-ai','POST',r);
+    assert.equal(reply.body.turn?.status,'succeeded',JSON.stringify(reply.body));
+    assert.match(reply.body.assistantMessage,/295,000\.00/);
+    assert.match(reply.body.assistantMessage,/49,166\.67/);
+    assert.doesNotMatch(reply.body.assistantMessage,/99999|I will calculate/);
+    const page=(await f.api('/api/conversation')).body;
+    assert.equal(page.messages.find(m=>m.id===r.turn.assistantMessageId).content,reply.body.assistantMessage);
+    const calls=(await f.calls()).length;
+    const replay=await f.api('/api/pipechat-ai','POST',r);
+    assert.equal(replay.body.assistantMessage,reply.body.assistantMessage);
+    assert.equal((await f.calls()).length,calls);
+    assert.deepEqual((await f.api('/api/crm-data')).body,beforeRead);
   });
 
   let playwright;
