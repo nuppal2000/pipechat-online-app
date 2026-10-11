@@ -1108,7 +1108,7 @@
     if(action?.action==='create_document'){return prepareDocument(action,command);}
     if(action?.action==='undo_action'){return prepareUndo(action.actionId,command);}
     if(action?.action==='business_plan'){return prepareBusiness(action,command);}
-    if(action?.action==='query_business'){clearDraft();say(response.computedAnswer||response.assistantMessage);return;}
+    if(['query_business','query_business_batch'].includes(action?.action)){if(!response.computedAnswer)throw new Error('The saved-data answer could not be verified.');clearDraft();say(response.computedAnswer);return;}
     if(action?.action==='workspace_plan'){prepare(action,command);return;}
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}

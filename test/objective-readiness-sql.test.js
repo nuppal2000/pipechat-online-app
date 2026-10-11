@@ -25,7 +25,7 @@ test('startup and readiness require numeric featureVersion 2 but preserve the le
 test('migration 018 gates current versus incomplete schemas without new RPCs, grants or sensitive output', {timeout:120000},async t=>{
   const db=new PGlite();t.after(()=>db.close());
   const directory=path.join(__dirname,'../db/migrations');
-  const files=(await fs.readdir(directory)).filter(file=>/^\d{3}-.*\.sql$/.test(file)).sort();
+  const files=(await fs.readdir(directory)).filter(file=>/^\d{3}-.*\.sql$/.test(file)&&Number(file.slice(0,3))<=18).sort();
   assert(files.includes('018-objective-readiness.sql'));
   const run=file=>fs.readFile(path.join(directory,file),'utf8').then(sql=>db.exec(sql));
   const catalog=async()=> (await db.query(`select n.nspname||'.'||p.proname||'('||oidvectortypes(p.proargtypes)||')' as signature,

@@ -7,7 +7,7 @@
   const operators=['equals','not_equals','in','not_in','contains','starts_with','is_blank','is_not_blank','before','after'];
   const editable=['status','nextAction','notes','dueDate'];
   const norm=v=>String(v??'').normalize('NFKC').trim().toLowerCase().replace(/\s+/g,' ');
-  const fail=message=>{throw new Error(message);};
+  const fail=(message,reasonCode='task_validation')=>{const error=new Error(message);error.reasonCode=reasonCode;throw error;};
   const obj=properties=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
   const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).every(k=>keys.includes(k))&&keys.every(k=>Object.hasOwn(v,k));
   const str=(v,max=16000)=>typeof v==='string'&&v.length<=max&&!/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(v);
@@ -29,7 +29,7 @@
       for(const reference of selection.references){
         if(!exact(reference,['taskName','recordName'])||[reference.taskName,reference.recordName].some(v=>v!==null&&(!str(v)||!v.trim()))||!reference.taskName&&!reference.recordName)fail('A task reference needs its task text or linked record name.');
         const matches=all.filter(card=>{const view=T.project(card,records,schema);return (!reference.taskName||norm(card.nextAction)===norm(reference.taskName))&&(!reference.recordName||norm(view.title)===norm(reference.recordName));});
-        if(matches.length!==1)fail(matches.length?`More than one task matches ${reference.taskName||reference.recordName}. Please choose a task; no cards were changed.`:`No task matches ${reference.taskName||reference.recordName}. Please check its task text and linked record; no cards were changed.`);
+        if(matches.length!==1)fail(matches.length?`More than one task matches ${reference.taskName||reference.recordName}. Please choose a task; no cards were changed.`:`No task matches ${reference.taskName||reference.recordName}. Please check its task text and linked record; no cards were changed.`,matches.length?'task_reference_ambiguous':'task_reference_missing');
         resolved.push(matches[0].id);
       }
       return select(all,records,schema,{source:'ids',ids:[...new Set(resolved)],focusId:null,conditions:selection.conditions},focus);
@@ -37,14 +37,14 @@
     if(!exact(selection,['source','ids','focusId','conditions'])||!['all','focus','ids'].includes(selection.source)||!Array.isArray(selection.ids)||selection.ids.length>2000||!Array.isArray(selection.conditions)||selection.conditions.length>12)fail('Please specify the complete card selection.');
     let ids=null;
     if(selection.source==='focus'){
-      if(selection.ids.length||!focus||focus.kind!=='todos'||!str(focus.id,100)||!selection.focusId||selection.focusId!==focus.id||!Array.isArray(focus.ids)||focus.ids.length>2000)fail('Which cards do you mean? Please list or select them again; the previous card selection is unavailable.');
+      if(selection.ids.length||!focus||focus.kind!=='todos'||!str(focus.id,100)||!selection.focusId||selection.focusId!==focus.id||!Array.isArray(focus.ids)||focus.ids.length>2000)fail('Which cards do you mean? Please list or select them again; the previous card selection is unavailable.','task_focus_unavailable');
       ids=focus.ids;
     }else{
       if(selection.focusId!==null)fail('A new card selection must not reuse a previous selection reference.');
       if(selection.source==='ids'){if(!selection.ids.length)fail('Please identify the cards to edit.');ids=selection.ids;}
       else if(selection.ids.length)fail('Choose all matching cards or explicit IDs, not both.');
     }
-    if(ids&&(new Set(ids).size!==ids.length||ids.some(id=>typeof id!=='string'||!all.some(c=>c.id===id))))fail('A previously selected card no longer exists. Please select the cards again; no partial changes were made.');
+    if(ids&&(new Set(ids).size!==ids.length||ids.some(id=>typeof id!=='string'||!all.some(c=>c.id===id))))fail('A previously selected card no longer exists. Please select the cards again; no partial changes were made.','task_selection_stale');
     const predicates=selection.conditions.map(c=>{
       if(!exact(c,['field','operator','value','values'])||!fields.includes(c.field)||!operators.includes(c.operator)||!Array.isArray(c.values)||c.values.length>2000)fail('That card condition is not supported. Please clarify the selection.');
       const blank=['is_blank','is_not_blank'].includes(c.operator),list=['in','not_in'].includes(c.operator);
@@ -59,7 +59,7 @@
     const selected=ids?new Set(ids):null;
     return all.filter(c=>(!selected||selected.has(c.id))&&predicates.every(test=>test(T.project(c,records,schema))));
   }
-  function plan(cards,records,schema,action,focus=null){
+  function plan(cards,records,schema,action,focus=null,{allowUnchanged=false}={}){
     if(!exact(action,['action','updates'])||action.action!=='update_todos'||!Array.isArray(action.updates)||!action.updates.length||action.updates.length>200)fail('Provide all requested card edits in one review.');
     const all=T.validate(cards,records),byId=new Map(all.map(c=>[c.id,c])),selectedIds=new Set(),writes=new Map();
     // Every selector uses the same original snapshot; earlier edits cannot shrink a later cohort.
@@ -71,11 +71,11 @@
         seen.add(change.field);
       }
       const matches=select(all,records,schema,item.selection,focus);
-      if(!matches.length)fail('No cards match that selection. Please check the conditions; no partial changes were made.');
+      if(!matches.length)fail('No cards match that selection. Please check the conditions; no partial changes were made.','task_selection_empty');
       for(const card of matches){
         selectedIds.add(card.id);const patch=writes.get(card.id)||{};
         for(const {field,operation,value}of item.changes){
-          if(Object.hasOwn(patch,field))fail(`Two edits target the same card field ${field} on task ${card.id} (${card.nextAction||T.project(card,records,schema).title}). Resolve the task references independently or clarify conflicting values. No cards were changed.`);
+          if(Object.hasOwn(patch,field))fail(`Two edits target the same card field ${field} on task ${card.id} (${card.nextAction||T.project(card,records,schema).title}). Resolve the task references independently or clarify conflicting values. No cards were changed.`,'task_write_conflict');
           patch[field]=operation==='append'?[card[field],value].filter(Boolean).join('\n'):value;
         }
         writes.set(card.id,patch);
@@ -83,7 +83,7 @@
     }
     const next=T.validate(all.map(card=>({...card,...writes.get(card.id)})),records),updates=[];
     for(const after of next){const before=byId.get(after.id),changes=editable.filter(field=>before[field]!==after[field]);if(changes.length)updates.push({before,after,fields:changes});}
-    if(!updates.length)fail('Every selected card already has the requested values. No changes are needed.');
+    if(!updates.length&&!allowUnchanged)fail('Every selected card already has the requested values. No changes are needed.','task_no_changes');
     return {kind:'todo',cards:next,updates,selectedIds:[...selectedIds],selectedCount:selectedIds.size,count:updates.length,before:null,after:null,recordId:null};
   }
   function remember(matches,id){return {kind:'todos',id,ids:matches.map(c=>c.id)};}

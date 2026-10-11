@@ -10,7 +10,8 @@
     const spec=R.responseSchema(core,custom).anyOf[1],refine=R.refinementSchema(core,custom),p=refine.properties;
     const measure={type:'integer',minimum:0,maximum:5};
     const reference={anyOf:[obj({elementId:id,measure,stat:{type:'string',enum:['records','aggregate','maximum','minimum_nonzero']}}),obj({elementId:id,measure,stat:{type:'string',enum:['group']},group:{type:'string',maxLength:300},series:{type:['string','null'],maxLength:300}})]};
-    const question={anyOf:[obj({kind:{type:'string',enum:['summary']},elementIds:ids}),obj({kind:{type:'string',enum:['groups']},elementId:id,measure}),obj({kind:{type:'string',enum:['value']},label:{type:'string',maxLength:200},reference}),obj({kind:{type:'string',enum:['difference','percentage']},label:{type:'string',maxLength:200},left:reference,right:reference})]};
+    const distribution=obj({kind:{type:'string',enum:['group_percentages'],description:'Compute a percentage for every plotted group/series using one shared denominator. Required for grouped shares; groups alone only lists values and counts.'},elementId:id,measure,denominator:{type:'string',enum:['matching_records','measure_total'],description:'matching_records: each plotted cell\'s selected record count / the full cached matchingCount before top-N and blank-date exclusions. measure_total: each plotted value / the cached selected measure total; count or sum only, with no omitted groups or records. No per-group denominators, renormalization, assumed counts, or cross-graph populations.'}});
+    const question={anyOf:[obj({kind:{type:'string',enum:['summary']},elementIds:ids}),obj({kind:{type:'string',enum:['groups']},elementId:id,measure}),distribution,obj({kind:{type:'string',enum:['value']},label:{type:'string',maxLength:200},reference}),obj({kind:{type:'string',enum:['difference','percentage']},label:{type:'string',maxLength:200},left:reference,right:reference})]};
     const questions={type:'array',maxItems:20,items:question};
     return [obj({action:{type:'string',enum:['dashboard_plan']},operations:{type:'array',minItems:1,maxItems:24,items:{anyOf:[
       obj({op:{type:'string',enum:['clear']}}),
@@ -46,7 +47,7 @@
   function format(value,type='number'){return value===null?'Not set':new Intl.NumberFormat('en-US',{maximumFractionDigits:2,...(type==='currency'?{style:'currency',currency:'USD'}:{})}).format(value)+(type==='percent'?'%':'');}
   function context(board,views){
     if(!board)return null;
-    return {board:clone(board),displayed:views.map(v=>{const {recordIds,table,...s}=v.snapshot;return {...s,series:[...new Set(table.map(r=>r.series))],extrema:extrema(table),table:table.length<=120?table:undefined,tableOmitted:table.length>120};}),analysisRule:'Select structured questions against these element IDs. The app computes from its cached displayed results; do not calculate or rebuild a graph to answer.'};
+    return {board:clone(board),displayed:views.map(v=>{const {recordIds,table,...s}=v.snapshot;return {...s,series:[...new Set(table.map(r=>r.series))],extrema:extrema(table),table:table.length<=120?table:undefined,tableOmitted:table.length>120};}),analysisRule:'Select structured questions against these element IDs. The app computes from its cached displayed results; do not calculate or rebuild a graph to answer. For each group\'s percentage/share/distribution use group_percentages {elementId,measure,denominator}, not groups. matching_records divides each cell\'s selected record count by matchingCount before top-N/date exclusions; measure_total divides plotted count/sum values by the complete cached measure total and requires no omitted groups or records. One denominator covers all groups and split series; shares are never renormalized. tableOmitted only limits this context, not the cached analysis.'};
   }
   function extrema(table){return [...new Set(table.map(row=>row.series))].map(series=>{const rows=table.filter(r=>r.series===series&&Number.isFinite(r.value)),positive=rows.filter(r=>r.value>0),max=rows.length?Math.max(...rows.map(r=>r.value)):null,min=positive.length?Math.min(...positive.map(r=>r.value)):null;return {series,maximum:max,largest:rows.filter(r=>r.value===max).map(r=>r.group),minimumNonzero:min,smallestNonzero:positive.filter(r=>r.value===min).map(r=>r.group)};});}
   function readReference(ref,views){
@@ -67,6 +68,35 @@
     const value=rows.length?(ref.stat==='maximum'?Math.max:Math.min)(...rows.map(r=>r.value)):null;
     return {value,type:m.type,unit:m.metric+':'+m.field,detail:`${rows.filter(r=>r.value===value).map(r=>r.group+(series.length>1?' / '+r.series:'')).join(', ')||'No qualifying group'} (${summary}; ${ref.stat==='maximum'?'largest':'smallest nonzero'} ${m.label})`,ids:s.recordIds};
   }
+  function groupPercentages(q,views){
+    shape(q,['kind','elementId','measure','denominator']);
+    const v=views.find(v=>v.id===q.elementId),s=v?.snapshot;
+    if(!identifier(q.elementId)||!s||!Number.isInteger(q.measure)||q.measure<0||q.measure>=s.summaries.length)bad('Choose a displayed graph and measure for the group percentages.');
+    if(!['matching_records','measure_total'].includes(q.denominator))bad('Choose an explicit matching_records or measure_total denominator.');
+    const m=s.summaries[q.measure],records=q.denominator==='matching_records';
+    if(!records&&!['count','sum'].includes(m.metric))bad('Group value percentages require an additive count or sum measure, not averages, extrema, distinct counts or percentages. Use matching_records for record shares.');
+    if(!records&&(s.shownGroups!==s.totalGroups||s.recordCount!==s.matchingCount))bad('The complete measure total is not cached for this truncated or date-excluded graph. Use matching_records for record shares, or choose an existing complete count/sum graph for value shares. No graph was changed.');
+    // The cache is dataset-major. Index it instead of matching display labels, which can collide.
+    const datasets=v.result.datasets,series=datasets.filter((_,i)=>i%s.summaries.length===q.measure);
+    if(!series.length&&s.recordCount!==0||s.table.length!==datasets.length*s.shownGroups)bad('The cached group results are incomplete. Choose a current displayed graph.');
+    const rows=datasets.flatMap((d,i)=>i%s.summaries.length===q.measure?s.table.slice(i*s.shownGroups,(i+1)*s.shownGroups):[]);
+    const total=records?s.matchingCount:m.value,type=records?'number':m.type;
+    const numerators=rows.map(row=>records?row.count:row.value);
+    if((total!==null&&!Number.isFinite(total))||numerators.some(value=>value!==null&&!Number.isFinite(value)))bad('The cached distribution contains an invalid numeric value.');
+    if(records&&(!Number.isSafeInteger(total)||total<0||numerators.some(value=>!Number.isSafeInteger(value)||value<0)||numerators.reduce((sum,value)=>sum+value,0)>total))bad('The plotted record counts are not a subset of the complete matching population.');
+    const denominator=records?`${format(total)} matching records before top-N and blank-date exclusions`:`${m.label} total ${format(total,type)} across the complete matching population`;
+    const lines=[`${s.title} [${v.id}]: group percentages for ${m.label}. Shared denominator: ${denominator}. ${s.recordCount} of ${s.matchingCount} matching records represented; ${s.shownGroups} of ${s.totalGroups} groups shown. Scope: ${s.scope}.`];
+    if(records)lines.push('Numerators are selected record counts for this measure. Filtered subsets and excluded groups/records are not renormalized to 100%.');
+    else lines.push('Numerators are plotted measure values, not record counts. Missing values remain Not set.');
+    if(total===null||total===0)lines.push('Percentages are Not set because the shared denominator is missing or zero.');
+    if(!records&&(total<0||numerators.some(value=>value<0)))lines.push('These are signed shares of a net total; percentages may be negative or exceed 100%.');
+    lines.push(rows.map((row,i)=>{
+      const value=numerators[i],percentage=value===null||total===null||total===0?null:value/total*100;
+      if(percentage!==null&&!Number.isFinite(percentage))bad('The group percentage is outside the supported numeric range.');
+      return `- ${row.group}${series.length>1?' / '+row.series:''}: ${format(percentage,'percent')} (${format(value,type)} / ${format(total,type)} x 100; ${row.count} records).`;
+    }).join('\n')||'No groups.');
+    return lines.join('\n');
+  }
   function analyze(questions,views){
     if(!Array.isArray(questions)||questions.length>20)bad('Ask up to twenty dashboard questions at once.');
     const lines=[];
@@ -77,6 +107,8 @@
         shape(q,['kind','elementId','measure']);const v=views.find(v=>v.id===q.elementId);if(!v||!Number.isInteger(q.measure)||q.measure<0||q.measure>=v.snapshot.summaries.length)bad('Choose a displayed graph and measure for the group report.');
         const series=v.result.datasets.filter((_,i)=>i%v.snapshot.summaries.length===q.measure),rows=v.snapshot.table.filter(row=>series.some(d=>d.label===row.series));
         lines.push(`${v.snapshot.title} [${v.id}]: ${v.snapshot.recordCount} records represented. Scope: ${v.snapshot.scope}.\n${rows.map(row=>`- ${row.group}${series.length>1?' / '+row.series:''}: ${format(row.value,row.type)} (${row.count} records).`).join('\n')||'No groups.'}`);
+      }else if(q.kind==='group_percentages'){
+        lines.push(groupPercentages(q,views));
       }else if(q.kind==='value'){
         shape(q,['kind','label','reference']);if(typeof q.label!=='string'||q.label.length>200)bad('Use a short analysis label.');const a=readReference(q.reference,views);lines.push(`${q.label}: ${format(a.value,a.type)}. ${a.detail}.`);
       }else if(['difference','percentage'].includes(q.kind)){

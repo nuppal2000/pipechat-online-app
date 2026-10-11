@@ -4,39 +4,55 @@
 })(typeof globalThis!=='undefined'?globalThis:this,function(Core,Reports,Todo,TaskActions,Dashboard){
   'use strict';
   const clone=value=>JSON.parse(JSON.stringify(value));
-  const fail=message=>{const error=new Error(message);error.clarification=true;throw error;};
+  const supportedOps=new Set(['select_records','add_field','rename_choice_option','update_records','add_todos','add_unlinked_task','update_tasks','read_records','report','dashboard']);
+  const reasonCodes=new Set(['plan_validation','date_invalid','date_offset_invalid','current_date_unavailable','field_unavailable','selection_dependency','focus_unavailable','record_selection_stale','numeric_field_required','unsupported_operation',
+    'task_validation','task_reference_ambiguous','task_reference_missing','task_focus_unavailable','task_selection_stale','task_selection_empty','task_write_conflict','task_no_changes']);
+  const fail=(message,reasonCode='plan_validation')=>{const error=new Error(message);error.clarification=true;error.reasonCode=reasonCode;throw error;};
   const object=properties=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
   const str={type:'string'},scalar={type:['string','number']};
   function responseSchema(core=Core.create(null),custom=[],focus=null){
+    const definitions=core.definitions(custom),fieldIds=definitions.map(field=>field.id);
+    const createdField={type:'string',pattern:'^@[a-z][a-z0-9_]{0,39}$'};
+    const fieldRef={anyOf:[...(fieldIds.length?[{type:'string',enum:fieldIds}]:[]),createdField]};
+    const optionalField={anyOf:[...fieldRef.anyOf,{type:'null'}]};
+    const numericIds=definitions.filter(field=>['number','currency'].includes(field.type)).map(field=>field.id);
+    const outputs={anyOf:[
+      object({kind:{type:'string',enum:['count','names']},field:{type:'null'}}),
+      object({kind:{type:'string',enum:['fields','distinct']},field:fieldRef}),
+      ...(numericIds.length?[object({kind:{type:'string',enum:['sum','average','median','min','max']},field:{type:'string',enum:numericIds}})]:[])
+    ]};
     const date=object({dateMode:{type:'string',enum:['literal','calendar_days','business_days']},date:{type:['string','null']},offset:{type:['integer','null']}});
-    const condition=object({field:str,operator:{type:'string',enum:Reports.operators},value:{type:['string','number','null']},values:{type:'array',items:{type:['string','number','null']}}});
+    const condition=object({field:fieldRef,operator:{type:'string',enum:Reports.operators},value:{type:['string','number','null']},values:{type:'array',items:{type:['string','number','null']}}});
     const step=(op,properties)=>object({op:{type:'string',enum:[op]},id:str,label:str,...properties});
     return object({action:{type:'string',enum:['workspace_plan']},version:{type:'integer',enum:[1]},title:str,
       unmappedFacts:{type:'array',maxItems:40,items:object({text:str,source:str,reason:str})},
       goals:{type:'array',minItems:1,maxItems:20,items:object({description:str,stepIds:{type:'array',minItems:1,items:str}})},
       steps:{type:'array',minItems:1,maxItems:30,items:{anyOf:[
-        step('select_records',{source:str,where:{type:'array',items:{type:'array',items:condition}},orderBy:{type:['string','null']},direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
+        step('select_records',{source:str,where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
         step('add_field',{name:str,type:{type:'string',enum:['text','choice','date']},options:{type:'array',items:str}}),
-        step('rename_choice_option',{field:str,from:str,to:str}),
-        step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:object({field:str,operation:{type:'string',enum:['set','append']},value:{anyOf:[scalar,date]}})}}),
+        step('rename_choice_option',{field:fieldRef,from:str,to:str}),
+        step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:object({field:fieldRef,operation:{type:'string',enum:['set','append']},value:{anyOf:[scalar,date]}})}}),
         step('add_todos',{selection:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('add_unlinked_task',{customTitle:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('update_tasks',{selection:TaskActions.actionSchemas(focus)[1].properties.updates.items.properties.selection,changes:{type:'array',minItems:1,maxItems:4,items:object({field:{type:'string',enum:['status','nextAction','notes','dueDate']},operation:{type:'string',enum:['set','append']},value:{anyOf:[str,date]}})}}),
-        step('read_records',{selection:str,showTable:{type:'boolean'},outputs:{type:'array',minItems:1,maxItems:40,items:object({kind:{type:'string',enum:['count','names','fields','sum','average','median','distinct','min','max']},field:{type:['string','null']}})}}),
+        step('read_records',{selection:str,showTable:{type:'boolean'},outputs:{type:'array',minItems:1,maxItems:40,items:outputs}}),
         step('report',{selection:{type:['string','null'],description:'A preceding select_records step ID, or null for an independent report population.'},spec:Reports.responseSchema(core,custom).anyOf[1],questions:Dashboard.schemas(core,custom)[1].properties.questions,showDashboard:{type:'boolean'}}),
         step('dashboard',{plan:Dashboard.schemas(core,custom)[0]})
       ]}}
     });
   }
   function dateValue(spec,today){
-    if(!spec||typeof spec!=='object'||Array.isArray(spec))fail('Please specify a complete date or an offset from today.');
-    const core=Core.create(null),base=core.date(today);
-    if(!base)fail('The current date is unavailable. Please specify an exact due date.');
+    if(!spec||typeof spec!=='object'||Array.isArray(spec))fail('Please specify a complete date or an offset from today.','date_invalid');
+    const core=Core.create(null);
     if(spec.dateMode==='literal'){
-      if(!core.date(spec.date)||spec.offset!==null)fail('Please specify a complete, valid calendar date.');
-      return {value:spec.date,explanation:'Date: '+spec.date};
+      const parsed=core.date(spec.date);
+      if(!parsed||spec.offset!==null)fail('Please specify a complete, valid calendar date.','date_invalid');
+      const value=parsed.toISOString().slice(0,10);
+      return {value,explanation:'Date: '+value};
     }
-    if(!['calendar_days','business_days'].includes(spec.dateMode)||spec.date!==null||!Number.isInteger(spec.offset)||Math.abs(spec.offset)>366)fail('Choose a date offset of up to 366 days.');
+    if(!['calendar_days','business_days'].includes(spec.dateMode)||spec.date!==null||!Number.isInteger(spec.offset)||Math.abs(spec.offset)>366)fail('Choose a date offset of up to 366 days.','date_offset_invalid');
+    const base=core.date(today);
+    if(!base)fail('The current date is unavailable. Please specify an exact due date.','current_date_unavailable');
     const business=spec.dateMode==='business_days',dates=[],direction=Math.sign(spec.offset);
     for(let left=Math.abs(spec.offset);left;){
       base.setUTCDate(base.getUTCDate()+direction);
@@ -71,10 +87,10 @@
     let board=clone(dashboard||Dashboard.empty());const taskUpdates=[];
     const resolve=reference=>{
       const id=reference?.startsWith('@')?fields.get(reference.slice(1)):reference;
-      if(!core.definitions(next.customFields).some(field=>field.id===id))fail('A step refers to an unavailable field. Create the field first, then reference @step_id.');
+      if(!core.definitions(next.customFields).some(field=>field.id===id))fail('A step refers to an unavailable field. Create the field first, then reference @step_id.','field_unavailable');
       return id;
     };
-    const selected=reference=>{if(!selections.has(reference))fail('Select records before using that selection in another step.');return selections.get(reference);};
+    const selected=reference=>{if(!selections.has(reference))fail('Select records before using that selection in another step.',reference==='focus'?'focus_unavailable':'selection_dependency');return selections.get(reference);};
     const materialize=value=>{
       if(value&&typeof value==='object'){const result=dateValue(value,today);calculations.add(result.explanation);return result.value;}
       if(!['string','number'].includes(typeof value)||typeof value==='number'&&!Number.isFinite(value))fail('Each edit needs a literal value. Use an empty string to explicitly clear a cell.');
@@ -84,7 +100,7 @@
       try{
         if(step.op==='select_records'){
           const sourceIds=step.source==='all'?null:step.source==='visible'?visibleIds:step.source==='focus'&&focus?.kind==='table'&&Array.isArray(focus.ids)?focus.ids:selected(step.source);
-          if(sourceIds&&sourceIds.some(id=>!workspace.records.some(row=>row.id===id)))fail('A selected record no longer exists. Please select the records again.');
+          if(sourceIds&&sourceIds.some(id=>!workspace.records.some(row=>row.id===id)))fail('A selected record no longer exists. Please select the records again.','record_selection_stale');
           // Eligibility reads the original snapshot, even if an earlier step updates a predicate field.
           const rows=next.records.map(row=>({...row,...eligibility.find(r=>r.id===row.id)})).filter(row=>sourceIds===null||sourceIds.includes(row.id));
           if(!Array.isArray(step.where))fail('Please supply the selection conditions.');
@@ -162,7 +178,8 @@
         }else if(step.op==='update_tasks'){
           const changes=step.changes.map(change=>({...change,value:materialize(change.value)}));
           taskUpdates.push({selection:step.selection,changes});
-          const result=TaskActions.plan(workspace.todoCards,next.records,next.tableSchema,{action:'update_todos',updates:taskUpdates},focus);
+          // An unchanged prefix is valid; later steps can still contribute writes.
+          const result=TaskActions.plan(workspace.todoCards,next.records,next.tableSchema,{action:'update_todos',updates:taskUpdates},focus,{allowUnchanged:true});
           const selectedTasks=TaskActions.select(workspace.todoCards,next.records,next.tableSchema,step.selection,focus);
           next.todoCards=[...result.cards,...addedCards];review.push({id:step.id,op:step.op,label:step.label,count:selectedTasks.length,targets:selectedTasks.map(c=>({taskId:c.id,recordId:c.recordId,task:c.nextAction,title:Todo.project(c,next.records,next.tableSchema,next.customFields).title}))});
         }else if(step.op==='read_records'){
@@ -180,7 +197,7 @@
               return `${def.name}:\n`+(rows.map(row=>`- ${name(row)} (#${row.id}): ${row[field]===''||row[field]==null?'(blank)':String(row[field])}`).join('\n')||'No matching records.');
             }
             if(output.kind==='distinct')return `Distinct ${def.name}: ${new Set(rows.map(row=>row[field]).filter(v=>v!==null&&v!==undefined&&v!=='')).size}.`;
-            if(!['number','currency'].includes(def.type))fail('Choose a numeric field for calculations.');
+            if(!['number','currency'].includes(def.type))fail('Choose a numeric field for calculations.','numeric_field_required');
             const values=rows.filter(row=>typeof row[field]==='number'&&Number.isFinite(row[field])),sum=values.reduce((n,row)=>n+row[field],0);
             const ordered=values.map(row=>row[field]).sort((a,b)=>a-b),mid=Math.floor(ordered.length/2);
             const value=output.kind==='sum'?sum:!values.length?null:output.kind==='average'?sum/values.length:output.kind==='median'?ordered.length%2?ordered[mid]:(ordered[mid-1]+ordered[mid])/2:output.kind==='min'?Math.min(...ordered):Math.max(...ordered);
@@ -208,8 +225,16 @@
         }else if(step.op==='dashboard'){
           const result=Dashboard.apply(board,step.plan,next.records,core,next.customFields,{today,visibleIds});board=result.board;
           answers.push(result.answer);effects.push({kind:'dashboard',board});review.push({id:step.id,op:step.op,label:step.label,count:step.plan.operations.length});
-        }else fail('That operation cannot be combined in this plan yet. Please clarify the complete request; no partial changes were prepared.');
-      }catch(error){fail(`Step ${index+1} (${step.label}): ${error.message} The entire plan is unchanged.`);}
+        }else fail('That operation cannot be combined in this plan yet. Please clarify the complete request; no partial changes were prepared.','unsupported_operation');
+      }catch(error){
+        const ErrorType=error instanceof TypeError?TypeError:error instanceof RangeError?RangeError:error instanceof SyntaxError?SyntaxError:Error;
+        const wrapped=new ErrorType(`Step ${index+1} (${step.label}): ${error?.message} The entire plan is unchanged.`,{cause:error});
+        wrapped.clarification=true;
+        // Only static classes may enter diagnostics; labels, values and causes stay out.
+        if(supportedOps.has(step.op))wrapped.compilerStep=step.op;
+        wrapped.reasonCode=reasonCodes.has(error?.reasonCode)?error.reasonCode:error instanceof TypeError?'type_error':'step_validation';
+        throw wrapped;
+      }
     }
     const definitions=core.definitions(next.customFields),patches=[];
     for(const row of next.records){const original=workspace.records.find(r=>r.id===row.id),changes=[];for(const f of definitions){const old=original[f.id]??'',value=row[f.id]??'';if(old!==value)changes.push({field:f.name,before:old,after:value});}if(changes.length)patches.push({id:row.id,name:String(row[core.role('primary')]||'Unnamed record #'+row.id),changes});}

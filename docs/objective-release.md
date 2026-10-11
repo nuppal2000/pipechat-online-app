@@ -1,5 +1,23 @@
 # Objective Release Guide
 
+## Latest Follow-Up Checkpoint
+
+PR61 (`f1bff2be93a8637d8a91a4c0ade71760bd5972d0`) is live. Its 19 uploaded files matched the tested bundle; 1,025 non-browser tests passed. All three public health probes returned 200 and all three anonymous private-data probes returned 401.
+
+The next candidate adds schema-bound field references, canonical date literals, composable no-op task steps, multiple independent entity reads, cached grouped percentages, typed output-completeness checks, canonical Undo descriptions and closed-schema compiler diagnostics. These are general action contracts, not acceptance-prompt branches. Connected-AI retests of these changes are still required.
+
+Migration 019 changes only the two public validation-failure messages. It was applied separately in Supabase and its private helper remains non-executable by anon and authenticated roles. Existing turn statuses, messages, permissions and CRM data were not rewritten. Do not replay earlier migrations.
+
+Latest QA A evidence:
+- Three requested graphs and a named single-graph type change passed; generic graph editing correctly requested identity. Cancelling that clarification in conversational language still failed validation.
+- Same-set aggregates passed count 3, sum 161000, average 53666.67 and median 47000. The exact shorter Ravi refinement still failed on a separate run. Do not conflate the passing variant with the failing exact request.
+- Cross-graph values and difference were correct, but percentages were omitted. The candidate supplies a typed percentage calculation and rejects count-only evidence for percentage requirements.
+- Contact creation and one explicitly disclosed combined primary account/deal association saved and survived reload. The compound reverse query still failed; the candidate adds independent typed read composition.
+- Two named task date edits still failed live compilation. Local tests exposed no-op-step ordering and unnormalized date literals, but neither is yet a proven cause of that live failure.
+- Exact add-field plus stage-option rename produced a complete preview. A dropdown-field variant was confirmed: all 42 rows had blank new cells, exactly 10 stage values changed, the paused workflow reference updated, and reload preserved the result. Durable Undo restored every table field to the 42-row baseline. No production customer account was edited.
+
+Full 28-objective sign-off remains open, including representative linked entities, two-user permissions/sharing, workflow replay/failure recovery and remaining exact/variant connected-AI checks. Older checkpoints below are historical, not the current completion claim.
+
 ## Release Status
 
 Status supplied by the release coordinator on 2026-10-10:
