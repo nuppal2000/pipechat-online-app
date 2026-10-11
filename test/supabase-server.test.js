@@ -1,6 +1,75 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs/promises'), path = require('node:path');
 const { spawn } = require('node:child_process'), { once } = require('node:events');
+const { randomUUID, createHash } = require('node:crypto');
+const { validateReceipt } = require('../lib/action-journal.js');
+
+// Executed in the child after the existing offline auth/usage fixture. Keep its
+// session checks while modelling journal commits as one in-memory state change.
+function installJournalHttpFixture(journalPath) {
+  const assert = require('node:assert/strict'), { randomUUID } = require('node:crypto');
+  const { isDeepStrictEqual } = require('node:util'), journal = require(journalPath);
+  const publicPath = require('node:path').join(require('node:path').dirname(journalPath), '../public');
+  const Workspace = require(publicPath + '/business-workspace.js'), Core = require(publicPath + '/pipeline-core.js');
+  const offlineFetch = global.fetch, states = new Map(), actions = new Map(), imports = new Map(), workspaces = new Map();
+  const response = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  const conflict = message => response(409, { code: 'PT409', message });
+  global.fetch = async (input, options = {}) => {
+    const url = new URL(String(input)), rpc = url.pathname.replace('/rest/v1/rpc/', '');
+    if (url.origin !== 'https://pipechat-test.supabase.co') return offlineFetch(input, options);
+    assert(!['pipechat_write_workspace_v2', 'pipechat_write_todo'].includes(rpc), 'The adapter must use journaled writes');
+    if (!['pipechat_read_workspace', 'pipechat_commit_action', 'pipechat_commit_todo_action', 'pipechat_read_workflows', 'business_workspace_get', 'pipechat_list_actions'].includes(rpc)) return offlineFetch(input, options);
+    const auth = await offlineFetch(new URL('/auth/v1/user', url), { headers: options.headers });
+    if (!auth.ok) return auth;
+    const user = await auth.json();
+    const original = await offlineFetch(new URL('/rest/v1/rpc/pipechat_read_workspace', url), { method: 'POST', headers: options.headers, body: '{}' });
+    if (!original.ok) return original;
+    const current = states.get(user.id) || { todoCards: [], ...await original.json() };
+    if (rpc === 'pipechat_read_workspace') return response(200, current);
+    const body = JSON.parse(options.body);
+    if (rpc === 'pipechat_read_workflows') {
+      assert.deepEqual(body, {});return response(200, { workflows: [], updatedAt: current.updatedAt });
+    }
+    if (rpc === 'business_workspace_get') {
+      assert.deepEqual(body, { p_workspace: null });
+      if (!workspaces.has(user.id)) workspaces.set(user.id, randomUUID());
+      const workspaceId = workspaces.get(user.id), fields = Core.create(current.tableSchema).definitions(current.customFields);
+      return response(200, { workspaceId, version: 0, role: 'owner', scope: 'workspace', state: Workspace.empty(),
+        primary: { updatedAt: current.updatedAt, tableSchema: current.tableSchema, customFields: current.customFields,
+          records: current.deals.map(row => ({ recordId: row.id, entityId: Workspace.legacyId(workspaceId, row.id),
+            values: Object.fromEntries(fields.map(field => [field.id, row[field.id]])) })) } });
+    }
+    if (rpc === 'pipechat_list_actions') {
+      assert.deepEqual(Object.keys(body).sort(), ['p_before', 'p_limit']);assert.equal(body.p_before, null);
+      assert(Number.isInteger(body.p_limit) && body.p_limit >= 1 && body.p_limit <= 100);
+      const all = [...actions.values()].filter(action => action.userId === user.id).reverse(), selected = all.slice(0, body.p_limit);
+      return response(200, { actions: selected.map(action => ({ receipt: action.result.receipt, createdAt: action.createdAt,
+        undoneBy: null, undoInvalidated: false, paths: action.entry.changes.map(change => change.path) })),
+        before: all.length > selected.length ? { createdAt: selected.at(-1).createdAt, actionId: selected.at(-1).result.receipt.actionId } : null });
+    }
+    const crm = rpc === 'pipechat_commit_action';
+    assert.deepEqual(Object.keys(body).sort(), ['p_action_id', 'p_request_id', 'p_conversation_id', 'p_plan_id', 'p_expected_updated_at', 'p_metadata', crm ? 'p_workspace' : 'p_todo_cards'].sort());
+    const meta = journal.prepareMetadata({ actionId: body.p_action_id, requestId: body.p_request_id,
+      conversationId: body.p_conversation_id, planId: body.p_plan_id, ...body.p_metadata }, {});
+    assert.deepEqual(body.p_metadata, meta.importReceipt ? { importReceipt: meta.importReceipt } : {});
+    assert(crm || !meta.importReceipt, 'Imports are CRM-only');
+    const key = user.id + ':' + meta.actionId, previous = actions.get(key);
+    if (previous) return isDeepStrictEqual(previous.body, body) ? response(200, { ...previous.result, replayed: true }) : conflict('Action ID already used.');
+    const importKey = meta.importReceipt && user.id + ':' + meta.importReceipt.id;
+    if (importKey && imports.has(importKey)) return conflict('Import receipt already used by another action.');
+    if (current.updatedAt !== body.p_expected_updated_at) return conflict('The workspace changed.');
+    if (crm) assert.deepEqual(Object.keys(body.p_workspace).sort(), ['deals', 'customFields', 'tableSchema', 'todoCards'].sort());
+    const next = crm ? { ...body.p_workspace, updatedAt: randomUUID() } : { ...current, todoCards: body.p_todo_cards, updatedAt: randomUUID() };
+    const entry = journal.buildActionEntry({ ...meta, before: current, after: next });
+    const { changes, dependencies, ...identity } = entry;
+    const receipt = journal.validateReceipt({ ...identity, importReceipt: meta.importReceipt });
+    const result = { snapshot: next, receipt, replayed: false };
+    const createdAt = new Date(Date.UTC(2026, 0, 1) + actions.size).toISOString().replace('Z', '000Z');
+    states.set(user.id, next);actions.set(key, { userId: user.id, body, result, entry, createdAt });
+    if (importKey) imports.set(importKey, key);
+    return response(200, result);
+  };
+}
 
 for(const signupAllowed of ['true','false','invalid'])test(`signup=${signupAllowed}: public routes cannot refresh stale cookies; revoked sessions clear without crashing`, {timeout:20000}, async()=>{
   const child=spawn(process.execPath,['--unhandled-rejections=strict','--require',path.join(__dirname,'fixtures/supabase-stale-cookie-http.cjs'),path.join(__dirname,'../server.js')],{
@@ -59,7 +128,8 @@ for(const signupAllowed of ['true','false','invalid'])test(`signup=${signupAllow
 
 test('Supabase HTTP path preserves onboarding, fields, manual edits at cap and account isolation', { timeout: 40000 }, async () => {
   const dataDir = await fs.mkdtemp(path.join(__dirname, 'test-supabase-'));
-  const child = spawn(process.execPath, ['--require', path.join(__dirname, 'fixtures/supabase-http.cjs'), path.join(__dirname, '../server.js')], {
+  const child = spawn(process.execPath, ['--require', path.join(__dirname, 'fixtures/supabase-http.cjs'), '--eval',
+    `(${installJournalHttpFixture.toString()})(${JSON.stringify(path.join(__dirname, '../lib/action-journal.js'))});require(${JSON.stringify(path.join(__dirname, '../server.js'))});`], {
     windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: {
       ...process.env, PORT: '0', PIPECHAT_AI_PORT: '0', PIPECHAT_HOST: '127.0.0.1',
       PIPECHAT_STORAGE_PROVIDER: 'supabase', PIPECHAT_DATA_DIR: dataDir,
@@ -105,10 +175,31 @@ test('Supabase HTTP path preserves onboarding, fields, manual edits at cap and a
     assert.equal(build.status, 200, JSON.stringify(build.data)); assert.equal(build.data.usage.used, 1);
     const schema = build.data.tableSchema, [name, amount] = schema.fields;
     assert.equal((await req('/api/crm-data', 'GET', undefined, a)).data.tableSchema.status, 'pending');
-    const save = (deals, version, tableSchema = schema, customFields = []) => req('/api/crm-data', 'PUT', { deals, tableSchema, customFields, expectedUpdatedAt: version }, a);
+    const save = (deals, version, tableSchema = schema, customFields = [], metadata = {}) => req('/api/crm-data', 'PUT', { deals, tableSchema, customFields, expectedUpdatedAt: version, ...metadata }, a);
+    function assertReceipt(result, beforeVersion, importReceipt = null, replayed = false) {
+      assert.equal(result.status, 200, JSON.stringify(result.data));
+      const receipt = validateReceipt(result.data.actionReceipt);
+      assert.equal(receipt.beforeVersion, beforeVersion);assert.equal(receipt.afterVersion, result.data.updatedAt);
+      assert.notEqual(receipt.afterVersion, beforeVersion);assert.equal(receipt.undoOf, null);
+      assert.deepEqual(receipt.importReceipt, importReceipt);assert.equal(result.data.replayed, replayed);
+      return receipt;
+    }
     const confirm = await save([], initial.data.updatedAt); assert.equal(confirm.status, 200, JSON.stringify(confirm.data));
+    assertReceipt(confirm, initial.data.updatedAt);
     const row = { id: 1, [name.id]: 'Synthetic candidate', [amount.id]: 125, history: [] };
-    const added = await save([row], confirm.data.updatedAt); assert.equal(added.status, 200);
+    const importReceipt = { id: randomUUID(), digest: createHash('sha256').update(JSON.stringify(row)).digest('hex') };
+    const added = await save([row], confirm.data.updatedAt, schema, [], { importReceipt }); assert.equal(added.status, 200);
+    const addedReceipt = assertReceipt(added, confirm.data.updatedAt, importReceipt);
+    assert.deepEqual(added.data.importReceipt, importReceipt);
+    const replay = await save([row], confirm.data.updatedAt, schema, [], { importReceipt });
+    assert.deepEqual(assertReceipt(replay, confirm.data.updatedAt, importReceipt, true), addedReceipt);
+    assert.deepEqual(replay.data.deals, added.data.deals);assert.equal(replay.data.updatedAt, added.data.updatedAt);
+    const changed = await save([{ ...row, [amount.id]: 999 }], confirm.data.updatedAt, schema, [], { importReceipt });
+    assert.equal(changed.status, 409, 'A matching receipt cannot approve a different payload');
+    const changedDigest = { ...importReceipt, digest: createHash('sha256').update('different proposal').digest('hex') };
+    assert.equal((await save([row], confirm.data.updatedAt, schema, [], { importReceipt: changedDigest })).status, 409);
+    assert.equal((await save([row], added.data.updatedAt, schema, [], { importReceipt: { ...importReceipt, digest: 'invalid' } })).status, 400);
+    assert.deepEqual((await req('/api/crm-data', 'GET', undefined, a)).data.deals, added.data.deals);
     const customFields = [{ id: 'cf_contact', name: 'Contact', type: 'text' }];
     const custom = await save([{ ...row, cf_contact: 'Synthetic contact' }], added.data.updatedAt, schema, customFields);
     assert.equal(custom.status, 200, JSON.stringify(custom.data));
@@ -119,12 +210,20 @@ test('Supabase HTTP path preserves onboarding, fields, manual edits at cap and a
     const undo = await save(custom.data.deals, replaced.data.updatedAt, schema, customFields); assert.equal(undo.status, 200);
     const stale = await save([], replaced.data.updatedAt, schema, customFields); assert.equal(stale.status, 409);
     assert.equal((await req('/api/crm-data', 'GET', undefined, b)).data.tableSchema.status, 'pending');
-    assert.equal((await req('/api/pipechat-ai', 'POST', { command: 'hello', pipeline: { deals: undo.data.deals, customFields, tableSchema: schema } }, a)).status, 402);
+    const capped = await req('/api/pipechat-ai', 'POST', { command: 'hello', pipeline: { deals: undo.data.deals, customFields, tableSchema: schema } }, a);
+    assert.equal(capped.status, 402, JSON.stringify(capped.data));
+    const journal = await req('/api/actions', 'GET', undefined, a);assert.equal(journal.status, 200, JSON.stringify(journal.data));
+    assert(journal.data.actions.some(action => action.receipt.actionId === addedReceipt.actionId));
+    assert.equal(journal.data.actions.filter(action => action.receipt.actionId === addedReceipt.actionId).length, 1, 'Replays must not append another journal action');
+    const isolatedJournal = await req('/api/actions', 'GET', undefined, b);assert.equal(isolatedJournal.status, 200);assert.deepEqual(isolatedJournal.data.actions, []);
     const manual = await save([{ ...row, [amount.id]: 999, cf_contact: 'Still editable' }], undo.data.updatedAt, schema, customFields);
     assert.equal(manual.status, 200); assert.equal((await req('/api/chat-usage', 'GET', undefined, a)).data.used, 1);
     const card={...require('../public/todo-core.js').create('todo_isolated',1),nextAction:'Task only',notes:'Card-only note',dueDate:'2026-10-01'};
     const task=await req('/api/todo-cards','PUT',{todoCards:[card],expectedUpdatedAt:manual.data.updatedAt},a);
     assert.equal(task.status,200,JSON.stringify(task.data));assert.deepEqual(task.data.deals,manual.data.deals);assert.deepEqual(task.data.tableSchema,manual.data.tableSchema);assert.deepEqual(task.data.todoCards,[card]);
+    const taskReceipt=assertReceipt(task,manual.data.updatedAt);
+    const taskReplay=await req('/api/todo-cards','PUT',{todoCards:[card],expectedUpdatedAt:manual.data.updatedAt},a);
+    assert.deepEqual(assertReceipt(taskReplay,manual.data.updatedAt,null,true),taskReceipt);assert.deepEqual(taskReplay.data.todoCards,[card]);
     assert.equal((await req('/api/todo-cards','PUT',{todoCards:[],expectedUpdatedAt:manual.data.updatedAt},a)).status,409);
     assert.equal((await req('/api/todo-cards','PUT',{todoCards:[],deals:[],expectedUpdatedAt:task.data.updatedAt},a)).status,400);
     assert.equal((await req('/api/todo-cards','PUT',{todoCards:[card],expectedUpdatedAt:null},b)).status,400);

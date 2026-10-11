@@ -3,9 +3,44 @@
   // Lucide Pencil, ISC license; see vendor/lucide-LICENSE.
   root.PipeChatIcons.Pencil='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.623l4.353-1.32a2 2 0 0 0 .83-.498z"/><path d="m15 5 4 4"/></svg>';
   root.PipeChatInspectorUI={create};
-  function create({S,esc,icon,rowName,persist,refresh,toast,editRecord,clearActivity=()=>{}}){
+  // Optional read callback resolves [{workspaceId,entityId,typeId,name,relationshipId,
+  // relationshipName}]. Navigation receives the selected item, never an HTML string.
+  function create({S,esc,icon,rowName,persist,refresh,toast,editRecord,clearActivity=()=>{},onLoadRelationships,onRelationships}){
     const H=root.PipeChatInspector,$=id=>document.getElementById(id),dialog=$('inspectorDialog'),key='pipechat.inspector-drafts.v1';
     let recordId=null,returnFocus=null,limit=100,error='',needsReview=false,drafts={},identity='',nameEdit=null;
+    let relatedSection=null,relatedRequest=0;
+    function clearRelationships(){++relatedRequest;if(relatedSection){relatedSection.remove();relatedSection=null;}}
+    async function reloadRelationships(){
+      if(typeof onLoadRelationships!=='function'||!dialog.open||recordId==null||!S.user)return;
+      clearRelationships();
+      const request=relatedRequest,id=recordId,generation=S.generation,userScope=scope();
+      const active=()=>request===relatedRequest&&dialog.open&&id===recordId&&generation===S.generation&&userScope===scope();
+      const section=document.createElement('section'),heading=document.createElement('h2'),status=document.createElement('p');
+      relatedSection=section;section.dataset.inspectorRelationships='';heading.textContent='Related entities';status.textContent='Loading related entities...';status.setAttribute('role','status');
+      section.setAttribute('aria-busy','true');section.append(heading,status);$('inspectorTimeline').parentElement.prepend(section);
+      try{
+        const relations=await onLoadRelationships({recordId:id});if(!active())return;
+        if(!Array.isArray(relations))throw new Error('Invalid related entities response.');
+        const list=document.createElement('ul');list.style.paddingLeft='20px';
+        for(const relation of relations){
+          if(!relation||typeof relation.entityId!=='string'||typeof relation.workspaceId!=='string')throw new Error('Invalid related entity.');
+          const selection={workspaceId:relation.workspaceId,entityId:relation.entityId,typeId:relation.typeId,name:relation.name,
+            relationshipId:relation.relationshipId,relationshipName:relation.relationshipName};
+          const item=document.createElement('li'),label=document.createElement('span'),target=document.createElement(typeof onRelationships==='function'?'button':'span');
+          label.textContent=(relation.relationshipName||'Related')+': ';target.textContent=relation.name||relation.entityId;target.style.overflowWrap='anywhere';target.style.maxWidth='100%';
+          if(typeof onRelationships==='function'){
+            target.type='button';target.className='text-btn';target.onclick=()=>{if(active()){
+              Promise.resolve().then(()=>{if(active())return onRelationships({...selection});}).catch(()=>{if(active())status.textContent='Related entity could not be opened.';});
+            }};
+          }
+          item.append(label,target);list.append(item);
+        }
+        status.textContent=relations.length?'':'No related entities';section.append(list);
+      }catch(e){
+        if(!active())return;status.textContent='Related entities are unavailable.';
+        const retry=document.createElement('button');retry.type='button';retry.className='text-btn';retry.textContent='Retry';retry.onclick=reloadRelationships;section.append(retry);
+      }finally{if(active())section.setAttribute('aria-busy','false');}
+    }
     function primaryField(){const core=root.PipelineCore.create(S.tableSchema);return core.definitions(S.customFields).find(f=>f.id===core.role('primary'));}
     function cancelName(){nameEdit=null;$('inspectorNameForm').hidden=true;$('inspectorNameInput').value='';$('inspectorNameChoice').innerHTML='';$('inspectorNameError').textContent='';}
     function beginName(){
@@ -70,7 +105,7 @@
       if(!dialog.open)return;
       const row=S.records.find(r=>r.id===recordId);if(!row||!S.user){clear();return;}
       $('inspectorTitle').textContent=rowName(row);$('inspectorRecordType').textContent=root.PipelineCore.create(S.tableSchema).fieldsFor(S.customFields)[root.PipelineCore.create(S.tableSchema).role('primary')]||'Record';
-      $('inspectorNote').placeholder=`Enter a note about ${rowName(row)}`;controls();timeline();
+      $('inspectorNote').placeholder=`Enter a note about ${rowName(row)}`;controls();timeline();reloadRelationships();
     }
     function open(id,trigger){
       if(!S.loaded||S.saving||!S.records.some(r=>r.id===id))return;
@@ -79,8 +114,8 @@
       $('inspectorNote').value=drafts[id]?.text||'';$('inspectorNoteStatus').textContent=drafts[id]?'Unsaved draft restored':'';
       if(!dialog.open)dialog.showModal();draw();$('inspectorTitle').focus();
     }
-    function close(){if(S.saving)return;cancelName();if(dialog.open)dialog.close();returnFocus?.isConnected&&returnFocus.focus();recordId=null;}
-    function clear(){if(dialog.open)dialog.close();cancelName();clearActivity();recordId=null;drafts={};identity='';$('inspectorNote').value='';$('inspectorTimeline').innerHTML='';$('inspectorTitle').textContent='';try{sessionStorage.removeItem(key);}catch{}}
+    function close(){if(S.saving)return;clearRelationships();cancelName();if(dialog.open)dialog.close();returnFocus?.isConnected&&returnFocus.focus();recordId=null;}
+    function clear(){clearRelationships();if(dialog.open)dialog.close();cancelName();clearActivity();recordId=null;drafts={};identity='';$('inspectorNote').value='';$('inspectorTimeline').innerHTML='';$('inspectorTitle').textContent='';try{sessionStorage.removeItem(key);}catch{}}
     async function save(event){
       event.preventDefault();if($('inspectorSave').disabled||recordId==null)return;
       if(S.pending||S.clarification){error='Confirm or cancel the current proposed changes before saving a note.';controls();return;}
@@ -110,6 +145,6 @@
       }catch(e){error=e.message;controls();}
     };
     window.addEventListener('beforeunload',event=>{if(Object.values(drafts).some(d=>d.text)&&!store()){event.preventDefault();event.returnValue='';}});
-    return {open,draw,clear};
+    return {open,draw,clear,reloadRelationships};
   }
 })(window);

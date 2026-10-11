@@ -6,6 +6,7 @@ const { BackendError: SharedBackendError } = require('../lib/backend-contract.js
 const config = { url: 'https://pipechat-test.supabase.co', publishableKey: 'sb_publishable_offline_test_key_123456789' };
 const secret = 'DO_NOT_EXPOSE_ACCESS_REFRESH_PASSWORD_SQL';
 const health = { ok: true, contract: 'pipechat-supabase-v1', database: 'ok', schemaVersion: 1 };
+const databaseHealth = { ...health, featureVersion: 2 };
 const counters = { used: 2, limit: 10, reserved: 1, remaining: 7, paymentRequired: false, updatedAt: '2026-09-22T12:00:00.000Z' };
 const user = { id: 'user-1', email: 'person@example.test', user_metadata: { name: 'Person', role: 'admin' }, app_metadata: { secret } };
 const safeUser = { id: user.id, email: user.email, name: 'Person' };
@@ -28,6 +29,12 @@ const typedRows = [
 ];
 const ok = data => ({ data, error: null, status: 200 });
 const clone = value => structuredClone(value);
+const journaled = (args, saved) => ok({ snapshot: saved, replayed: false, receipt: {
+  formatVersion: 1, actionId: args.p_action_id, requestId: args.p_request_id,
+  conversationId: args.p_conversation_id, planId: args.p_plan_id, undoOf: null,
+  beforeVersion: args.p_expected_updated_at, afterVersion: saved.updatedAt,
+  importReceipt: args.p_metadata?.importReceipt ?? null
+} });
 const errorIs = status => error => {
   assert(error instanceof SharedBackendError);
   assert.equal(error.status, status);
@@ -48,7 +55,7 @@ function fixture({ auth = {}, rpc, serverFactory, healthRpc, ...options } = {}) 
   const backend = createSupabaseBackend({ ...config,
     createClient: (url, key, opts) => {
       healthCalls.push({ url, key, options: opts });
-      return { rpc: async name => { healthCalls.push(name); return healthRpc ? healthRpc(name) : ok(health); } };
+      return { rpc: async name => { healthCalls.push(name); return healthRpc ? healthRpc(name) : ok(databaseHealth); } };
     },
     createServerClient: (url, key, opts) => {
       const client = serverFactory ? serverFactory(opts) : {
@@ -80,23 +87,33 @@ function fixture({ auth = {}, rpc, serverFactory, healthRpc, ...options } = {}) 
 
 test('Supabase shares the existing BackendError identity', () => assert.equal(BackendError, SharedBackendError));
 
+test('entity history keeps workspace scope and lossless cursors and rejects malformed envelopes',async()=>{
+  const workspaceId='00000000-0000-4000-8000-000000000001',entityId='ent_00000000-0000-4000-8000-000000000002',after='9007199254740993';
+  const result={workspaceId,entityId,events:[{id:'9007199254740994',kind:'update'}],nextAfter:null};
+  const f=fixture({rpc:(name,args)=>{assert.equal(name,'business_workspace_history');assert.deepEqual(args,{p_workspace:workspaceId,p_entity_id:entityId,p_after:after});return ok(result);}});
+  assert.deepEqual(await f.request().adapter.readBusinessHistory(workspaceId,entityId,after),result);
+  for(const cursor of ['-1','1.5','9223372036854775808'])await assert.rejects(()=>f.request().adapter.readBusinessHistory(workspaceId,entityId,cursor),errorIs(400));
+  const malformed=fixture({rpc:()=>ok({...result,workspaceId:'wrong'})});
+  await assert.rejects(()=>malformed.request().adapter.readBusinessHistory(workspaceId,entityId),errorIs(503));
+});
+
 test('card-only adapter sends no CRM fields and rejects changed rows or missing card acknowledgements',async()=>{
   const card={...require('../public/todo-core.js').create('todo_card',legacyRow.id),nextAction:'Call',notes:'Task-only',dueDate:'2026-10-01'};
   const before={...empty,deals:[legacyRow],todoCards:[],updatedAt:'v1'};
-  const f=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):ok({...before,todoCards:args.p_todo_cards,updatedAt:'v2'})});
+  const f=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):journaled(args,{...before,todoCards:args.p_todo_cards,updatedAt:'v2'})});
   const saved=await f.request().adapter.writeTodo([card],'v1');assert.deepEqual(saved.todoCards,[card]);assert.deepEqual(saved.deals,before.deals);
-  assert.equal(f.calls.at(-1).name,'pipechat_write_todo');assert.deepEqual(Object.keys(f.calls.at(-1).args).sort(),['p_expected_updated_at','p_todo_cards']);
+  assert.equal(f.calls.at(-1).name,'pipechat_commit_todo_action');assert.deepEqual(Object.keys(f.calls.at(-1).args).sort(),['p_action_id','p_conversation_id','p_expected_updated_at','p_metadata','p_plan_id','p_request_id','p_todo_cards']);
   for(const patch of [{deals:[]},{todoCards:[]},{updatedAt:'v1'}]){
-    const bad=fixture({rpc:name=>ok(name==='pipechat_read_workspace'?before:{...before,todoCards:[card],updatedAt:'v2',...patch})});
+    const bad=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):journaled(args,{...before,todoCards:[card],updatedAt:'v2',...patch})});
     await assert.rejects(()=>bad.request().adapter.writeTodo([card],'v1'),errorIs(503));
   }
 });
 test('To Do writes use the atomic workspace RPC and reject incomplete card acknowledgements',async()=>{
   const card=require('../public/todo-core.js').create('todo_test',1,null),before={...empty,deals:[legacyRow],todoCards:[],updatedAt:'v1'};
-  const f=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):ok({...before,todoCards:args.p_todo_cards,updatedAt:'v2'})});
+  const f=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):journaled(args,{...before,todoCards:args.p_workspace.todoCards,updatedAt:'v2'})});
   const result=await f.request().adapter.writeCrm(null,[legacyRow],'v1',[],null,[card]);
-  assert.deepEqual(result.todoCards,[card]);assert.equal(f.calls.at(-1).name,'pipechat_write_workspace_v2');assert.deepEqual(f.calls.at(-1).args.p_todo_cards,[card]);
-  const bad=fixture({rpc:name=>ok(name==='pipechat_read_workspace'?before:{...before,updatedAt:'v2'})});
+  assert.deepEqual(result.todoCards,[card]);assert.equal(f.calls.at(-1).name,'pipechat_commit_action');assert.deepEqual(f.calls.at(-1).args.p_workspace.todoCards,[card]);
+  const bad=fixture({rpc:(name,args)=>name==='pipechat_read_workspace'?ok(before):journaled(args,{...before,updatedAt:'v2'})});
   await assert.rejects(()=>bad.request().adapter.writeCrm(null,[legacyRow],'v1',[],null,[card]),errorIs(503));
 });
 
@@ -140,7 +157,7 @@ test('health uses only a sessionless client and verifies the exact migration con
   assert.deepEqual(await f.backend.check({ requireDatabase: true }), health);
   assert.equal(f.healthCalls[1], 'pipechat_health');
   assert.equal(f.clients.length, 0);
-  for (const bad of [{}, { ...health, ok: false }, { ...health, contract: 'wrong' }, { ...health, schemaVersion: 2 }, { ...health, database: secret }]) {
+  for (const bad of [{}, { ...databaseHealth, ok: false }, { ...databaseHealth, contract: 'wrong' }, { ...databaseHealth, schemaVersion: 2 }, { ...databaseHealth, database: secret }]) {
     await assert.rejects(fixture({ healthRpc: () => ok(bad) }).backend.check({ requireDatabase: true }), errorIs(503));
   }
 });
@@ -286,16 +303,18 @@ test('CRM read/write round-trips typed blanks, custom primary IDs, histories, fi
   let stored = { deals: clone(typedRows), customFields: clone(customFields), tableSchema: clone(schema), updatedAt: 'v1' };
   const f = fixture({ rpc: (name, args) => {
     if (name === 'pipechat_read_workspace') return ok({ ...clone(stored), secret, user_id: 'ignored' });
-    assert.equal(name, 'pipechat_write_workspace_v2');
-    assert.deepEqual(Object.keys(args).sort(), ['p_custom_fields', 'p_deals', 'p_expected_updated_at', 'p_table_schema', 'p_todo_cards']);
+    assert.equal(name, 'pipechat_commit_action');
+    assert.deepEqual(Object.keys(args).sort(), ['p_action_id', 'p_conversation_id', 'p_expected_updated_at', 'p_metadata', 'p_plan_id', 'p_request_id', 'p_workspace']);
     assert.equal(args.p_expected_updated_at, 'v1');
-    stored = { deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, todoCards:args.p_todo_cards, updatedAt: 'v2' };
-    return ok(clone(stored));
+    stored = { ...args.p_workspace, updatedAt: 'v2' };
+    return journaled(args, clone(stored));
   } });
   const { adapter } = f.request();
   assert.deepEqual(await adapter.readCrm(secret), stored);
   const result = await adapter.writeCrm(secret, typedRows.map(row => ({ ...row, user_id: 'victim', access_token: secret })), 'v1', customFields, schema);
-  assert.deepEqual(result, { deals: typedRows, customFields, tableSchema: schema, todoCards:[], updatedAt: 'v2' });
+  const { actionReceipt, replayed, ...savedData } = result;
+  assert.equal(replayed, false); assert.equal(actionReceipt.afterVersion, 'v2');
+  assert.deepEqual(savedData, { deals: typedRows, customFields, tableSchema: schema, todoCards:[], updatedAt: 'v2' });
   assert.equal(result.deals[0].f_pay, null); assert.equal(result.deals[0].f_score, 0);
   assert.equal(result.deals[1].cf_candidate, '');
   assert(!JSON.stringify(f.calls).includes(secret));
@@ -303,7 +322,7 @@ test('CRM read/write round-trips typed blanks, custom primary IDs, histories, fi
 
 test('legacy blanks and custom text values remain compatible; omitted metadata is preserved', async () => {
   const f = fixture({ rpc: (name, args) => name === 'pipechat_read_workspace' ? ok({ ...empty, customFields, deals: [{ ...legacyRow, cf_source: 'Referral' }] }) :
-    ok({ deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, todoCards:args.p_todo_cards, updatedAt: 'v1' }) });
+    journaled(args, { ...args.p_workspace, updatedAt: 'v1' }) });
   const { adapter } = f.request();
   const result = await adapter.writeCrm('ignored', [{ ...legacyRow, cf_source: 'Referral' }], null);
   assert.deepEqual(result.customFields, customFields); assert.equal(result.tableSchema, null);
@@ -313,15 +332,15 @@ test('legacy blanks and custom text values remain compatible; omitted metadata i
 
 test('setup transitions require an empty table and cannot revert or silently change types', async () => {
   const f = fixture({ rpc: (name, args) => name === 'pipechat_read_workspace' ? ok({ ...empty, tableSchema: { status: 'pending' } }) :
-    ok({ deals: args.p_deals, customFields: args.p_custom_fields, tableSchema: args.p_table_schema, todoCards:args.p_todo_cards, updatedAt: 'v1' }) });
+    journaled(args, { ...args.p_workspace, updatedAt: 'v1' }) });
   const { adapter } = f.request();
   await assert.rejects(adapter.writeCrm(null, typedRows, null, customFields, schema), errorIs(409));
-  assert(!f.calls.some(call => call.name === 'pipechat_write_workspace_v2'));
+  assert(!f.calls.some(call => call.name === 'pipechat_commit_action'));
   assert.deepEqual((await adapter.writeCrm(null, [], null, [], schema)).tableSchema, schema);
   for (const next of [null, { status: 'pending' }, { ...schema, fields: schema.fields.map(field => field.id === 'f_pay' ? { ...field, type: 'number' } : field) }]) {
     const current = fixture({ rpc: () => ok({ ...empty, tableSchema: schema }) });
     await assert.rejects(current.request().adapter.writeCrm(null, [], null, [], next), errorIs(409));
-    assert(!current.calls.some(call => call.name === 'pipechat_write_workspace_v2'));
+    assert(!current.calls.some(call => call.name === 'pipechat_commit_action'));
   }
 });
 
@@ -345,14 +364,14 @@ test('writes reject invalid versions and malicious field definitions before any 
     await assert.rejects(adapter.writeCrm(null, deals, null, [], null), errorIs(400));
   }
   await assert.rejects(adapter.writeCrm(null, [], null, [{ id: '__proto__', name: secret, type: 'text' }], null), errorIs(400));
-  assert(!f.calls.some(call => call.name === 'pipechat_write_workspace_v2'));
+  assert(!f.calls.some(call => call.name === 'pipechat_commit_action'));
   assert.equal({}.polluted, undefined);
 });
 
 test('write acknowledgement must retain rows, metadata and a fresh version', async () => {
   const current = { deals: typedRows, customFields, tableSchema: schema, updatedAt: 'v1' };
   for (const change of [{ deals: [] }, { customFields: [] }, { tableSchema: { ...schema, title: 'Other' } }, { updatedAt: 'v1' }, { updatedAt: null }]) {
-    const f = fixture({ rpc: name => ok(name === 'pipechat_read_workspace' ? current : { ...current, updatedAt: 'v2', ...change }) });
+    const f = fixture({ rpc: (name,args) => name === 'pipechat_read_workspace' ? ok(current) : journaled(args,{ ...current, updatedAt: 'v2', ...change }) });
     await assert.rejects(f.request().adapter.writeCrm(null, typedRows, 'v1', customFields, schema), errorIs(503));
   }
 });
@@ -433,7 +452,7 @@ test('installed SDK health calls use the bounded fetch and expose only the contr
   const seen = [];
   const backend = createSupabaseBackend({ ...config, fetchImpl: async (url, options) => {
     seen.push({ url: String(url), options });
-    return Response.json({ ...health, access_token: secret });
+    return Response.json({ ...databaseHealth, access_token: secret });
   } });
   assert.deepEqual(await backend.check({ requireDatabase: true }), health);
   assert.equal(seen.length, 1);

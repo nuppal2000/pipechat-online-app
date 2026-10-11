@@ -52,15 +52,15 @@ test('model selection variants bind focus references to the current request and 
  const focus=A.remember(cards.slice(0,3),'current-focus-id');
  for(const schema of A.actionSchemas(focus)){
   const variants=(schema.properties.selection||schema.properties.updates.items.properties.selection).anyOf;
-  assert.deepEqual(variants.map(v=>v.properties.source.enum[0]),['all','ids','focus']);
-  const selected=variants[2].properties;
+  assert.deepEqual(variants.map(v=>v.properties.source.enum[0]),['all','ids','references','focus']);
+  const selected=variants[3].properties;
   assert.deepEqual(selected.focusId.enum,['current-focus-id']);assert.equal(selected.focusId.type,'string');assert.equal(selected.ids.maxItems,0);
   assert.equal(variants[0].properties.ids.maxItems,0);assert.equal(variants[1].properties.ids.minItems,1);
   assert(variants.slice(0,2).every(v=>v.properties.focusId.type==='null'));
  }
  for(const absent of [null,{kind:'report'},{kind:'todos',id:'',ids:[]},{kind:'todos',id:'x',ids:null}]){
-  assert.equal(A.actionSchemas(absent)[0].properties.selection.anyOf.length,2);
+  assert.equal(A.actionSchemas(absent)[0].properties.selection.anyOf.length,3);
  }
- const next=A.actionSchemas({...focus,id:'next-focus-id'})[0].properties.selection.anyOf[2];
+ const next=A.actionSchemas({...focus,id:'next-focus-id'})[0].properties.selection.anyOf[3];
  assert.deepEqual(next.properties.focusId.enum,['next-focus-id']);
 });

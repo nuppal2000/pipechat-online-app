@@ -71,12 +71,13 @@ test('completeness review requires every requested outcome mapped to real steps 
   for(const changed of [{...review,requirements:[requirement,{description:'Missing total',satisfied:false,stepIds:[]}]},{...review,issues:['Open scope omitted']},{...review,requirements:[{...requirement,stepIds:['invented']}]}])assert.equal(Review.validateReview(changed,result).ok,false);
 });
 
-test('failed reviews explain bounded unmet outcomes instead of an opaque refusal',()=>{
+test('failed reviews keep internal diagnostics out of conversational errors and provide a reference',()=>{
   const result={crmAction:F.plan([F.select('select')])};
   const review={requirements:[{description:'Keep selected accounts',satisfied:true,stepIds:['wrong']}],issues:[],clarificationQuestion:null};
   const checked=Review.validateReview(review,result);assert.equal(checked.mappingIssues.length,1);
-  assert.match(Review.failureMessage({...review,issues:checked.mappingIssues}),/Keep selected accounts/);
-  assert.match(Review.failureMessage({issues:['Missing date predicate'],requirements:[]}),/Missing date predicate/);
+  assert.doesNotMatch(Review.failureMessage({...review,issues:checked.mappingIssues}),/compiled step|Keep selected accounts/);
+  assert.match(Review.failureMessage({issues:['mutates=true'],requirements:[]},'12345678-1234-1234-1234-123456789abc'),/Reference: 12345678/);
+  assert.doesNotMatch(Review.failureMessage({issues:['mutates=true'],requirements:[]}),/mutates/);
   assert(Review.failureMessage({issues:['x'.repeat(4000)]}).length<1100);
 });
 

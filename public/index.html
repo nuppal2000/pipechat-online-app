@@ -19,6 +19,10 @@
   <script defer src="/todo-core.js"></script>
   <script defer src="/todo-actions.js"></script>
   <script defer src="/workspace-plan.js"></script>
+  <script defer src="/business-actions.js"></script>
+  <script defer src="/workflow-ui.js"></script>
+  <script defer src="/business-workspace.js"></script>
+  <script defer src="/business-workspace-ui.js"></script>
   <script defer src="/todo-ui.js"></script>
   <script defer src="/dashboard-pdf.js"></script>
   <link rel="stylesheet" href="/todo.css">
@@ -40,7 +44,8 @@
 </head>
 <body class="auth-locked">
   <section id="authScreen" class="auth-screen">
-    <form id="authForm" class="auth-form">
+    <p id="authLoading" role="status">Loading workspace...</p>
+    <form id="authForm" class="auth-form" hidden>
       <a class="wordmark" href="/">Pipe<span>Chat</span></a>
       <h1 id="authTitle">Welcome back</h1><p id="authSubtitle">Sign in to your sales workspace.</p>
       <label id="nameField" hidden>Name<input id="authName" autocomplete="name"></label>
@@ -56,7 +61,7 @@
     <header class="masthead">
       <a class="wordmark" href="/">Pipe<span>Chat</span></a><span class="workspace-label">Sales workspace</span>
       <nav class="view-tabs" aria-label="Workspace views">
-        <button id="tableTab" data-tab="table" class="active">Pipeline</button><button id="todoTab" data-tab="todo">Tasks</button><button id="dashboardTab" data-tab="dashboard">Dashboard</button><button id="activityTab" data-tab="activity">Activity</button><button id="shareTab" data-tab="share">Shared views</button>
+        <button id="tableTab" data-tab="table" class="active">Pipeline</button><button id="todoTab" data-tab="todo">Tasks</button><button id="dashboardTab" data-tab="dashboard">Dashboard</button><button id="activityTab" data-tab="activity">Activity</button><button id="entitiesTab" data-tab="entities">Entities</button><button id="workflowsTab" data-tab="workflows">Workflows</button><button id="shareTab" data-tab="share">Shared views</button>
       </nav>
       <div class="account-actions"><div class="profile"><button id="profileBtn" aria-label="Profile" aria-expanded="false" aria-controls="profileMenu" title="Profile"><span id="accountPill"></span><span id="userAvatar" class="avatar"></span></button><div id="profileMenu" class="profile-menu" hidden><button id="settingsBtn"><i data-icon="Settings"></i>Settings</button></div></div><button id="logoutBtn" class="icon-btn" title="Sign out" aria-label="Sign out"><i data-icon="LogOut"></i></button></div>
     </header>
@@ -84,6 +89,7 @@
     <div class="workspace">
       <aside class="chat-pane pane" aria-label="PipeChat conversation">
         <div class="pane-header"><span class="assistant-icon"><i data-icon="MessagesSquare"></i></span><div><h2>PipeChat</h2><p>Your pipeline assistant</p></div><span id="aiModeLabel" class="connection">AI</span></div>
+        <div id="chatThreadTools" class="conversation-tools" hidden><label for="chatThreadSelect" class="sr-only">Chat history</label><select id="chatThreadSelect" aria-label="Chat history" style="min-width:0;width:100%;flex:1;padding:8px" disabled></select><button id="chatNewBtn" class="icon-btn" type="button" title="New chat" aria-label="New chat" disabled><span data-icon="Plus"></span></button></div>
         <div class="conversation-tools"><button id="chatEarlierBtn" class="secondary" hidden>Load earlier messages</button><span id="conversationStatus" role="status"></span><button id="chatRetryBtn" class="icon-btn" title="Retry chat save" aria-label="Retry chat save" hidden><span data-icon="RotateCcw"></span></button></div>
         <div id="chatFeed" class="chat-feed" aria-live="polite"></div>
         <div id="chatClarification" class="chat-clarification" hidden></div>
@@ -113,6 +119,8 @@
           <div id="dashboardElements" class="dashboard-elements" hidden></div>
         </section>
         <section id="activityView" class="activity-view" hidden><div class="activity-filters"><label>From<input id="activityFrom" type="date" aria-label="Activity from date"></label><label>To<input id="activityTo" type="date" aria-label="Activity to date"></label><button id="activityResetDates" type="button" class="icon-btn" title="Reset dates" aria-label="Reset activity dates"><i data-icon="RotateCcw"></i></button></div><span id="activityCount" class="inspector-count" role="status"></span><div id="activityList"></div><button id="activityMore" class="secondary" type="button" hidden>Load older entries</button></section>
+        <section id="businessView" hidden><label>Workspace<select id="businessWorkspace" aria-label="Entity workspace"></select></label><p id="businessStatus" role="status"></p><div id="businessContent"></div></section>
+        <section id="workflowsView" class="activity-view" hidden><div id="workflowList"></div></section>
         <section id="shareView" class="share-view" hidden>
           <span class="badge">Local preview</span><h3>Pipeline review</h3><p class="subtle">No link or invitation is sent from this prototype.</p>
           <label>Recipient<input id="shareRecipient" placeholder="Name or email"></label><label>Message<textarea id="shareMessage" rows="3" placeholder="Here's the latest pipeline. I'd love your feedback."></textarea></label>

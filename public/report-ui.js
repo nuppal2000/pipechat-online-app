@@ -31,11 +31,28 @@
   function drawBoard({host,views,board,esc,Chart,document,onSelect,onRemove,icon}){
     const charts=[];
     host.innerHTML='';
+    const focusId=host.dataset.focusId;
+    if(!views.some(view=>view.id===focusId))delete host.dataset.focusId;
+    function applyFocus(){
+      const id=host.dataset.focusId;
+      host.querySelectorAll('[data-element-id]').forEach(element=>{
+        element.hidden=Boolean(id&&element.dataset.elementId!==id);
+        element.classList.toggle('dashboard-element-focused',element.dataset.elementId===id);
+        const button=element.querySelector('[data-focus-report]');
+        button.setAttribute('aria-pressed',String(element.dataset.elementId===id));
+        button.title=element.dataset.elementId===id?'Show all graphs':'Focus graph';
+        button.setAttribute('aria-label',button.title);
+      });
+      charts.forEach(chart=>chart.resize());
+    }
     const ordered=[...views.filter(v=>v.spec.chart==='kpi'),...views.filter(v=>v.spec.chart!=='kpi')];
     for(const v of ordered){
       const s=v.snapshot,section=document.createElement('section');section.className='dashboard-element'+(v.spec.chart==='kpi'?' dashboard-element-kpi':'');section.dataset.elementId=v.id;
       section.innerHTML=`<header><div><h4>${esc(s.title)}</h4><span class="subtle">${esc(v.id)} / ${esc(v.spec.chart)} / ${s.recordCount} records</span></div><div class="dashboard-element-actions"><button type="button" class="icon-btn" data-edit-report title="Edit graph controls" aria-label="Edit ${esc(s.title)} controls">${icon('ListFilter')}</button><button type="button" class="icon-btn" data-remove-report title="Remove graph" aria-label="Remove ${esc(s.title)}">${icon('X')}</button></div></header><p class="dashboard-element-scope">${esc(s.scope)}</p>${s.sharedFilters.map(f=>`<p class="dashboard-shared-filter">Shared filter ${esc(f.id)}: ${esc(f.description)}</p>`).join('')}${s.undated?`<p class="subtle">${s.undated} blank dates excluded from date groups.</p>`:''}<div class="dashboard-element-visual"></div><details class="dashboard-element-data"><summary>Data / ${s.recordCount} records</summary><div class="report-table-wrap"><table><thead><tr><th>${esc(s.groupBy)}</th><th>Measure</th><th>Value</th><th>Records</th></tr></thead><tbody>${s.table.map(r=>`<tr><td>${esc(r.group)}</td><td>${esc(r.series)}</td><td>${esc(root.PipeChatDashboard.format(r.value,r.type))}</td><td>${r.count}</td></tr>`).join('')}</tbody></table></div></details>`;
       section.querySelector('[data-edit-report]').onclick=()=>onSelect(v.id);section.querySelector('[data-remove-report]').onclick=()=>onRemove(v.id);
+      const focusButton=document.createElement('button');focusButton.type='button';focusButton.className='icon-btn';focusButton.dataset.focusReport='';focusButton.title='Focus graph';focusButton.setAttribute('aria-label','Focus graph');focusButton.innerHTML=icon('Search');
+      focusButton.onclick=()=>{if(host.dataset.focusId===v.id)delete host.dataset.focusId;else host.dataset.focusId=v.id;applyFocus();};
+      section.querySelector('.dashboard-element-actions').prepend(focusButton);
       host.append(section);
       const visual=section.querySelector('.dashboard-element-visual');
       if(v.spec.chart==='kpi')visual.innerHTML=s.table.map(r=>`<div class="dashboard-kpi-result"><span>${esc(r.series)}</span><strong>${esc(root.PipeChatDashboard.format(r.value,r.type))}</strong></div>`).join('');
@@ -46,6 +63,7 @@
       }
     }
     if(!views.length)host.innerHTML='<p class="subtle">No graphs.</p>';
+    applyFocus();
     return charts;
   }
   function control(spec,id,value,core,custom){
