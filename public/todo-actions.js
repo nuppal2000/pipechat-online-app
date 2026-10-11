@@ -14,7 +14,8 @@
   function actionSchemas(focus=null){
     const conditions={type:'array',maxItems:12,items:obj({field:{type:'string',enum:fields},operator:{type:'string',enum:operators},value:{type:['string','null']},values:{type:'array',maxItems:2000,items:{type:'string'}}})};
     const ids={type:'array',maxItems:2000,items:{type:'string'}},emptyIds={...ids,maxItems:0};
-    const variants=[obj({source:{type:'string',enum:['all']},ids:emptyIds,focusId:{type:'null'},conditions}),obj({source:{type:'string',enum:['ids']},ids:{...ids,minItems:1},focusId:{type:'null'},conditions})];
+    const variants=[obj({source:{type:'string',enum:['all']},ids:emptyIds,focusId:{type:'null'},conditions}),obj({source:{type:'string',enum:['ids']},ids:{...ids,minItems:1},focusId:{type:'null'},conditions}),
+      obj({source:{type:'string',enum:['references']},references:{type:'array',minItems:1,maxItems:200,items:obj({taskName:{type:['string','null']},recordName:{type:['string','null']}})},conditions})];
     // Bind model references to this request's saved selection; never ask it to invent or retype an ID.
     if(focus?.kind==='todos'&&str(focus.id,100)&&focus.id&&Array.isArray(focus.ids)&&focus.ids.length<=2000)variants.push(obj({source:{type:'string',enum:['focus']},ids:emptyIds,focusId:{type:'string',enum:[focus.id]},conditions}));
     const selection={anyOf:variants};
@@ -22,6 +23,17 @@
   }
   function select(cards,records,schema,selection,focus=null){
     const all=T.validate(cards,records);
+    if(selection?.source==='references'){
+      if(!exact(selection,['source','references','conditions'])||!Array.isArray(selection.references)||!selection.references.length||selection.references.length>200)fail('Please identify each task by its task text or linked record name.');
+      const resolved=[];
+      for(const reference of selection.references){
+        if(!exact(reference,['taskName','recordName'])||[reference.taskName,reference.recordName].some(v=>v!==null&&(!str(v)||!v.trim()))||!reference.taskName&&!reference.recordName)fail('A task reference needs its task text or linked record name.');
+        const matches=all.filter(card=>{const view=T.project(card,records,schema);return (!reference.taskName||norm(card.nextAction)===norm(reference.taskName))&&(!reference.recordName||norm(view.title)===norm(reference.recordName));});
+        if(matches.length!==1)fail(matches.length?`More than one task matches ${reference.taskName||reference.recordName}. Please choose a task; no cards were changed.`:`No task matches ${reference.taskName||reference.recordName}. Please check its task text and linked record; no cards were changed.`);
+        resolved.push(matches[0].id);
+      }
+      return select(all,records,schema,{source:'ids',ids:[...new Set(resolved)],focusId:null,conditions:selection.conditions},focus);
+    }
     if(!exact(selection,['source','ids','focusId','conditions'])||!['all','focus','ids'].includes(selection.source)||!Array.isArray(selection.ids)||selection.ids.length>2000||!Array.isArray(selection.conditions)||selection.conditions.length>12)fail('Please specify the complete card selection.');
     let ids=null;
     if(selection.source==='focus'){
@@ -63,7 +75,7 @@
       for(const card of matches){
         selectedIds.add(card.id);const patch=writes.get(card.id)||{};
         for(const {field,operation,value}of item.changes){
-          if(Object.hasOwn(patch,field))fail('Two edits target the same card field. Which value should it have? No cards were changed.');
+          if(Object.hasOwn(patch,field))fail(`Two edits target the same card field ${field} on task ${card.id} (${card.nextAction||T.project(card,records,schema).title}). Resolve the task references independently or clarify conflicting values. No cards were changed.`);
           patch[field]=operation==='append'?[card[field],value].filter(Boolean).join('\n'):value;
         }
         writes.set(card.id,patch);

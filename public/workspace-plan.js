@@ -12,15 +12,17 @@
     const condition=object({field:str,operator:{type:'string',enum:Reports.operators},value:{type:['string','number','null']},values:{type:'array',items:{type:['string','number','null']}}});
     const step=(op,properties)=>object({op:{type:'string',enum:[op]},id:str,label:str,...properties});
     return object({action:{type:'string',enum:['workspace_plan']},version:{type:'integer',enum:[1]},title:str,
+      unmappedFacts:{type:'array',maxItems:40,items:object({text:str,source:str,reason:str})},
       goals:{type:'array',minItems:1,maxItems:20,items:object({description:str,stepIds:{type:'array',minItems:1,items:str}})},
       steps:{type:'array',minItems:1,maxItems:30,items:{anyOf:[
         step('select_records',{source:str,where:{type:'array',items:{type:'array',items:condition}},orderBy:{type:['string','null']},direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
         step('add_field',{name:str,type:{type:'string',enum:['text','choice','date']},options:{type:'array',items:str}}),
+        step('rename_choice_option',{field:str,from:str,to:str}),
         step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:object({field:str,operation:{type:'string',enum:['set','append']},value:{anyOf:[scalar,date]}})}}),
         step('add_todos',{selection:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('add_unlinked_task',{customTitle:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('update_tasks',{selection:TaskActions.actionSchemas(focus)[1].properties.updates.items.properties.selection,changes:{type:'array',minItems:1,maxItems:4,items:object({field:{type:'string',enum:['status','nextAction','notes','dueDate']},operation:{type:'string',enum:['set','append']},value:{anyOf:[str,date]}})}}),
-        step('read_records',{selection:str,showTable:{type:'boolean'},outputs:{type:'array',minItems:1,maxItems:20,items:object({kind:{type:'string',enum:['count','names','sum','average','min','max']},field:{type:['string','null']}})}}),
+        step('read_records',{selection:str,showTable:{type:'boolean'},outputs:{type:'array',minItems:1,maxItems:40,items:object({kind:{type:'string',enum:['count','names','fields','sum','average','median','distinct','min','max']},field:{type:['string','null']}})}}),
         step('report',{spec:Reports.responseSchema(core,custom).anyOf[1],questions:Dashboard.schemas(core,custom)[1].properties.questions,showDashboard:{type:'boolean'}}),
         step('dashboard',{plan:Dashboard.schemas(core,custom)[0]})
       ]}}
@@ -62,7 +64,10 @@
       goal.stepIds.forEach(id=>covered.add(id));
     }
     if([...ids].some(id=>!covered.has(id)))fail('Some plan steps are not included in the requested-outcomes review.');
-    const before=snapshot(workspace),next=clone(workspace),core=Core.create(next.tableSchema),selections=new Map(),fields=new Map(),review=[],calculations=new Set(),addedFields=[],addedCards=[],answers=[],effects=[];
+    const unmappedFacts=action.unmappedFacts??[];
+    if(!Array.isArray(unmappedFacts)||unmappedFacts.length>40||unmappedFacts.some(f=>!f||['text','source','reason'].some(key=>typeof f[key]!=='string'||!f[key].trim()||f[key].length>4000)))fail('Every unmapped fact needs its original source and a clear reason.');
+    const before=snapshot(workspace),next=clone(workspace),selections=new Map(),fields=new Map(),review=[],calculations=new Set(),addedFields=[],schemaChanges=[],addedCards=[],answers=[],effects=[],queryResults=[];
+    let core=Core.create(next.tableSchema),eligibility=clone(workspace.records);
     let board=clone(dashboard||Dashboard.empty());const taskUpdates=[];
     const resolve=reference=>{
       const id=reference?.startsWith('@')?fields.get(reference.slice(1)):reference;
@@ -81,7 +86,7 @@
           const sourceIds=step.source==='all'?null:step.source==='visible'?visibleIds:step.source==='focus'&&focus?.kind==='table'&&Array.isArray(focus.ids)?focus.ids:selected(step.source);
           if(sourceIds&&sourceIds.some(id=>!workspace.records.some(row=>row.id===id)))fail('A selected record no longer exists. Please select the records again.');
           // Eligibility reads the original snapshot, even if an earlier step updates a predicate field.
-          const rows=next.records.map(row=>({...row,...workspace.records.find(r=>r.id===row.id)})).filter(row=>sourceIds===null||sourceIds.includes(row.id));
+          const rows=next.records.map(row=>({...row,...eligibility.find(r=>r.id===row.id)})).filter(row=>sourceIds===null||sourceIds.includes(row.id));
           if(!Array.isArray(step.where))fail('Please supply the selection conditions.');
           const where=step.where.map(group=>{if(!Array.isArray(group))fail('Selection conditions must be grouped.');return group.map(condition=>({...condition,field:resolve(condition.field)}));});
           const spec={version:1,title:step.label,chart:'kpi',scope:'all',groupBy:null,bucket:'none',splitBy:null,measures:[{label:'Count',metric:'count',field:null,where:[]}],where,sort:'label_asc',limit:null};
@@ -111,6 +116,21 @@
           next.customFields=core.validateCustomFields([...next.customFields,field]);
           next.records=next.records.map(row=>({...row,[field.id]:''}));fields.set(step.id,field.id);addedFields.push(field);
           review.push({id:step.id,op:step.op,label:step.label,field});
+        }else if(step.op==='rename_choice_option'){
+          const field=resolve(step.field),definition=core.definitions(next.customFields).find(f=>f.id===field);
+          if(definition.type!=='choice'||!definition.options.includes(step.from)||typeof step.to!=='string'||!step.to.trim()||step.to!==step.to.trim()||step.to.length>100||definition.options.some(value=>value!==step.from&&value.toLowerCase()===step.to.toLowerCase()))fail('Choose an existing dropdown option and a distinct nonempty replacement.');
+          const replace=definition=>definition.id===field?{...definition,options:definition.options.map(v=>v===step.from?step.to:v)}:definition;
+          if(next.tableSchema?.status==='ready')next.tableSchema.fields=next.tableSchema.fields.map(replace);
+          next.customFields=next.customFields.map(replace);core=Core.create(next.tableSchema);
+          if(next.tableSchema?.kpis)next.tableSchema.kpis=next.tableSchema.kpis.map(kpi=>({...kpi,conditions:kpi.conditions.map(condition=>condition.field===field&&condition.value===step.from?{...condition,value:step.to}:condition)}));
+          next.customFields=core.validateCustomFields(next.customFields);
+          next.records=next.records.map(row=>row[field]===step.from?{...row,[field]:step.to}:row);
+          eligibility=eligibility.map(row=>row[field]===step.from?{...row,[field]:step.to}:row);
+          const renamePredicates=groups=>(groups||[]).map(group=>group.map(c=>c.field!==field?c:{...c,value:c.value===step.from?step.to:c.value,values:(c.values||[]).map(v=>v===step.from?step.to:v)}));
+          board.elements=(board.elements||[]).map(element=>({...element,spec:{...element.spec,where:renamePredicates(element.spec.where),measures:element.spec.measures.map(m=>({...m,where:renamePredicates(m.where)}))}}));
+          board.sharedFilters=(board.sharedFilters||[]).map(filter=>({...filter,where:renamePredicates(filter.where)}));
+          if(board.elements.length)effects.push({kind:'dashboard',board:clone(board),preserveView:true});
+          const change={field:definition.name,fieldId:field,before:step.from,after:step.to};schemaChanges.push(change);review.push({id:step.id,op:step.op,label:step.label,change});
         }else if(step.op==='update_records'){
           const targetIds=selected(step.selection);
           if(!Array.isArray(step.assignments)||!step.assignments.length||step.assignments.length>40)fail('An update needs 1 to 40 field assignments.');
@@ -143,22 +163,31 @@
           const changes=step.changes.map(change=>({...change,value:materialize(change.value)}));
           taskUpdates.push({selection:step.selection,changes});
           const result=TaskActions.plan(workspace.todoCards,next.records,next.tableSchema,{action:'update_todos',updates:taskUpdates},focus);
-          next.todoCards=[...result.cards,...addedCards];review.push({id:step.id,op:step.op,label:step.label,count:TaskActions.select(workspace.todoCards,next.records,next.tableSchema,step.selection,focus).length});
+          const selectedTasks=TaskActions.select(workspace.todoCards,next.records,next.tableSchema,step.selection,focus);
+          next.todoCards=[...result.cards,...addedCards];review.push({id:step.id,op:step.op,label:step.label,count:selectedTasks.length,targets:selectedTasks.map(c=>({taskId:c.id,recordId:c.recordId,task:c.nextAction,title:Todo.project(c,next.records,next.tableSchema,next.customFields).title}))});
         }else if(step.op==='read_records'){
           const recordIds=selected(step.selection),rows=recordIds.map(id=>next.records.find(row=>row.id===id));
-          if(!Array.isArray(step.outputs)||!step.outputs.length||step.outputs.length>20||typeof step.showTable!=='boolean')fail('Specify the requested read outputs and whether to show the table.');
+          if(!Array.isArray(step.outputs)||!step.outputs.length||step.outputs.length>40||typeof step.showTable!=='boolean')fail('Specify the requested read outputs and whether to show the table.');
           const name=row=>String(row[core.role('primary')]||'Unnamed record #'+row.id);
+          const projected=[];
           const lines=step.outputs.map(output=>{
             if(output.kind==='count'&&output.field===null)return `Record count: ${rows.length}.`;
             if(output.kind==='names'&&output.field===null)return 'Accounts (selection order):\n'+(rows.map(row=>`- ${name(row)} (#${row.id})`).join('\n')||'None.');
-            if(!['sum','average','min','max'].includes(output.kind))fail('Choose a supported count, names, total, average, minimum or maximum output.');
+            if(!['fields','sum','average','median','distinct','min','max'].includes(output.kind))fail('Choose supported fields, count, names or calculated outputs.');
             const field=resolve(output.field),def=core.definitions(next.customFields).find(f=>f.id===field);
+            if(output.kind==='fields'){
+              projected.push(...rows.map(row=>({recordId:row.id,name:name(row),fieldId:field,fieldName:def.name,value:row[field]??'',source:'current_record'})));
+              return `${def.name}:\n`+(rows.map(row=>`- ${name(row)} (#${row.id}): ${row[field]===''||row[field]==null?'(blank)':String(row[field])}`).join('\n')||'No matching records.');
+            }
+            if(output.kind==='distinct')return `Distinct ${def.name}: ${new Set(rows.map(row=>row[field]).filter(v=>v!==null&&v!==undefined&&v!=='')).size}.`;
             if(!['number','currency'].includes(def.type))fail('Choose a numeric field for calculations.');
             const values=rows.filter(row=>typeof row[field]==='number'&&Number.isFinite(row[field])),sum=values.reduce((n,row)=>n+row[field],0);
-            const value=output.kind==='sum'?sum:!values.length?null:output.kind==='average'?sum/values.length:output.kind==='min'?Math.min(...values.map(row=>row[field])):Math.max(...values.map(row=>row[field]));
+            const ordered=values.map(row=>row[field]).sort((a,b)=>a-b),mid=Math.floor(ordered.length/2);
+            const value=output.kind==='sum'?sum:!values.length?null:output.kind==='average'?sum/values.length:output.kind==='median'?ordered.length%2?ordered[mid]:(ordered[mid-1]+ordered[mid])/2:output.kind==='min'?Math.min(...ordered):Math.max(...ordered);
             const formatted=value===null?'Not set':new Intl.NumberFormat('en-US',{maximumFractionDigits:2,...(def.type==='currency'?{style:'currency',currency:'USD'}:{})}).format(value);
-            return `${{sum:'Total',average:'Average',min:'Lowest',max:'Highest'}[output.kind]} ${def.name}: ${formatted}${['min','max'].includes(output.kind)&&value!==null?' ('+values.filter(row=>row[field]===value).map(name).join(', ')+')':''}. ${values.length} numeric values across ${rows.length} records.`;
+            return `${{sum:'Total',average:'Average',median:'Median',min:'Lowest',max:'Highest'}[output.kind]} ${def.name}: ${formatted}${['min','max'].includes(output.kind)&&value!==null?' ('+values.filter(row=>row[field]===value).map(name).join(', ')+')':''}. ${values.length} numeric values across ${rows.length} records.`;
           });
+          queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),projected,viewEffect:step.showTable?'show_table':'answer_only'});
           answers.push(lines.join('\n'));effects.push({kind:'table',show:step.showTable,ids:recordIds});review.push({id:step.id,op:step.op,label:step.label,count:rows.length});
         }else if(step.op==='report'){
           const reportBoard={version:1,elements:[{id:step.id,spec:step.spec,visibleIds}],sharedFilters:[],activeId:step.id};
@@ -175,13 +204,13 @@
     const definitions=core.definitions(next.customFields),patches=[];
     for(const row of next.records){const original=workspace.records.find(r=>r.id===row.id),changes=[];for(const f of definitions){const old=original[f.id]??'',value=row[f.id]??'';if(old!==value)changes.push({field:f.name,before:old,after:value});}if(changes.length)patches.push({id:row.id,name:String(row[core.role('primary')]||'Unnamed record #'+row.id),changes});}
     const taskPatches=next.todoCards.filter(card=>!addedCards.some(c=>c.id===card.id)&&JSON.stringify(card)!==JSON.stringify(workspace.todoCards.find(c=>c.id===card.id))).map(card=>({before:workspace.todoCards.find(c=>c.id===card.id),after:card}));
-    return {kind:'workspace-plan',title:action.title,goals:clone(action.goals),review,calculations:[...calculations],addedFields,addedCards,taskPatches,answers,effects,mutates:snapshot(next)!==before,patches,next,before,count:patches.length,createdAt:now};
+    return {kind:'workspace-plan',phase:'proposed',title:action.title,goals:clone(action.goals),unmappedFacts:clone(unmappedFacts),review,calculations:[...calculations],addedFields,schemaChanges,addedCards,taskPatches,answers,queryResults,effects,mutates:snapshot(next)!==before,patches,next,before,count:patches.length,createdAt:now};
   }
   function render(plan,esc,saving){
     const text=value=>esc(value===''||value==null?'(blank)':String(value));
     const diff=change=>`<div class="field-diff"><span>${esc(change.field)}</span><div class="diff-values"><span class="diff-before">${text(change.before)}</span><span aria-label="to">&rarr;</span><span class="diff-after">${text(change.after)}</span></div></div>`;
     const section=(title,body)=>`<section class="proposal-record"><h3>${esc(title)}</h3>${body}</section>`;
-    const summary=step=>step.op==='select_records'?`Select ${step.records.length} of ${step.matched} matching records`:step.op==='add_field'?`Add ${step.field.name} column`:step.op==='update_records'?`Update ${step.changes} cells across ${step.count} selected records`:step.op==='update_tasks'?`Update ${step.count} tasks`:step.op==='read_records'?`Answer from ${step.count} selected records`:step.op==='report'?'Calculate requested report':step.op==='dashboard'?`Apply ${step.count} dashboard operations`:`Create ${step.count} ${step.op==='add_todos'?'linked ':'standalone '}tasks`;
+    const summary=step=>step.op==='select_records'?`Select ${step.records.length} of ${step.matched} matching records`:step.op==='add_field'?`Add ${step.field.name} column`:step.op==='rename_choice_option'?`Rename ${step.change.field} option ${step.change.before} to ${step.change.after}`:step.op==='update_records'?`Update ${step.changes} cells across ${step.count} selected records`:step.op==='update_tasks'?`Update ${step.count} tasks`:step.op==='read_records'?`Answer from ${step.count} selected records`:step.op==='report'?'Calculate requested report':step.op==='dashboard'?`Apply ${step.count} dashboard operations`:`Create ${step.count} ${step.op==='add_todos'?'linked ':'standalone '}tasks`;
     const selections=plan.review.map(step=>{
       let body;
       if(step.op==='select_records')body=`<p>${step.matched} matching; ${step.records.length} selected. ${esc(step.order)}</p><p>${esc(step.filter)}</p><p>Source: ${esc(step.source)}</p><ol>${step.records.map(r=>`<li>${esc(r.name)} (#${r.id})${r.value!==null&&r.value!==undefined?' / '+text(r.value):''}</li>`).join('')}</ol>`;
@@ -192,7 +221,9 @@
     const cells=plan.patches.map(p=>section(`${p.name} (#${p.id})`,p.changes.map(diff).join(''))).join('');
     const cards=plan.addedCards.map(card=>section(Todo.project(card,plan.next.records,plan.next.tableSchema,plan.next.customFields).title,`<p>${esc(card.status)} / ${esc(card.nextAction)}</p><p>Due: ${text(card.dueDate)}</p>${card.notes?`<p>${esc(card.notes)}</p>`:''}`)).join('');
     const edits=plan.taskPatches.map(p=>section(Todo.project(p.after,plan.next.records,plan.next.tableSchema,plan.next.customFields).title,['status','nextAction','notes','dueDate'].filter(field=>p.before[field]!==p.after[field]).map(field=>diff({field,before:p.before[field],after:p.after[field]})).join(''))).join('');
-    return `<h3>Complete workspace plan</h3><p>One confirmation: ${plan.addedFields.length} new columns, ${plan.patches.length} changed records, ${plan.addedCards.length} new tasks, ${plan.taskPatches.length} updated tasks.</p><h3>Requested outcomes</h3><ul>${plan.goals.map(g=>`<li>${esc(g.stepIds.map(id=>summary(plan.review.find(s=>s.id===id))).join('; '))}</li>`).join('')}</ul><h3>Selection and steps</h3>${selections}${plan.calculations.length?'<h3>Date calculations</h3>'+plan.calculations.map(c=>`<p>${esc(c)}</p>`).join(''):''}<h3>Table changes</h3>${cells||'<p>No cell changes.</p>'}<h3>Task additions</h3>${cards||'<p>No new cards.</p>'}${edits?'<h3>Task edits</h3>'+edits:''}${plan.answers.length?'<h3>Calculated answers</h3>'+plan.answers.map(a=>`<p class="preserve-lines">${esc(a)}</p>`).join(''):''}<div class="proposal-actions"><button class="primary" data-confirm ${saving?'disabled':''}>Confirm entire plan</button><button class="secondary" data-cancel ${saving?'disabled':''}>Cancel entire plan</button></div>`;
+    const goals=[...new Set(plan.goals.map(g=>g.stepIds.map(id=>summary(plan.review.find(s=>s.id===id))).join('; ')))];
+    const unmapped=(plan.unmappedFacts||[]).length?'<h3>Facts needing a destination</h3>'+plan.unmappedFacts.map(f=>section(f.text,`<p>${esc(f.reason)}</p><blockquote>${esc(f.source)}</blockquote>`)).join(''):'';
+    return `<h3>Complete workspace plan</h3><p>One confirmation: ${plan.addedFields.length} new columns, ${plan.patches.length} changed records, ${plan.addedCards.length} new tasks, ${plan.taskPatches.length} updated tasks.</p><h3>Requested outcomes</h3><ul>${goals.map(g=>`<li>${esc(g)}</li>`).join('')}</ul>${unmapped}<h3>Selection and steps</h3>${selections}${plan.calculations.length?'<h3>Date calculations</h3>'+plan.calculations.map(c=>`<p>${esc(c)}</p>`).join(''):''}<h3>Table changes</h3>${cells||'<p>No cell changes.</p>'}<h3>Task additions</h3>${cards||'<p>No new cards.</p>'}${edits?'<h3>Task edits</h3>'+edits:''}${plan.answers.length?'<h3>Calculated answers</h3>'+plan.answers.map(a=>`<p class="preserve-lines">${esc(a)}</p>`).join(''):''}<div class="proposal-actions"><button class="primary" data-confirm ${saving?'disabled':''}>Confirm entire plan</button><button class="secondary" data-cancel ${saving?'disabled':''}>Cancel entire plan</button></div>`;
   }
   return {responseSchema,prepare,dateValue,snapshot,render};
 });

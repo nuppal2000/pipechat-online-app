@@ -19,7 +19,8 @@
 #pipelineTable .sort-column[draggable="true"]{cursor:grab}#pipelineTable .column-dragging{opacity:.5}#pipelineTable th.column-drop-target{background:#e0f3ef;box-shadow:inset 3px 0 #278378}
 /* Temporary dashboard reports are independent sections; saved KPI cards stay separate. */
 .dashboard-elements{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:18px 16px;margin-top:20px}
-.dashboard-element{grid-column:span 6;min-width:0;border-top:1px solid #dce4e7;padding-top:16px;overflow:hidden}
+.dashboard-element{grid-column:span 3;min-width:0;border-top:1px solid #dce4e7;padding-top:16px;overflow:hidden}
+.dashboard-element:only-child,.dashboard-element-focused{grid-column:span 6}
 .dashboard-element-kpi{grid-column:span 2}
 .dashboard-element header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
 .dashboard-element h4{font-size:15px;line-height:1.4;margin:0 0 4px;overflow-wrap:anywhere}
@@ -34,4 +35,5 @@
 .dashboard-element-data summary{cursor:pointer;color:#566579}
 .dashboard-element-data table{width:100%;border-collapse:collapse}
 .dashboard-element-data th,.dashboard-element-data td{padding:7px;text-align:left;border-bottom:1px solid #edf0f2}
+@media(max-width:1250px){.dashboard-element{grid-column:span 6}.dashboard-element-kpi{grid-column:span 2}}
 @media(max-width:800px){.dashboard-element-kpi{grid-column:span 6}}

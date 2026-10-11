@@ -14,13 +14,73 @@
   let dashboardCharts=[],dashboardViews=[],dashboardRevision=-1;
   S.dashboard=null;
   let conversation=null, restoringChat=false, restoredProposal=null;
+  let chatThread=null, addedMessageId=null, quietTurnReply=false, turnAwaiting=null, threadChanging=false, applyingTurn=false;
+  const pendingTurnKey = threadId => `pipechat.turn.v1.${S.user?.id}.${threadId}`;
+  function rememberTurn(value) { try { sessionStorage.setItem(pendingTurnKey(value.turn.threadId),JSON.stringify(value)); } catch { /* The durable receipt remains on the server. */ } }
+  function forgetTurn(threadId) { try { sessionStorage.removeItem(pendingTurnKey(threadId)); } catch {} }
+  function storedTurn() { try { return JSON.parse(sessionStorage.getItem(pendingTurnKey(chatThread)) || 'null'); } catch { return null; } }
+  function showTurnWaiting(text='Reply pending. Check saved reply.') {
+    $('conversationStatus').textContent=text;$('chatRetryBtn').hidden=false;$('chatRetryBtn').title='Check saved reply';updateUsage();
+  }
+  function renderThreadChoices(catalog) {
+    if(!$('chatThreadTools'))return;
+    $('chatThreadTools').hidden=false;chatThread=catalog.activeThreadId;
+    $('chatThreadSelect').innerHTML=catalog.threads.map(item=>`<option value="${esc(item.id)}" ${item.active?'selected':''}>${esc(item.title)} (${item.messageCount})</option>`).join('');
+    $('chatThreadSelect').disabled=threadChanging;$('chatNewBtn').disabled=threadChanging;
+  }
+  async function selectChat(threadId=null) {
+    if(threadChanging||applyingTurn||S.saving||!conversation?.ready)return;
+    threadChanging=true;$('chatThreadSelect').disabled=true;$('chatNewBtn').disabled=true;
+    try {
+      saveChatState();const reference=await conversation.flush();
+      await api(threadId?'/api/conversations/switch':'/api/conversations',{method:'POST',body:JSON.stringify({...reference,...(threadId?{threadId}:{title:'New chat'})})});
+      conversation.stop();turnAwaiting=null;S.busy=false;quietTurnReply=false;restoredProposal=null;
+      clearDraft();S.sourceAction=null;S.clarification=null;S.focus=null;S.report=defaultReport();S.dashboard=null;S.tab='table';S.filter=null;S.search='';S.sort=null;S.scope='all';S.lastPlanId=null;S.saveAttempt=null;S.lastAi=null;$('dealSearch').value='';
+      await loadChat();render();
+    }catch(error){toast(error.message);if(chatThread)$('chatThreadSelect').value=chatThread;}
+    finally{threadChanging=false;$('chatThreadSelect').disabled=false;$('chatNewBtn').disabled=false;updateUsage();}
+  }
+  async function acceptTurnResponse(response,current,interpret=false,command='') {
+    if(current!==conversation||response.turn?.threadId!==chatThread)return;
+    if(response.pending){showTurnWaiting();return false;}
+    // Rebase the outbox's version on the server-owned assistant append. Do not
+    // replace current view state with the request's earlier draft.
+    const page=await current.load();if(current!==conversation||!page)return;
+    turnAwaiting=null;forgetTurn(chatThread);S.usage=response.usage||S.usage;
+    restoringChat=true;$('chatFeed').innerHTML='';S.history=page.messages.map(({role,content})=>({role,content}));
+    page.messages.forEach(message=>paintMessage(message.content,message.role));$('chatEarlierBtn').hidden=!page.before;restoringChat=false;
+    if(response.turn.status==='succeeded'&&response.turn.epoch===page.epoch){
+      if(interpret){
+        quietTurnReply=true;applyingTurn=true;$('chatThreadSelect').disabled=true;$('chatNewBtn').disabled=true;updateUsage();
+        try{await handleAction(response,command);}finally{quietTurnReply=false;applyingTurn=false;$('chatThreadSelect').disabled=threadChanging;$('chatNewBtn').disabled=threadChanging;}
+      }
+      else if(response.crmAction&&response.ai?.workspaceVersion===S.updatedAt){
+        restoredProposal={...chatState(),sourceAction:response.crmAction,originalCommand:command,workspaceVersion:response.ai.workspaceVersion};renderTrust();
+      }
+    }
+    saveChatState();$('chatFeed').scrollTop=$('chatFeed').scrollHeight;updateUsage();return true;
+  }
+  async function checkPendingTurn(allowDispatch=false) {
+    const saved=storedTurn(),current=conversation;if(!saved||!current?.ready||saved.turn?.threadId!==chatThread)return;
+    turnAwaiting=saved;showTurnWaiting('Checking saved reply...');
+    try {
+      let response;
+      try{response=await api(`/api/conversations/${saved.turn.threadId}/turns/${saved.turn.requestId}`);}
+      catch(error){
+        if(error.status!==404||!allowDispatch)throw error;
+        response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify({...aiPayload(saved.command),conversation:saved.conversation,turn:saved.turn}),signal:AbortSignal.timeout(90000)});
+      }
+      if(current!==conversation)return;
+      if(!await acceptTurnResponse(response,current,false,saved.command))setTimeout(()=>{if(current===conversation)void checkPendingTurn();},2000);
+    }catch(error){if(current===conversation)showTurnWaiting(error.status===404?'Request not accepted. Retry send.':'Reply status unavailable. Check again.');}
+  }
   function chatState(){
     return {clarification:S.clarification,sourceAction:S.sourceAction,
       originalCommand:S.clarification?.originalCommand||S.pending?.originalCommand||'',
       workspaceVersion:S.updatedAt,report:{...S.report,dashboard:S.dashboard},view:S.tab,tableView:tableView(),focus:S.focus||null};
   }
   function saveChatState(){
-    if(!conversation?.ready||restoringChat||S.resetting)return;
+    if(!conversation?.ready||restoringChat||S.resetting||turnAwaiting)return;
     const state=restoredProposal||chatState();
     // Large import previews stay in this tab; they are never silently replayed.
     conversation.state(new TextEncoder().encode(JSON.stringify(state)).length<=30000?state:null);
@@ -32,29 +92,35 @@
     if(prepend)$('chatFeed').prepend(el);else $('chatFeed').append(el);
   }
   async function loadChat(){
+    turnAwaiting=null;chatThread=null;
+    if($('chatThreadTools'))$('chatThreadTools').hidden=!S.health?.conversationThreads;
     if(!window.PipeChatConversation||!S.health?.conversationPersistence)return false;
     conversation?.stop();const generation=S.generation;
-    const current=conversation=window.PipeChatConversation.create({api,changed:status=>{
-      if(generation!==S.generation)return;
+    let expectedEpoch=null;
+    const current=conversation=window.PipeChatConversation.create({api:(url,options)=>api(url.startsWith('/api/conversation')&&!options?.method&&expectedEpoch?`${url}${url.includes('?')?'&':'?'}epoch=${expectedEpoch}`:url,options),uuid:()=>{const id=crypto.randomUUID();addedMessageId ||= id;return id;},changed:status=>{
+      if(generation!==S.generation||conversation!==current)return;
       $('conversationStatus').textContent=status.error?'Chat not saved. Retry before leaving.':status.saving||status.dirty?'Saving chat...':'Chat saved';
       $('chatRetryBtn').hidden=!status.error;$('chatRetryBtn').title='Retry chat save';
       S.chatReady=status.ready;updateUsage();
     }});
     S.chatReady=false;restoredProposal=null;$('conversationStatus').textContent='Loading chat...';
     try{
+      if(S.health.conversationThreads){const catalog=await api('/api/conversations');if(generation!==S.generation||conversation!==current)return true;expectedEpoch=catalog.epoch;renderThreadChoices(catalog);turnAwaiting=storedTurn();}
       const page=await current.load();if(generation!==S.generation||conversation!==current||!page)return true;
       restoringChat=true;$('chatFeed').innerHTML='';S.history=page.messages.map(({role,content})=>({role,content}));
       page.messages.forEach(message=>paintMessage(message.content,message.role));$('chatEarlierBtn').hidden=!page.before;
       S.focus=page.state?.focus?C.clone(page.state.focus):null;
-      if(page.state?.workspaceVersion===S.updatedAt){
+      if(page.state&&(page.state.workspaceVersion===S.updatedAt||!Object.hasOwn(page.state,'workspaceVersion'))){
         if(page.state.report){try{const {dashboard,...saved}=page.state.report,report=C.reconcileReport(saved,S.customFields);if(report.version===1)smartReportResult(report);else C.report(S.records,report,S.customFields);S.report=report;if(dashboard){window.PipeChatDashboard.evaluate(dashboard,S.records,C,S.customFields,{today:localDate()});S.dashboard=dashboard;}}catch{}}
         if(['table','todo','dashboard','activity','share'].includes(page.state.view))S.tab=page.state.view;
+        if(page.state.tableView){const view=page.state.tableView;S.scope=['all','mine','open'].includes(view.scope)?view.scope:'all';S.search=typeof view.search==='string'?view.search:'';S.filter=view.filter||null;S.sort=view.sort||null;$('dealSearch').value=S.search;}
         if(page.state.clarification){S.clarification=page.state.clarification;S.sourceAction=page.state.sourceAction;}
         else if(page.state.sourceAction)restoredProposal=page.state;
       }else if(page.state?.clarification||page.state?.sourceAction){
         paintMessage('The table changed since our last conversation. Please repeat the pending request so I can review the latest data.');
       }
       restoringChat=false;saveChatState();renderTrust();$('chatFeed').scrollTop=$('chatFeed').scrollHeight;
+      if(turnAwaiting)void checkPendingTurn();
       return true;
     }catch(error){
       if(generation===S.generation){S.chatReady=false;$('conversationStatus').textContent='Saved chat could not be loaded.';$('chatRetryBtn').hidden=false;$('chatRetryBtn').title='Reload chat';updateUsage();}
@@ -67,13 +133,15 @@
     if(state.workspaceVersion!==S.updatedAt){say('The table changed. Please repeat this request so I can prepare a fresh preview.');saveChatState();renderTrust();return;}
     try{
       if(['move_record','move_field'].includes(state.sourceAction.action)&&JSON.stringify(state.tableView)!==JSON.stringify(tableView()))throw new Error('The visible table order changed. Please repeat the move request in this view.');
-      prepare(state.sourceAction,state.originalCommand);
+      if(['business_plan','create_document','undo_action','create_workflow','set_workflow_activation','retry_workflow_event'].includes(state.sourceAction.action))await handleAction({action:state.sourceAction},state.originalCommand);
+      else prepare(state.sourceAction,state.originalCommand);
     }catch(error){clearDraft();say(error.message);}
     saveChatState();
   }
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];S.focus=null;let todoUI=null;
   let inspectorUI=null,activityLimit=150;
+  let businessUI=null,businessLoading=false,businessGeneration=-1;
   let notificationsUI=null;
   S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sheetDraft=null;S.sheetTypeReview=[];S.sort=null;S.fieldDialog=null;
   let spreadsheetPicker=null;
@@ -145,10 +213,10 @@
   const display = (field,value) => tailored()?value==null||value===''?'Not set':C.definitions(S.customFields).find(f=>f.id===field)?.type==='currency'?currency(value):String(value):field==='value'?currency(value)||'Not set':field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
   const stageOptions = selected => `<option value="" ${!selected?'selected':''}>Not set</option>`+C.stages.map(stage=>`<option ${stage===selected?'selected':''}>${esc(stage)}</option>`).join('');
   function say(text, role='assistant', error=false) {
-    if(restoringChat)return;
+    if(restoringChat||quietTurnReply&&role==='assistant')return;
     S.history.push({role,content:String(text)}); S.history=S.history.slice(-50);
     paintMessage(text,role);$('chatFeed').scrollTop=$('chatFeed').scrollHeight;
-    conversation?.add(role,String(text));saveChatState();
+    addedMessageId=null;conversation?.add(role,String(text));saveChatState();return addedMessageId;
   }
   function toast(text, undo=false) {
     clearTimeout(toastTimer);$('toastText').textContent=text;$('toast').hidden=false;$('undoBtn').hidden=!undo;
@@ -179,10 +247,11 @@
   function tablePredicate(filter=S.filter){return filter?.where?window.PipeChatReports.tableMatches(filter,C,S.customFields,S.records,localDate()):C.predicate(filter,S.customFields);}
   function filterDescription(filter){return filter?.where?window.PipeChatReports.tableFilterDescription(filter,C,S.customFields):filter?`${labels()[filter.field]||filter.field} ${filter.operator.replaceAll('_',' ')} ${filter.value??''}`:'';}
   function tableView(){return {scope:S.scope,search:S.search,filter:C.clone(S.filter),sort:C.clone(S.sort),visibleIds:visible().map(row=>row.id),columnOrder:tableColumns().map(f=>f.id)};}
+  function sharedBusinessReadOnly(){return ['entities','share'].includes(S.tab)&&(businessLoading||!S.ownBusinessWorkspaceId||businessUI?.getSnapshot()?.workspaceId!==S.ownBusinessWorkspaceId);}
   function updateUsage() {
-    const locked=Boolean(S.usage?.paymentRequired || S.usage?.remaining===0),chatLoading=Boolean(S.health?.conversationPersistence&&window.PipeChatConversation&&S.chatReady===false);
+    const locked=Boolean(S.usage?.paymentRequired || S.usage?.remaining===0),chatLoading=sharedBusinessReadOnly()||applyingTurn||Boolean(S.health?.conversationPersistence&&window.PipeChatConversation&&(S.chatReady===false||turnAwaiting||threadChanging));
     $('usageLabel').textContent=S.usage?`${S.usage.used.toLocaleString()} / ${S.usage.limit.toLocaleString()} chats used`:'Usage unavailable';
-    $('chatStatus').textContent=S.busy?'Thinking...':locked?'Chat limit reached':S.health?.aiConfigured===false?'API key not configured':'';
+    $('chatStatus').textContent=S.busy?'Thinking...':locked?'Chat limit reached':sharedBusinessReadOnly()?'Shared workspace / manual access':S.health?.aiConfigured===false?'API key not configured':'';
     $('chatInput').disabled=locked||S.busy||!S.loaded||chatLoading;
     $('sendBtn').disabled=locked||S.busy||!S.loaded||chatLoading;
     $('chatInput').placeholder=locked?'Chat limit reached. Manual editing is still available.':'Tell PipeChat what you want to do...';
@@ -245,9 +314,10 @@
     $('quickUndoBtn').disabled=S.saving||Boolean(S.failedEdit);$('undoBtn').disabled=S.saving||Boolean(S.failedEdit);
     document.querySelectorAll('[data-scope]').forEach(button=>button.classList.toggle('active',button.dataset.scope===S.scope));
     document.querySelectorAll('[data-tab]').forEach(button=>{button.classList.toggle('active',button.dataset.tab===S.tab);button.setAttribute('aria-current',button.dataset.tab===S.tab?'page':'false');});
-    ['table','todo','dashboard','activity','share'].forEach(tab=>$(tab+'View').hidden=S.tab!==tab);
-    $('centerTitle').textContent=({table:tailored()?S.tableSchema.title:'Deals',todo:'Tasks',dashboard:'Dashboard',activity:'Activity',share:'Shared views'})[S.tab];
-    $('viewFilters').hidden=['todo','activity','share'].includes(S.tab);
+    ['table','todo','dashboard','activity','share','workflows'].forEach(tab=>$(tab+'View').hidden=S.tab!==tab);
+    $('businessView').hidden=!['entities','share'].includes(S.tab);$('shareView').hidden=true;
+    $('centerTitle').textContent=({table:tailored()?S.tableSchema.title:'Deals',todo:'Tasks',dashboard:'Dashboard',activity:'Activity',share:'Shared views',entities:'Entities and relationships',workflows:'Workflows'})[S.tab];
+    $('viewFilters').hidden=['todo','activity','share','entities','workflows'].includes(S.tab);
     $('filterStrip').hidden=S.tab==='todo'||!S.filter;
     $('shareBtn').hidden=S.tab==='todo';$('addTodoBtn').hidden=S.tab!=='todo';
     $('exportDashboardBtn').hidden=S.tab!=='dashboard';
@@ -261,7 +331,16 @@
     if(S.tab==='activity')renderActivity();
     renderTrust();updateUsage();
   }
-  function setTab(tab) {S.tab=tab;S.settingsOpen=false;render();}
+  function setTab(tab) {S.tab=tab;S.settingsOpen=false;render();if(['entities','share'].includes(tab))loadBusinessView();if(tab==='workflows')loadWorkflows();}
+  async function loadBusinessView(workspaceId=null){
+    if(businessLoading)return;businessLoading=true;updateUsage();const generation=S.generation;$('businessStatus').textContent='Loading...';
+    try{
+      const list=await api('/api/business/workspaces');if(generation!==S.generation)return;
+      $('businessWorkspace').innerHTML=list.workspaces.map(w=>`<option value="${esc(w.workspaceId)}">${esc(w.title||'Workspace')} / ${esc(w.role)} (${esc(w.workspaceId.slice(0,8))})</option>`).join('');
+      await businessUI.load(workspaceId);if(generation!==S.generation)return;
+      const snapshot=businessUI.getSnapshot();if(!snapshot)throw new Error('Workspace unavailable.');if(workspaceId===null)S.ownBusinessWorkspaceId=snapshot.workspaceId;$('businessWorkspace').value=snapshot.workspaceId;businessUI.show(S.tab==='share'?'Sharing':'Entities');businessGeneration=generation;$('businessStatus').textContent='';
+    }catch(error){$('businessStatus').textContent=error.message;}finally{businessLoading=false;updateUsage();}
+  }
   function closeProfileMenu(){ $('profileMenu').hidden=true;$('profileBtn').setAttribute('aria-expanded','false'); }
   function openSettings(){
     if(!S.loaded||S.resetting)return;
@@ -442,6 +521,7 @@
     notificationsUI?.draw();
   }
   function renderTrust() {
+    workflowUI?.draw();
     saveChatState();
     syncWorkspacePanes();
     const panel=$('trustBody');$('changeCount').hidden=true;$('trustTitle').textContent='Proposed changes';
@@ -451,6 +531,32 @@
     if(S.pending?.kind==='workspace-plan'){
       $('trustTitle').textContent='Review complete plan';$('trustStatus').textContent='Nothing saved yet. Confirm or cancel all changes together.';
       panel.innerHTML=window.PipeChatPlan.render(S.pending,esc,S.saving);return;
+    }
+    if(S.pending?.kind==='journal-undo'){
+      const p=S.pending;$('trustTitle').textContent='Review undo';$('trustStatus').textContent='Only this saved action will be undone. Unrelated edits stay unchanged.';
+      const value=slot=>!slot.exists?'Removed':typeof slot.value==='object'?JSON.stringify(slot.value):String(slot.value??'Not set');
+      panel.innerHTML=p.proposal.changes.map(c=>`<section class="proposal-record"><h3>${esc(c.path[0]==='records'?rowName(S.records.find(r=>String(r.id)===c.path[1])||{})+' / '+(labels()[c.path[2]]||c.path[2]||'Record'):c.path.join(' / '))}</h3><div class="diff-values"><span class="diff-before">${esc(value(c.before))}</span>${icon('ArrowRight')}<span class="diff-after">${esc(value(c.after))}</span></div></section>`).join('')+`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm undo</button><button class="secondary" data-cancel>Cancel</button></div>`;return;
+    }
+    if(S.pending?.kind==='workflow-save'){renderWorkflowReview();return;}
+    if(S.pending?.kind==='business-plan'){
+      const p=S.pending.proposal;$('trustTitle').textContent=p.title||'Review linked records';$('trustStatus').textContent='Nothing saved yet. Confirm or cancel all entity changes together.';
+      const type=id=>p.next.entityTypes.find(t=>t.id===id),name=id=>{const e=p.next.entities.find(e=>e.id===id);if(e){const t=type(e.typeId),f=t.fields.find(f=>f.required&&f.type==='text')||t.fields[0];return e.values[f.id]||id;}return rowName(S.records.find(r=>id.endsWith(':'+r.id))||{});};
+      panel.innerHTML=p.review.map(change=>{
+        if(change.op==='put_type')return `<section class="proposal-record"><h3>${esc(change.type.name)}</h3><p>Entity type</p>${change.type.fields.map(f=>`<p>${esc(f.name)}: ${esc(f.type)}${f.options.length?' ('+f.options.map(esc).join(', ')+')':''}</p>`).join('')}</section>`;
+        if(change.op==='put_relationship_type')return `<section class="proposal-record"><h3>${esc(change.type.name)}</h3><p>${esc(type(change.type.fromType)?.name||'Pipeline')} to ${esc(type(change.type.toType)?.name||'Pipeline')}</p></section>`;
+        if(change.op==='link')return `<p>Link ${esc(name(change.relationship.fromId))} to ${esc(name(change.relationship.toId))}</p>`;
+        if(change.op==='merge_entities'){
+          const survivor=p.next.entities.find(e=>e.id===change.survivorId),t=type(survivor.typeId),old=change.before.entities.find(e=>e.id===survivor.id),identity=t.fields.find(f=>f.type==='text'&&f.required)||t.fields[0];
+          return `<section class="proposal-record"><h3>Merge into ${esc(survivor.values[identity.id]||survivor.id)}</h3><p>Remove duplicate entities: ${change.before.entities.filter(e=>e.id!==survivor.id).map(e=>esc(e.values[identity.id]||e.id)).join(', ')}</p>${t.fields.filter(f=>old.values[f.id]!==survivor.values[f.id]).map(f=>`<p>${esc(f.name)}: ${esc(old.values[f.id]??'Not set')} to ${esc(survivor.values[f.id]??'Not set')}</p>`).join('')}<p>Redirect ${change.before.redirectedLinkIds.length} relationships; duplicate links are combined.</p><p>Source-only access grants and source memberships in ${change.before.affectedViewIds.length} shared views will be removed, not transferred.</p></section>`;
+        }
+        if(['create_entity','update_entity','delete_entity'].includes(change.op)){const e=change.entity||change.before,t=type(e.typeId),values=change.values||e.values;return `<section class="proposal-record"><h3>${esc(change.op==='create_entity'?'Add':change.op==='delete_entity'?'Delete':'Update')} ${esc(t.name)}</h3>${Object.entries(values).map(([id,v])=>`<p>${esc(t.fields.find(f=>f.id===id)?.name||id)}: ${change.op==='update_entity'?esc(e.values[id]??'Not set')+' → ':''}${esc(v??'Not set')}</p>`).join('')}</section>`;}
+        return `<p>${esc(change.operation==='reuse_entity'?'Reuse existing '+change.name:change.operation==='reuse_link'?'Keep existing relationship':'Remove relationship')}</p>`;
+      }).join('')+`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm linked records</button><button class="secondary" data-cancel>Cancel</button></div>`;return;
+    }
+    if(S.pending?.kind==='business-document'){
+      const p=S.pending,preview=p.proposal.preview;
+      $('trustTitle').textContent='Review proposal document';$('trustStatus').textContent='No record changes. Unknown terms are explicitly marked.';
+      panel.innerHTML=`<h3>${esc(preview.recordName)}</h3>${preview.terms.map(term=>`<div class="field-diff"><span>${esc(term.label)}</span><p>${esc(term.value)}</p></div>`).join('')}<details><summary>Saved record facts</summary>${preview.facts.map(f=>`<p><strong>${esc(f.label)}</strong>: ${esc(f.value)}</p>`).join('')}</details><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Download proposal</button><button class="secondary" data-cancel>Cancel</button></div>`;return;
     }
     if(S.pending?.kind==='todo'){todoUI.preview(S.pending);return;}
     if(S.clarification?.candidates){
@@ -485,19 +591,7 @@
       if(S.pending.suggested)panel.insertAdjacentHTML('afterbegin',`<p class="proposal-intro">${esc(S.pending.reason)}</p>`);
       return;
     }
-    if(S.pending?.kind==='import-duplicates'){
-      const p=S.pending,d=p.duplicates;$('trustTitle').textContent='Review duplicates';$('trustStatus').textContent='Choose how to handle duplicates. No records have been saved.';
-      panel.innerHTML=`<h3>${esc(p.draft.name)}</h3><p>${d.existingMatches} incoming rows match the existing table; ${d.fileMatches} repeat an earlier imported row.</p><p>Names match ignoring case and extra spaces. Merge keeps existing records unchanged and the first new occurrence. It skips later matches, including their other imported values. Blank names are kept separately.</p><p>Keep: ${S.records.length+p.review.records.length} total records. Merge: ${S.records.length+d.records.length} total records.</p><details><summary>Matched rows</summary>${d.duplicates.map(row=>`<p>Imported row ${row.index+1}: ${esc(row.name)} (${esc(row.source)})</p>`).join('')}</details><div class="proposal-actions"><button class="primary" data-import-duplicates="merge" ${S.busy||S.saving?'disabled':''}>Merge duplicates</button><button class="secondary" data-import-duplicates="keep" ${S.busy||S.saving?'disabled':''}>Keep duplicates</button><button class="secondary" data-cancel>Cancel import</button></div>`;
-      return;
-    }
-    if(S.pending?.kind==='csv-import'){
-      const p=S.pending;
-      $('trustTitle').textContent=S.busy?'Analyzing CSV':'CSV mapping paused';
-      $('trustStatus').textContent='No import preview confirmed. Existing deals are unchanged.';
-      panel.innerHTML=`<h3>${esc(p.name)}</h3><p class="proposal-intro">${p.rows.length} rows / ${p.headers.length} columns</p><p class="${p.error?'error':'subtle'}" role="status">${esc(S.busy?'AI is matching columns by meaning...':p.error||'Ready for AI analysis.')}</p><div class="proposal-actions"><button class="primary" data-retry-import ${S.busy||S.saving?'disabled':''}>${icon('RotateCcw')}Retry AI mapping</button><button class="secondary" data-basic-import ${S.busy||S.saving?'disabled':''}>Review basic mapping (not AI)</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel import</button></div>`;
-      if(p.missingPrimary)panel.insertAdjacentHTML('afterbegin',`<label>Source for ${esc(labels()[C.role('primary')])}<select id="importPrimarySource"><option value="">Choose a column</option>${p.headers.map((h,i)=>`<option value="${i}">${esc(h)}</option>`).join('')}</select></label><button class="secondary" data-import-primary ${S.busy||S.saving?'disabled':''}>Review with this name column</button>`);
-      return;
-    }
+    if(S.pending?.importPlan||['import-duplicates','csv-import'].includes(S.pending?.kind)){renderCsv(S.pending);return;}
     if(S.pending){
       const p=S.pending;$('trustTitle').textContent=p.kind==='delete'?'Confirm deletion':p.kind==='add'?'Review new deals':'Proposed changes';
       $('changeCount').hidden=false;$('changeCount').textContent=`${p.count} ${p.count===1?'deal':'deals'}`;
@@ -508,16 +602,10 @@
         const linked=S.todoCards.filter(card=>p.records.some(record=>record.id===card.recordId)).length;
         panel.insertAdjacentHTML('afterbegin',`<p class="error" role="alert">Deleting these CRM records will also delete all ${linked} associated Kanban ${linked===1?'card':'cards'}.</p>`);
       }
-      if(p.importReview){
-        const review=p.importReview;
-        if(review.translations?.length)panel.insertAdjacentHTML('afterbegin',`<section class="import-review"><h3>Proposed dropdown translations</h3><p>${review.translations.length} cells will use equivalent options after confirmation.</p><details open><summary>Review translations</summary>${review.translations.slice(0,100).map(t=>`<p>Row ${t.row} / ${esc(labels()[t.field])}: <q>${esc(t.source)}</q> &rarr; <q>${esc(t.target)}</q></p>`).join('')}${review.translations.length>100?'<p>First 100 translations shown. All resulting values appear in the row preview below.</p>':''}</details></section>`);
-        const details=`<details class="import-review" ${review.warnings.length?'open':''}><summary>Import review: ${review.issues.length} uncertain cells, ${review.ignored.length} unused columns</summary><p>${esc(review.ignored.length?'Unused columns: '+review.ignored.join(', '):'All source columns mapped.')}</p>${review.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}${review.issues.slice(0,100).map(issue=>`<p>Row ${issue.row} / ${esc(labels()[issue.field])}: <q>${esc(issue.raw.slice(0,200))}</q> left blank.</p>`).join('')}${review.issues.length>100?'<p>First 100 uncertain cells shown.</p>':''}</details>`;
-        panel.insertAdjacentHTML('afterbegin',details);
-      }
       $('trustStatus').textContent='No changes made yet. Review and confirm.';return;
     }
     if(S.clarification){panel.innerHTML=`<div class="trust-empty"><span class="empty-icon">${icon('CircleHelp')}</span><h3>Quick clarification</h3><p>${esc(S.clarification.question)}</p></div>`;$('trustStatus').textContent='Waiting for your reply. No table changes made.';return;}
-    if(S.tab==='share'){renderShare();return;}
+    if(S.tab==='share'){panel.innerHTML='';return;}
     panel.innerHTML=`<div class="trust-empty"><span class="empty-icon">${icon('ShieldCheck')}</span><h3>You're in control</h3><p>No changes to review.</p></div>`;
   }
   function clearDraft() {restoredProposal=null;S.pending=null;S.clarification=null;S.sourceAction=null;renderTrust();}
@@ -528,9 +616,119 @@
       if(effect.kind==='table'){
         S.focus={kind:'table',ids:[...effect.ids]};
         if(effect.show){S.filter={where:[],ids:[...effect.ids]};S.sort=null;S.scope='all';S.search='';$('dealSearch').value='';S.tab='table';}
-      }else if(effect.kind==='dashboard')setDashboard({board:effect.board,views:window.PipeChatDashboard.evaluate(effect.board,S.records,C,S.customFields,dashboardOptions())});
+      }else if(effect.kind==='dashboard'){
+        if(effect.preserveView){S.dashboard=C.clone(effect.board);const active=S.dashboard.elements.find(e=>e.id===S.dashboard.activeId);if(active)S.report=C.clone(active.spec);dashboardViews=[];dashboardRevision=-1;}
+        else setDashboard({board:effect.board,views:window.PipeChatDashboard.evaluate(effect.board,S.records,C,S.customFields,dashboardOptions())});
+      }
     }
     clearClarification();render();if(plan.answers?.length)say(plan.answers.join('\n\n'));saveChatState();
+  }
+  let workflowUI=null;
+  function workflowsController(){
+    if(!workflowUI){
+      workflowUI=window.PipeChatWorkflowUI.create({element:$('workflowList'),S,api,icon,
+        prepare:prepareWorkflow,retry:prepareWorkflowRetry,refreshWorkspace:refreshWorkflowWorkspace,onError:error=>toast(error.message)});
+      $('logoutBtn').addEventListener('click',()=>workflowUI.clear());
+      $('resetYesBtn').addEventListener('click',()=>workflowUI.clear());
+    }
+    return workflowUI;
+  }
+  async function loadWorkflows(){return workflowsController().load();}
+  async function refreshWorkflowWorkspace(){
+    if(S.saving||S.busy||S.failedEdit||S.pending)throw new Error('Confirm or cancel the current draft before refreshing.');
+    const generation=S.generation,version=S.updatedAt;
+    const saved=await api('/api/crm-data');
+    if(generation!==S.generation||version!==S.updatedAt||S.saving||S.pending)return;
+    applySavedSnapshot(saved);
+  }
+  function renderWorkflowReview(){
+    const p=S.pending;
+    $('trustTitle').textContent=p.proposal.operation==='retry'?'Review workflow retry':'Review workflow';
+    $('trustStatus').textContent=p.attempted&&p.error?'Save not confirmed. The original action identity is retained.':p.proposal.operation==='create'?'Draft only. Activation is a separate confirmation.':'Nothing saved yet.';
+    $('trustBody').innerHTML=window.PipeChatWorkflowUI.review(p.proposal,{saving:S.saving,error:p.error,attempted:p.attempted,refresh:p.refresh});
+    if($('workflowReviewRefresh'))$('workflowReviewRefresh').onclick=()=>refreshWorkflowReview(p).catch(error=>toast(error.message));
+  }
+  async function prepareWorkflow(action,replacing=null){
+    return prepareWorkflowRequest('/api/workflows/prepare',{action},action,replacing);
+  }
+  async function prepareWorkflowRetry(workflowId,eventId){
+    return prepareWorkflowRequest('/api/workflows/retry',{workflowId,eventId},{action:'retry_workflow_event',workflowId,eventId});
+  }
+  async function prepareWorkflowRequest(url,input,action,replacing=null){
+    if(S.saving||S.busy||S.failedEdit||S.resetting||S.pending&&S.pending!==replacing)throw new Error('Confirm or cancel the current draft first.');
+    const generation=S.generation,version=S.updatedAt,pending=S.pending;
+    const proposal=await api(url,{method:'POST',body:JSON.stringify({...input,expectedUpdatedAt:version})});
+    if(generation!==S.generation||version!==S.updatedAt||pending!==S.pending)throw new Error('The workspace or draft changed. Review the workflow again.');
+    S.pending={kind:'workflow-save',proposal,createdAt:Date.now(),generation,expectedUpdatedAt:version,attempted:false,error:'',refresh:false};
+    S.sourceAction=C.clone(action);S.clarification=null;
+    say(proposal.operation==='create'?'Review the workflow draft. Saving it will not activate it.':proposal.operation==='retry'?'Review the saved event before retrying. Its original event date will be used.':'Review the workflow activation change.');
+    renderTrust();focusTrust();workflowUI?.draw();
+  }
+  async function refreshWorkflowReview(p){
+    if(S.pending!==p||S.saving||S.busy||p.generation!==S.generation)return;
+    if(p.attempted&&!p.refresh)throw new Error('Retry the same save to resolve its result before preparing another proposal.');
+    const saved=await api('/api/crm-data');
+    if(S.pending!==p||p.generation!==S.generation||S.saving)return;
+    applySavedSnapshot(saved);
+    const action=p.proposal.action;
+    if(p.proposal.operation==='retry')return prepareWorkflowRequest('/api/workflows/retry',{workflowId:action.workflowId,eventId:action.eventId},action,p);
+    return prepareWorkflow(action,p);
+  }
+  async function confirmWorkflow(p){
+    if(p.generation!==S.generation||p.expectedUpdatedAt!==S.updatedAt){p.refresh=true;p.error='The workspace changed. Refresh and review this workflow again.';renderTrust();throw new Error(p.error);}
+    S.saving=true;p.error='';p.attempted=true;renderTrust();workflowUI?.draw();
+    try{
+      const result=await api('/api/workflows/confirm',{method:'POST',body:JSON.stringify({proposal:p.proposal,confirm:true})});
+      if(p.generation!==S.generation||S.pending!==p)return;
+      if(!result.snapshot||result.receipt?.actionId!==p.proposal.actionId||typeof result.replayed!=='boolean')throw new Error('The durable workflow receipt was not confirmed. Retry the same save.');
+      const saved=result.replayed?await api('/api/crm-data'):result.snapshot;
+      if(p.generation!==S.generation||S.pending!==p)return;
+      applySavedSnapshot(saved);
+      S.undo=result.undoneBy||result.undoInvalidated?null:{kind:'journal',actionId:result.receipt.actionId,label:'Workflow changed'};
+      clearDraft();
+      if(!result.replayed)workflowsController().setSnapshot({workflows:result.snapshot.workflows,updatedAt:saved.updatedAt});
+      else await loadWorkflows();
+      say(result.replayed?'The original workflow save was already recorded. The current workspace is refreshed.':p.proposal.operation==='create'?'Workflow draft saved. It is not active.':p.proposal.operation==='activation'?`Workflow ${result.workflow.status==='active'?'activated':'paused'}.`:`Workflow retry saved: ${window.PipeChatWorkflowUI.reason(result.execution.reason)}.`);
+      $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');toast('Workflow saved',Boolean(S.undo));
+    }catch(error){
+      if(p.generation===S.generation&&S.pending===p){p.error=error.message;p.refresh=[400,409].includes(error.status);$('saveStatus').textContent='Workflow save not confirmed';$('saveStatus').classList.add('failed');}
+      throw error;
+    }finally{if(p.generation===S.generation){S.saving=false;render();workflowUI?.draw();}}
+  }
+  async function showWorkflowHistory(action){
+    if(S.pending||S.failedEdit)throw new Error('Confirm or cancel the current draft first.');
+    const generation=S.generation;S.tab='workflows';render();
+    const collection=await loadWorkflows();if(!collection||generation!==S.generation)return;
+    await workflowsController().history(action.workflowId,action.limit);
+    if(generation===S.generation)say('Saved workflow history is open. No changes were made.');
+  }
+  async function prepareDocument(action){
+    const generation=S.generation,version=S.updatedAt;
+    const proposal=await api('/api/documents/proposal',{method:'POST',body:JSON.stringify({recordId:action.recordId,expectedUpdatedAt:version,download:false})});
+    if(generation!==S.generation||version!==S.updatedAt)throw new Error('The workspace changed. Request the document again.');
+    S.pending={kind:'business-document',proposal,createdAt:Date.now(),expectedUpdatedAt:version,generation};
+    S.sourceAction=C.clone(action);S.clarification=null;say('The proposal is ready to review and download. It uses saved record facts; any commercial terms not explicitly stored are marked Unknown.');renderTrust();focusTrust();
+  }
+  async function prepareBusiness(action){
+    const generation=S.generation,proposal=await api('/api/business/prepare',{method:'POST',body:JSON.stringify({action})});
+    if(generation!==S.generation)return;
+    if(!proposal.mutates){clearDraft();say('The requested entities and relationships already exist. No changes are needed.');return;}
+    S.pending={kind:'business-plan',proposal,createdAt:Date.now(),generation};S.sourceAction=C.clone(action);S.clarification=null;renderTrust();focusTrust();say('Review the linked records and relationships together. Your existing pipeline stays unchanged.');
+  }
+  async function confirmBusiness(p){
+    if(p.generation!==S.generation)throw new Error('The workspace changed. Prepare the entity changes again.');
+    const {workspaceId,expectedVersion,expectedPrimaryUpdatedAt,next}=p.proposal;
+    S.saving=true;renderTrust();
+    try{await api('/api/business/workspace',{method:'PUT',body:JSON.stringify({workspaceId,expectedVersion,expectedPrimaryUpdatedAt,next})});clearDraft();if(['entities','share'].includes(S.tab))await loadBusinessView();say('The linked records and relationships were saved together.');}
+    finally{S.saving=false;renderTrust();}
+  }
+  async function downloadDocument(p){
+    if(p.generation!==S.generation||p.expectedUpdatedAt!==S.updatedAt)throw new Error('The source changed. Review a new document.');
+    const response=await fetch('/api/documents/proposal',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({recordId:p.proposal.recordId,expectedUpdatedAt:p.expectedUpdatedAt,download:true})});
+    if(!response.ok){const error=await response.json();throw new Error(error.error||'The document could not be downloaded.');}
+    const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
+    link.href=url;link.download=p.proposal.artifact.filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+    clearDraft();say('Proposal download prepared. No CRM records were changed and nothing was sent externally.');
   }
   function prepare(action, originalCommand) {
     if(!['workspace_plan','add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
@@ -633,21 +831,37 @@
     for(const field of Object.keys(defaults))record[field]=(imported?C.validateStoredValue:C.validateValue)(field,input[field]??defaults[field]);
     return {...record,...C.customValues(input,S.customFields)};
   }
-  async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema,exactRecords=false,todoCards=null,verifyHistory=false}={}) {
+  function actionMetadata(value){
+    const key=JSON.stringify(value);
+    if(S.saveAttempt?.key!==key)S.saveAttempt={key,body:C.clone(value),metadata:{actionId:crypto.randomUUID(),requestId:crypto.randomUUID(),planId:S.pending?S.lastPlanId||null:null}};
+    return S.saveAttempt.metadata;
+  }
+  function applySavedSnapshot(saved){
+    useSchema(saved.tableSchema);S.records=saved.deals;S.customFields=C.validateCustomFields(saved.customFields);S.todoCards=window.PipeChatTodo.validate(saved.todoCards,S.records,S.tableSchema,S.customFields);S.updatedAt=saved.updatedAt;S.revision++;S.report=C.reconcileReport(S.report,S.customFields);syncShareFields();render();
+  }
+  async function restoreDurableUndo(){
+    const generation=S.generation;
+    try{const result=await api('/api/actions');if(generation!==S.generation)return;const entry=result.actions.find(a=>!a.undoneBy&&!a.undoInvalidated&&!a.receipt.undoOf);S.undo=entry?{kind:'journal',actionId:entry.receipt.actionId,label:'Saved change / '+new Date(entry.createdAt).toLocaleString()}:null;render();}catch{}
+  }
+  async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema,exactRecords=false,todoCards=null,verifyHistory=false,importReceipt=null,schemaChanges=[]}={}) {
     if(S.saving||S.resetting||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
     S.saving=true;const before=C.clone(S.records), beforeFields=C.clone(S.customFields),beforeSchema=C.clone(S.tableSchema||(tableSchema?.legacy?window.PipeChatSchema.legacySchema():null)),generation=S.generation,oldPrimary=C.role('primary'),oldOwner=C.role('owner');
     const beforeCards=C.clone(S.todoCards);
     $('saveStatus').textContent='Saving...';$('saveStatus').classList.remove('failed');render();
     try{
       next=window.PipeChatInspector.reconcile(before,next,C.definitions(S.customFields),window.PipelineCore.create(tableSchema).definitions(customFields),S.user.name||S.user.email);
-      const cards=window.PipeChatTodo.reconcile(todoCards??S.todoCards,next,tableSchema,customFields);
-      const saved=await api('/api/crm-data',{method:'PUT',body:JSON.stringify({deals:next,customFields,todoCards:cards,...(tableSchema?{tableSchema}:{}),expectedUpdatedAt:S.updatedAt})});
+      let cards=window.PipeChatTodo.reconcile(todoCards??S.todoCards,next,tableSchema,customFields);
+      let body={deals:next,customFields,todoCards:cards,...(tableSchema?{tableSchema}:{}),expectedUpdatedAt:S.updatedAt,...(importReceipt?{importReceipt}:{}),...(schemaChanges.length?{schemaChanges}:{})};
+      if(importReceipt&&JSON.stringify(S.saveAttempt?.body?.importReceipt)===JSON.stringify(importReceipt)){body=C.clone(S.saveAttempt.body);next=body.deals;cards=body.todoCards;}
+      let saved=await api('/api/crm-data',{method:'PUT',body:JSON.stringify({...body,actionMetadata:actionMetadata(body)})});
       if(generation!==S.generation)return false;
       if(verifyHistory&&next.some(row=>JSON.stringify(saved.deals?.find(r=>r.id===row.id)?.history)!==JSON.stringify(row.history)))throw new Error('Storage did not confirm the note history. Reload before retrying.');
-      if(JSON.stringify(saved.todoCards||[])!==JSON.stringify(cards))throw new Error('Storage did not confirm the Tasks board. Reload before retrying.');
+      const generated=new Set((saved.workflows||[]).flatMap(w=>w.executions.filter(e=>e.status==='succeeded').map(e=>e.taskId)));
+      if(!cards.every(card=>(saved.todoCards||[]).some(c=>JSON.stringify(c)===JSON.stringify(card)))||(saved.todoCards||[]).some(card=>!cards.some(c=>c.id===card.id)&&!generated.has(card.id)))throw new Error('Storage did not confirm the Tasks board. Reload before retrying.');
       if(customFields.length&&JSON.stringify(saved.customFields)!==JSON.stringify(customFields))throw new Error('The storage service did not confirm the custom fields. Reload before trying again.');
       if(tableSchema&&JSON.stringify(saved.tableSchema)!==JSON.stringify(tableSchema))throw new Error('Storage did not confirm the table schema. Reload before retrying.');
       if(exactRecords&&(!Array.isArray(saved.deals)||saved.deals.length!==next.length||next.some((row,i)=>row.id!==saved.deals[i]?.id||window.PipelineCore.create(tableSchema).definitions(customFields).some(f=>row[f.id]!==saved.deals[i]?.[f.id]))))throw new Error('Storage did not confirm the row order and every cell. Reload before retrying.');
+      const receipt=saved.actionReceipt;if(saved.replayed)saved={...await api('/api/crm-data'),actionReceipt:receipt};
       useSchema(saved.tableSchema);S.records=saved.deals;S.customFields=C.validateCustomFields(saved.customFields);S.updatedAt=saved.updatedAt;S.revision++;
       S.todoCards=window.PipeChatTodo.validate(saved.todoCards,S.records,S.tableSchema,S.customFields);
       S.todoSuggestions=[];
@@ -659,7 +873,7 @@
       try{tablePredicate();}catch{S.filter=null;}
       if(!filterExists(S.report.filter))S.report.filter=null;
       S.report=C.reconcileReport(S.report,S.customFields);syncShareFields();
-      S.undo=undo?{records:before,customFields:beforeFields,tableSchema:beforeSchema,todoCards:beforeCards,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;
+      S.undo=undo?saved.actionReceipt?{kind:'journal',actionId:saved.actionReceipt.actionId,label}:{records:before,customFields:beforeFields,tableSchema:beforeSchema,todoCards:beforeCards,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;S.saveAttempt=null;
       S.failedEdit=null;keepFailedEdit();
       $('saveStatus').textContent='All changes saved';toast(label,undo);return true;
     }catch(error){
@@ -676,10 +890,21 @@
     if(p.importRevision!==undefined&&(p.importRevision!==S.revision||p.importGeneration!==S.generation)){clearDraft();say('The table changed. Import the file again to review duplicates against the current table.');return;}
     try{
       if(Date.now()-p.createdAt>30*60*1000)throw new Error('This preview expired. Prepare it again.');
+      if(p.kind==='workflow-save'){await confirmWorkflow(p);return;}
+      if(p.kind==='business-document'){await downloadDocument(p);return;}
+      if(p.kind==='business-plan'){await confirmBusiness(p);return;}
+      if(p.kind==='journal-undo'){
+        if(p.generation!==S.generation||p.proposal.expectedUpdatedAt!==S.updatedAt)throw new Error('The workspace changed. Review this undo again.');
+        S.saving=true;renderTrust();
+        try{let saved=await api('/api/actions/undo',{method:'POST',body:JSON.stringify({confirm:true,actionId:p.proposal.actionId,expectedUpdatedAt:p.proposal.expectedUpdatedAt,metadata:p.metadata})});if(saved.replayed)saved=await api('/api/crm-data');applySavedSnapshot(saved);clearDraft();S.undo=null;await restoreDurableUndo();say('The selected action was undone. Unrelated changes were preserved.');}
+        finally{S.saving=false;render();}return;
+      }
+      if(p.importPlan){await confirmCsvImport(p);return;}
       if(p.kind==='workspace-plan'){
         if(p.revision!==S.revision||p.generation!==S.generation||p.before!==window.PipeChatPlan.snapshot({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards}))throw new Error('The workspace changed. Review the complete plan again.');
         if(p.viewState!==JSON.stringify({view:tableView(),focus:S.focus,report:S.report,dashboard:S.dashboard}))throw new Error('The selected table or dashboard view changed. Review the complete plan again.');
-        if(await persist(p.next.records,'Complete plan saved',{customFields:p.next.customFields,tableSchema:p.next.tableSchema,todoCards:p.next.todoCards,exactRecords:true})){publishPlanResults(p);say(`Saved together: ${p.addedFields.length} new columns, ${p.patches.length} changed records, ${p.addedCards.length} new tasks and ${p.taskPatches.length} updated tasks.`);}
+        const schemaChanges=p.schemaChanges.map(change=>({kind:'rename_choice_option',fieldId:change.fieldId,from:change.before,to:change.after}));
+        if(await persist(p.next.records,'Complete plan saved',{customFields:p.next.customFields,tableSchema:p.next.tableSchema,todoCards:p.next.todoCards,exactRecords:true,schemaChanges})){publishPlanResults(p);say(`Saved together: ${p.addedFields.length} new columns, ${p.patches.length} changed records, ${p.addedCards.length} new tasks and ${p.taskPatches.length} updated tasks.`);}
         return;
       }
       if(['move-record','move-field'].includes(p.kind)){
@@ -746,16 +971,22 @@
     S.saving=true;$('saveStatus').textContent='Saving card...';render();
     try{
       cards=window.PipeChatTodo.validate(cards,S.records);
-      const saved=await api('/api/todo-cards',{method:'PUT',body:JSON.stringify({todoCards:cards,expectedUpdatedAt:S.updatedAt})});
+      const body={todoCards:cards,expectedUpdatedAt:S.updatedAt};let saved=await api('/api/todo-cards',{method:'PUT',body:JSON.stringify({...body,actionMetadata:actionMetadata(body)})});
       if(generation!==S.generation)return false;
       if(JSON.stringify(saved.todoCards)!==JSON.stringify(cards)||JSON.stringify(saved.deals)!==JSON.stringify(records)||JSON.stringify(saved.tableSchema||null)!==JSON.stringify(schema)||JSON.stringify(saved.customFields||[])!==JSON.stringify(fields))throw new Error('The card-only save was not confirmed. Reload before retrying.');
-      S.todoCards=cards;S.updatedAt=saved.updatedAt;S.revision++;S.undo=undo?{kind:'todo',todoCards:before,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;
+      const receipt=saved.actionReceipt;if(saved.replayed){saved=await api('/api/crm-data');applySavedSnapshot(saved);}else{S.todoCards=cards;S.updatedAt=saved.updatedAt;S.revision++;}
+      S.undo=undo?receipt?{kind:'journal',actionId:receipt.actionId,label}:{kind:'todo',todoCards:before,label}:null;S.pending=null;S.clarification=null;S.sourceAction=null;S.saveAttempt=null;
       $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');toast(label,undo);return true;
     }catch(error){if(generation===S.generation){$('saveStatus').textContent='Card save not confirmed';$('saveStatus').classList.add('failed');toast(error.message);}return false;}
     finally{if(generation===S.generation){S.saving=false;render();}}
   }
   function dismissUndo(){if(S.undo)S.undo.dismissed=true;$('undoStrip').hidden=true;$('toast').hidden=true;}
-  async function undo() {if(!S.undo||S.saving)return;if(S.undo.kind==='todo')return persistTodo(C.clone(S.undo.todoCards),'Last card change undone',{undo:false});const previous=S.undo;if(await persist(C.clone(previous.records),'Last change undone',{undo:false,customFields:C.clone(previous.customFields||[]),tableSchema:C.clone(previous.tableSchema||null),todoCards:C.clone(previous.todoCards||[])})){if(previous.view){for(const key of ['scope','search','filter','sort'])S[key]=C.clone(previous.view[key]);$('dealSearch').value=S.search;render();}}}
+  async function prepareUndo(actionId){
+    const generation=S.generation;
+    try{const proposal=await api('/api/actions/preview-undo',{method:'POST',body:JSON.stringify({actionId})});if(generation!==S.generation)return;S.pending={kind:'journal-undo',proposal,generation,createdAt:Date.now(),metadata:{actionId:crypto.randomUUID(),requestId:crypto.randomUUID()}};S.clarification=null;S.sourceAction={action:'undo_action',actionId};renderTrust();focusTrust();}
+    catch(error){say(error.message);}
+  }
+  async function undo() {if(!S.undo||S.saving)return;if(S.undo.kind==='journal')return prepareUndo(S.undo.actionId);if(S.undo.kind==='todo')return persistTodo(C.clone(S.undo.todoCards),'Last card change undone',{undo:false});const previous=S.undo;if(await persist(C.clone(previous.records),'Last change undone',{undo:false,customFields:C.clone(previous.customFields||[]),tableSchema:C.clone(previous.tableSchema||null),todoCards:C.clone(previous.todoCards||[])})){if(previous.view){for(const key of ['scope','search','filter','sort'])S[key]=C.clone(previous.view[key]);$('dealSearch').value=S.search;render();}}}
   async function refreshInspector(){
     if(S.saving||S.failedEdit)throw new Error('Finish recovering the current edit first.');
     const generation=S.generation;S.saving=true;render();
@@ -814,6 +1045,7 @@
   }
   function handleAction(response,command) {
     S.lastAi=response.ai||null;
+    S.lastPlanId=response.lifecycle?.planId||null;
     const action=response.crmAction;
     if(action?.action==='dashboard_plan'){
       const result=window.PipeChatDashboard.apply(dashboardBase(),action,S.records,C,S.customFields,dashboardOptions());setDashboard(result);say(result.answer);return;
@@ -824,6 +1056,12 @@
       if(!views.length)throw new Error('There is no current dashboard report to analyze. Which report would you like?');
       const answer=window.PipeChatDashboard.analyze(action.questions,views);S.focus={kind:'report'};clearClarification();say(answer);return;
     }
+    if(['create_workflow','set_workflow_activation'].includes(action?.action)){return prepareWorkflow(action);}
+    if(action?.action==='workflow_history'){return showWorkflowHistory(action);}
+    if(action?.action==='create_document'){return prepareDocument(action);}
+    if(action?.action==='undo_action'){return prepareUndo(action.actionId);}
+    if(action?.action==='business_plan'){return prepareBusiness(action);}
+    if(action?.action==='query_business'){clearDraft();say(response.computedAnswer||response.assistantMessage);return;}
     if(action?.action==='workspace_plan'){prepare(action,command);return;}
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
@@ -895,19 +1133,20 @@
     if(action.action==='share_view'){
       if(S.pending)throw new Error('Confirm or cancel the pending changes before preparing a share preview.');
       if(action.filter){C.predicate(action.filter,S.customFields)(S.records[0]||{});S.filter=C.clone(action.filter);S.search='';S.scope='all';$('dealSearch').value='';}
-      $('shareRecipient').value=typeof action.value==='string'?action.value:'';S.tab='share';S.clarification=null;render();say('Your read-only preview is ready. Choose the visible fields and recipient. No invitation has been sent.');return;
+      S.clarification=null;setTab('share');say('Choose the recipient and access scope in Shared views. No access has been granted yet.');return;
     }
     throw new Error('I cannot perform that action yet. I can help edit records, move rows or columns, sort and filter, configure fields, and build reports. Could you describe the result you want?');
   }
   async function send(command) {
-    command=String(command||'').trim();if(!command||S.busy||S.saving||!S.loaded||S.usage?.paymentRequired||S.usage?.remaining===0)return;
+    command=String(command||'').trim();if(!command||S.busy||S.saving||turnAwaiting||threadChanging||applyingTurn||!S.loaded||S.usage?.paymentRequired||S.usage?.remaining===0)return;
+    if(sharedBusinessReadOnly()){toast('Chat is available in your own workspace.');return;}
     if(conversation&&!conversation.ready){toast('Reload saved chat before sending a message.');return;}
     if(restoredProposal){say('Please review or cancel the previous proposal first.');focusTrust();return;}
     if(S.failedEdit){toast('Review or discard the unsaved edit first.');focusTrust();return;}
-    $('chatInput').value='';say(command,'user');const answer=C.normalize(command).replace(/[.!?]+$/,'');
+    $('chatInput').value='';const userMessageId=say(command,'user'),answer=C.normalize(command).replace(/[.!?]+$/,'');
     if((S.pending||S.clarification)&&/^(?:cancel|no|no thanks|never mind|nevermind|(?:no[, ]+)?leave (?:it|that|everything) unchanged|(?:no[, ]+)?(?:do not|don't) change (?:it|that|anything))$/.test(answer)){cancelDraft();return;}
     if(S.pending?.kind==='csv-import'){say('The CSV is waiting for mapping. Use Retry AI mapping, Review basic mapping, or Cancel import in the review panel.');focusTrust();return;}
-    if(S.pending?.kind==='import-duplicates'){say('Please choose Keep duplicates, Merge duplicates, or Cancel import in the review panel.');focusTrust();return;}
+    if(S.pending?.kind==='import-duplicates'){say('Please choose Skip matching rows, Keep duplicates, Merge fields, or Cancel import in the review panel.');focusTrust();return;}
     if(S.clarification?.candidates){
       const found=S.clarification.candidates.map(candidateRecord).filter(r=>C.normalize(rowName(r))===answer||String(r.id)===answer);
       if(found.length===1){chooseCandidate(found[0].id);return;}
@@ -917,10 +1156,31 @@
     if(S.pending?.kind==='editor'){say('Save or cancel the new-deal form before starting another request.');return;}
     if(S.health?.aiConfigured===false){clearClarification();say('Sorry, I cannot connect to the AI service right now. Manual editing is still available. No table changes were made.');return;}
     S.busy=true;updateUsage();const generation=S.generation, revision=S.revision, pending=S.pending,requestView=JSON.stringify(tableView()),requestContext=JSON.stringify({focus:S.focus,report:S.report,dashboard:S.dashboard,tab:S.tab});
-    let interpreting=false;
-    try{saveChatState();const reference=await conversation?.flush();if(generation!==S.generation)return;const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});if(generation!==S.generation)return;S.usage=response.usage||S.usage;if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');if(['filter_records','refine_report','dashboard_plan','analyze_dashboard'].includes(response.crmAction?.action)&&requestContext!==JSON.stringify({focus:S.focus,report:S.report,dashboard:S.dashboard,tab:S.tab})){say('The view changed while I was thinking. Please repeat the request so I can use the current report or table.');return;}if(revision!==S.revision||pending!==S.pending||['move_record','move_field','sort_table','filter_records','query_records','audit_records','show_kpi','dashboard_plan'].includes(response.crmAction?.action)&&requestView!==JSON.stringify(tableView())){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');return;}S.busy=false;interpreting=true;handleAction(response,command);saveChatState();}
-    catch(error){if(generation!==S.generation)return;if(error.usage)S.usage=error.usage;if(revision===S.revision&&pending===S.pending)clearClarification();const guidance=interpreting?error.message:error.status===401?'Please sign in again, then try your request.':S.usage?.remaining===0||S.usage?.paymentRequired?'Your chat allowance has been used. You can still edit the table manually.':error.status===429?'The service is busy. Please try again shortly.':'Please try again shortly.';say(`Sorry, I couldn't complete that request. ${guidance} No table changes were made.`);}
-    finally{if(generation===S.generation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);$('addFieldBtn').disabled=S.saving||Boolean(S.failedEdit);}}
+    let interpreting=false;const requestChat=conversation;
+    try{
+      saveChatState();const reference=await conversation?.flush();if(generation!==S.generation||requestChat!==conversation)return;
+      const payload=aiPayload(command);if(reference){payload.conversation=reference;delete payload.conversationHistory;}
+      if(reference&&S.health.conversationThreads){payload.turn={threadId:chatThread,requestId:crypto.randomUUID(),userMessageId,assistantMessageId:crypto.randomUUID()};turnAwaiting={turn:payload.turn,conversation:reference,command};rememberTurn(turnAwaiting);}
+      const response=await api('/api/pipechat-ai',{method:'POST',body:JSON.stringify(payload),signal:AbortSignal.timeout(90000)});
+      if(generation!==S.generation||requestChat!==conversation)return;
+      S.usage=response.usage||S.usage;
+      if(!Object.hasOwn(response,'crmAction')||response.crmAction===null&&typeof response.assistantMessage!=='string')throw new Error('Incomplete AI response');
+      const changed=revision!==S.revision||pending!==S.pending||requestContext!==JSON.stringify({focus:S.focus,report:S.report,dashboard:S.dashboard,tab:S.tab})||requestView!==JSON.stringify(tableView());
+      S.busy=false;interpreting=true;
+      if(response.turn){
+        if(!await acceptTurnResponse(response,requestChat,!changed,command))void checkPendingTurn();
+        if(changed)toast('The view changed while this reply was running. Review the saved reply before continuing.');
+      }else if(changed){say('The table or draft changed while I was thinking. Please send that request again so I can use the latest version.');}
+      else{await handleAction(response,command);saveChatState();}
+    }
+    catch(error){
+      if(generation!==S.generation||requestChat!==conversation)return;
+      if(error.usage)S.usage=error.usage;
+      if(turnAwaiting){showTurnWaiting();void checkPendingTurn();}
+      else if(S.health.conversationThreads){toast(interpreting?error.message:'The message could not be sent. Retry the chat save before sending again.');}
+      else{if(revision===S.revision&&pending===S.pending)clearClarification();const guidance=interpreting?error.message:error.status===401?'Please sign in again, then try your request.':S.usage?.remaining===0||S.usage?.paymentRequired?'Your chat allowance has been used. You can still edit the table manually.':error.status===429?'The service is busy. Please try again shortly.':'Please try again shortly.';say(`Sorry, I couldn't complete that request. ${guidance} No table changes were made.`);}
+    }
+    finally{if(generation===S.generation&&requestChat===conversation){S.busy=false;updateUsage();$('importCsvBtn').disabled=S.saving||Boolean(S.failedEdit);$('addFieldBtn').disabled=S.saving||Boolean(S.failedEdit);}}
   }
   async function importCsv(file) {
     if(!file||!S.loaded||S.busy||S.saving||S.failedEdit)return;
@@ -930,11 +1190,12 @@
     let draft;
     S.busy=true;updateUsage();
     try{
-      const parsed=Papa.parse(await file.text(),{header:true,skipEmptyLines:'greedy',transformHeader:header=>header.trim()});
+      const parsed=Papa.parse(await file.text(),{header:true,skipEmptyLines:false,transformHeader:header=>header.trim()});
       if(importGeneration!==S.generation)return;
       const structuralErrors=parsed.errors.filter(error=>!['TooFewFields','UndetectableDelimiter'].includes(error.code));
       if(structuralErrors.length)throw new Error(`CSV row ${(structuralErrors[0].row??0)+2}: ${structuralErrors[0].message}`);
       if(parsed.meta.renamedHeaders&&Object.keys(parsed.meta.renamedHeaders).length)throw new Error('CSV headers must be unique.');
+      while(parsed.data.length&&Object.values(parsed.data.at(-1)).every(value=>value==null||typeof value==='string'&&!value.trim()))parsed.data.pop();
       if(!parsed.data.length||parsed.data.length>2000)throw new Error('Import between 1 and 2,000 rows.');
       const headers=parsed.meta.fields;
       const description=window.PipeChatCsv.describe(headers,parsed.data);
@@ -961,8 +1222,8 @@
         const options={useCase:S.setupUseCase,description:S.setupUseCase==='Other'?$('workflowDescription').value:'',name:source.name,primary:source.primary,idPrefix:crypto.randomUUID().replaceAll('-','')};
         S.sheetDraft={source,options,generation,revision,description:window.PipeChatSheetTypes.describe(source.matrix,options),error:null};
       }else{
-        const {headers,rows}=window.PipeChatSheets.mappingSource(source.matrix),description=window.PipeChatCsv.describe(headers,rows);
-        S.pending={kind:'csv-import',name:source.name,headers,rows,description,generation,revision,error:null};
+        const {headers,rows,source:provenance}=window.PipeChatSheets.mappingSource(source.matrix),description=window.PipeChatCsv.describe(headers,rows);
+        S.pending={kind:'csv-import',name:source.name,headers,rows,source:provenance,description,generation,revision,error:null};
       }
     }catch(error){if(generation===S.generation){source=null;if(mode==='setup')$('setupStatus').textContent=error.message;else toast(error.message);}}
     finally{if(generation===S.generation){S.busy=false;updateUsage();if(mode==='setup')renderSetup();}}
@@ -993,6 +1254,44 @@
     const draft=S.sheetDraft;if(S.busy||S.saving||!currentSheetDraft(draft))return;
     try{previewSheetTypes(draft,window.PipeChatSheetTypes.asText(draft.source.matrix,draft.options));renderSetup();}catch(error){draft.error=error.message;renderSetup();}
   }
+  function renderCsv(p){
+    const panel=$('trustBody'),draft=p.draft||p,review=p.importReview,plan=p.importPlan;
+    const locked=S.busy||S.saving||p.importConfirmPending||p.importAttempted,disabled=locked?'disabled':'';
+    $('reviseRequestBtn').hidden=true;
+    $('trustTitle').textContent=p.kind==='import-duplicates'?'Review duplicates':review?'Review import':S.busy?'Analyzing CSV':'CSV mapping paused';
+    $('trustStatus').textContent=p.importAttempted?'Save not confirmed. Retry the same import or cancel and reload.':'No records have been saved.';
+    let html=`<h3>${esc(draft.name)}</h3><p>${draft.rows.length} source rows / ${draft.headers.length} columns</p>`;
+    if(p.error||draft.error)html+=`<p class="error" role="status">${esc(p.error||draft.error)}</p>`;
+    if(p.kind==='csv-import'){
+      if(!review)html+=`<p role="status">${esc(S.busy?'AI is matching columns by meaning...':'Ready for mapping review.')}</p>`;
+      html+=`<div class="proposal-actions"><button class="primary" data-retry-import ${disabled}>${icon('RotateCcw')}Retry AI mapping</button><button class="secondary" data-basic-import ${disabled}>Review basic mapping (not AI)</button></div>`;
+      if(draft.missingPrimary)html+=`<label>Source for ${esc(labels()[C.role('primary')])}<select id="importPrimarySource" ${disabled}><option value="">Choose a column</option>${draft.headers.map((h,i)=>`<option value="${i}">${esc(h)}</option>`).join('')}</select></label><button class="secondary" data-import-primary ${disabled}>Review with this name column</button>`;
+    }
+    if(plan?.duplicates.length){
+      html+=`<p>${p.duplicates.existingMatches} rows match the existing table; ${p.duplicates.fileMatches} repeat an earlier imported row.</p><div class="proposal-actions" role="group" aria-label="Duplicate policy">${[['skip','Skip matching rows'],['keep','Keep duplicates'],['merge','Merge fields']].map(([mode,label])=>`<button class="${draft.duplicateMode===mode?'primary':'secondary'}" data-import-duplicates="${mode}" aria-pressed="${draft.duplicateMode===mode}" ${disabled}>${label}</button>`).join('')}</div>`;
+    }
+    if(review){
+      html+=`<p>${review.invalidCount} invalid cells / ${review.blankCount} blank cells / ${review.ignored.length} unused columns</p><p>${esc(p.note||draft.mappingSource||'')}</p>${review.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}${review.ignored.length?`<p>Unused columns: ${review.ignored.map(esc).join(', ')}</p>`:''}`;
+      if(review.translations?.length)html+=`<section class="import-review"><h3>Proposed dropdown translations</h3><details open><summary>Review translations</summary>${review.translations.map(t=>`<p>Row ${t.row} / ${esc(labels()[t.field])}: <q>${esc(t.source)}</q> &rarr; <q>${esc(t.target)}</q></p>`).join('')}</details></section>`;
+      const editable=review.cells.map((cell,index)=>({cell,index})).filter(({cell})=>cell.status==='invalid'||draft.corrections?.[JSON.stringify([cell.row,cell.field])]||cell.field===C.role('primary')&&cell.status==='blank');
+      const page=Math.min(draft.reviewPage||0,Math.max(0,Math.ceil(editable.length/20)-1));draft.reviewPage=page;
+      html+=editable.slice(page*20,page*20+20).map(({cell,index})=>{
+        const key=JSON.stringify([cell.row,cell.field]),correction=draft.corrections?.[key],excluded=draft.excludedRows.includes(cell.row),accepted=draft.invalidDecisions[key]==='blank';
+        return `<section class="proposal-record" style="overflow-wrap:anywhere"><h3>Row ${cell.row} / ${esc(labels()[cell.field])}</h3><p>${esc(cell.sheet?cell.sheet+' / ':'')}${esc(cell.address||cell.source||'Unmapped')} / ${esc(cell.status)}</p><p>Original: <q style="white-space:pre-wrap">${esc(correction?correction.originalRaw:cell.raw)}</q></p>${correction?`<p>Correction: <q>${esc(cell.raw)}</q></p>`:''}${cell.error?`<p class="error">${esc(cell.error.message)}</p>`:''}<label>Correction<textarea id="import-cell-${index}" rows="2" maxlength="12000" style="width:100%;min-width:0" ${locked||excluded?'disabled':''}>${esc(cell.raw)}</textarea></label><button class="secondary" data-import-correct="${index}" ${locked||excluded?'disabled':''}>${icon('Check')}Use correction</button>${cell.status==='invalid'?`<label><input type="checkbox" data-import-blank="${index}" ${accepted?'checked':''} ${locked||excluded?'disabled':''}>Accept as blank</label>`:''}<label><input type="checkbox" data-import-exclude="${cell.row}" ${excluded?'checked':''} ${disabled}>Exclude row ${cell.row}</label></section>`;
+      }).join('');
+      if(editable.length>20)html+=`<div class="proposal-actions"><button class="secondary" data-import-page="-1" ${page===0?'disabled':''}>Previous cells</button><span>Page ${page+1} of ${Math.ceil(editable.length/20)}</span><button class="secondary" data-import-page="1" ${(page+1)*20>=editable.length?'disabled':''}>Next cells</button></div>`;
+    }
+    if(plan){
+      html+=plan.errors.filter(error=>error.code==='ambiguous_duplicate').map(error=>`<label>Row ${error.row}: matching record<select data-import-target="${error.row}" ${disabled}><option value="">Choose a record</option>${error.matches.map(id=>`<option value="${id}">#${id}: ${esc(rowName(S.records.find(row=>row.id===id)||plan.inserts.find(row=>row.id===id)||{}))}</option>`).join('')}</select></label><label><input type="checkbox" data-import-exclude="${error.row}" ${disabled}>Exclude row ${error.row}</label>`).join('');
+      html+=plan.fieldReviews.map((field,index)=>field.status==='conflict'?`<section class="proposal-record" style="overflow-wrap:anywhere"><h3>Row ${field.row} / ${esc(labels()[field.field])} / #${field.targetId}</h3><p>Existing: <q>${esc(display(field.field,field.existing))}</q></p><p>Incoming: <q>${esc(display(field.field,field.incoming))}</q></p><label>Conflict choice<select data-import-conflict="${index}" ${disabled}><option value="" ${!field.resolution?'selected':''}>Choose a value</option><option value="existing" ${field.resolution==='existing'?'selected':''}>Keep existing</option><option value="incoming" ${field.resolution==='incoming'?'selected':''}>Use incoming</option></select></label><label><input type="checkbox" data-import-exclude="${field.row}" ${disabled}>Exclude row ${field.row}</label></section>`:'').join('');
+      const counts=plan.counts;
+      html+=`<p>${counts.insertedRows} additions / ${counts.updatedRows} existing records changed / ${counts.changedCells} changed saved cells / ${counts.skippedRows} matching rows skipped / ${counts.excludedRows} excluded rows / ${counts.unusableRows} empty rows skipped</p>`;
+      const patches=[...plan.updates.map(update=>({id:update.id,account:rowName(S.records.find(row=>row.id===update.id)),before:update.expected,after:update.changes})),...plan.inserts.map(record=>({id:record.id,account:rowName(record),before:null,after:Object.fromEntries(Object.keys(labels()).map(field=>[field,record[field]]))}))];
+      html+=`<details><summary>Proposed records (${patches.length})</summary>${patches.map(patch=>`<section class="proposal-record" style="overflow-wrap:anywhere"><h3>${esc(patch.account)} / #${patch.id}</h3>${Object.entries(patch.after).map(([field,value])=>`<div class="field-diff"><span>${esc(labels()[field])}</span><div class="diff-values">${patch.before?`<span class="diff-before">${esc(display(field,patch.before[field]))}</span>${icon('ArrowRight')}`:''}<span class="diff-after">${esc(display(field,value))}</span></div></div>`).join('')}</section>`).join('')}</details>`;
+      if(p.kind!=='import-duplicates')html+=`<button class="primary" data-confirm ${S.busy||S.saving||p.importConfirmPending||p.importReviewBlocked||plan.status!=='ready'||unresolvedImportCells(p).length?'disabled':''}>${p.importAttempted?'Retry same import':'Confirm import'}</button>`;
+    }
+    panel.innerHTML=html+`<button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel import</button>`;
+  }
   function currentCsvImport(draft) {
     if(!draft||draft.kind!=='csv-import'||draft.generation!==S.generation||S.pending!==draft)return false;
     if(draft.revision!==S.revision||S.failedEdit||S.clarification){clearDraft();say('The table or draft changed during import. Choose the file again to prepare a fresh preview.','assistant',true);return false;}
@@ -1000,16 +1299,29 @@
   }
   function previewCsvImport(draft,analysis,mappingSource) {
     if(!currentCsvImport(draft))return;
-    const review=csvCore().build(draft.headers,draft.rows,analysis),{records,mapping}=review;
-    if(!records.length){draft.error='No CRM fields could be confidently interpreted. No rows were added; the original CSV is unchanged.';say(draft.error,'assistant',true);renderTrust();return;}
-    if(review.missingPrimary?.length){
-      draft.analysis=analysis;draft.missingPrimary=true;
-      draft.error=`${review.missingPrimary.length} imported records have a blank ${labels()[C.role('primary')]}. Source rows: ${review.missingPrimary.slice(0,20).join(', ')}${review.missingPrimary.length>20?' and more':''}. Choose an identifying source column, or fill the missing names in the file and import it again. No records have been added.`;
-      say(draft.error);renderTrust();return;
+    draft.importId??=crypto.randomUUID();draft.originalRows??=C.clone(draft.rows);
+    draft.importSchema??=JSON.stringify({tableSchema:S.tableSchema,customFields:S.customFields});
+    draft.analysis=C.clone(analysis);draft.mappingSource=mappingSource;
+    draft.decisions={};draft.invalidDecisions={};draft.targets={};draft.excludedRows=[];draft.duplicateMode=null;
+    rebuildCsvImport(draft);
+  }
+  function rebuildCsvImport(draft) {
+    const review=csvCore().build(draft.headers,draft.rows,draft.analysis,draft.source),{records}=review;
+    const sourceIndexes=new Map(draft.rows.map((row,index)=>[draft.source?.sourceRows?.[index]??index+2,index]));
+    draft.corrections=Object.fromEntries(review.cells.flatMap(cell=>{
+      if(!cell.source)return [];
+      const originalRaw=draft.originalRows[sourceIndexes.get(cell.row)]?.[cell.source]??'';
+      return Object.is(originalRaw,cell.raw)?[]:[[JSON.stringify([cell.row,cell.field]),{originalRaw,value:cell.raw}]];
+    }));
+    draft.importReview=review;draft.error=null;draft.missingPrimary=false;
+    if(!records.length){draft.error='No CRM fields could be confidently interpreted. No rows were added; the original CSV is unchanged.';S.pending=draft;say(draft.error,'assistant',true);renderTrust();return;}
+    const missingPrimary=review.missingPrimary.filter(row=>!draft.excludedRows.includes(row));
+    if(missingPrimary.length){
+      draft.missingPrimary=true;
+      draft.error=`${missingPrimary.length} imported records have a blank ${labels()[C.role('primary')]}. Source rows: ${missingPrimary.slice(0,20).join(', ')}${missingPrimary.length>20?' and more':''}. Choose an identifying source column, or fill the missing names in the file and import it again. No records have been added.`;
+      S.pending=draft;say(draft.error);renderTrust();return;
     }
-    const duplicates=window.PipeChatImportDuplicates.review(S.records,records,C.role('primary'));
-    if(duplicates.duplicates.length){S.pending={kind:'import-duplicates',draft,review,duplicates,mappingSource};renderTrust();return;}
-    finishImportPreview(draft,review,mappingSource,records);
+    finishImportPreview(draft,review);
   }
   function chooseImportPrimary(){
     const draft=S.pending;if(S.busy||S.saving||!currentCsvImport(draft)||!draft.missingPrimary)return;
@@ -1020,21 +1332,90 @@
     analysis.columnMap[primary]=header;
     previewCsvImport(draft,analysis,'Primary name column selected by you. Other mappings retained.');
   }
-  function finishImportPreview(draft,review,mappingSource,records,decision=''){
+  function finishImportPreview(draft,review){
     if(draft.revision!==S.revision||draft.generation!==S.generation)throw new Error('The table changed. Choose the file again.');
-    if(!records.length){clearDraft();say('All imported records matched existing entries. Merge kept the table unchanged; nothing needed to be added.');return;}
-    prepare({action:'import_records',records},`Import ${draft.name}`);
-    if(S.pending?.kind!=='add')throw new Error('Could not prepare the import.');
-    S.pending.importReview=review;
-    S.pending.importRevision=draft.revision;S.pending.importGeneration=draft.generation;
-    S.pending.note=`${decision} ${mappingSource} ${Object.entries(review.mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${labels()[f]}`).join('; ')}. Missing or uncertain values stay blank, including amounts. ${review.skipped?`${review.skipped} rows with no usable CRM fields skipped. `:''}`;
-    renderTrust();
+    const plan=csvCore().planImport(S.records,review,{importId:draft.importId,mode:draft.duplicateMode||'skip',decisions:draft.decisions,invalidDecisions:draft.invalidDecisions,excludedRows:draft.excludedRows,targets:draft.targets});
+    if(S.records.length+plan.inserts.length>2000)throw new Error('The table can contain at most 2,000 records. Choose Skip or Merge, or exclude rows.');
+    plan.inserts=plan.inserts.map(record=>newRecord(record,record.id,true));
+    const needsMode=plan.duplicates.length&&!draft.duplicateMode;
+    const duplicates={duplicates:plan.duplicates,existingMatches:plan.duplicates.filter(row=>row.matches.some(match=>match.source==='existing')).length,fileMatches:plan.duplicates.filter(row=>row.matches.every(match=>match.source==='incoming')).length};
+    const pending={kind:needsMode?'import-duplicates':'add',draft,review,duplicates,importReview:review,importPlan:plan,records:plan.inserts,count:plan.inserts.length+plan.updates.length,createdAt:Date.now(),importRevision:draft.revision,importGeneration:draft.generation,importSchema:draft.importSchema,importVersion:S.updatedAt,note:`${draft.mappingSource} ${Object.entries(review.mapping).filter(([,header])=>header).map(([f,h])=>`${h}: ${labels()[f]}`).join('; ')}.`};
+    if(!needsMode&&plan.status==='ready'&&!pending.count&&!unresolvedImportCells(pending).length){clearDraft();say(`Nothing to save. ${plan.counts.skippedRows} matching rows skipped; existing records are unchanged.`);return;}
+    S.pending=pending;S.sourceAction=null;renderTrust();focusTrust();
   }
   function chooseImportDuplicates(mode){
-    const p=S.pending;if(S.busy||S.saving||S.failedEdit||p?.kind!=='import-duplicates'||!['keep','merge'].includes(mode))return;
-    if(p.draft.generation!==S.generation||p.draft.revision!==S.revision){clearDraft();say('The table changed. Import the file again to review duplicates.');return;}
-    try{finishImportPreview(p.draft,p.review,p.mappingSource,mode==='merge'?p.duplicates.records:p.review.records,mode==='merge'?`${p.duplicates.duplicates.length} duplicate rows skipped. Existing records stay unchanged.`:'Duplicates will be added as separate records.');}
-    catch(error){S.pending=p;toast(error.message);renderTrust();}
+    const p=S.pending;if(!['skip','keep','merge'].includes(mode)||!currentImportReview(p))return;
+    const previous=p.draft.duplicateMode;
+    try{p.draft.duplicateMode=mode;p.draft.decisions={};p.draft.targets={};rebuildCsvImport(p.draft);}
+    catch(error){p.draft.duplicateMode=previous;S.pending=p;p.error=error.message;toast(error.message);renderTrust();}
+  }
+  function currentImportReview(p=S.pending){
+    if(!p||S.pending!==p||S.busy||S.saving||S.failedEdit||p.importConfirmPending||p.importAttempted)return false;
+    const draft=p.draft||p;if(!draft.importReview)return false;
+    if(draft.generation!==S.generation||draft.revision!==S.revision||draft.importSchema!==JSON.stringify({tableSchema:S.tableSchema,customFields:S.customFields})){clearDraft();say('The table changed. Import the file again to review the current data.');return false;}
+    return true;
+  }
+  function unresolvedImportCells(p){
+    const draft=p.draft||p,review=p.importReview,plan=p.importPlan;
+    const skipped=new Set(plan?.mode==='skip'?plan.duplicates.map(row=>row.row):[]);
+    return (review?.issues||[]).filter(cell=>!draft.excludedRows.includes(cell.row)&&!skipped.has(cell.row)&&draft.invalidDecisions[JSON.stringify([cell.row,cell.field])]!=='blank');
+  }
+  function changeImportReview(action,index,value){
+    const p=S.pending;if(!currentImportReview(p))return;
+    const draft=p.draft||p,review=p.importReview;
+    try{
+      if(action==='page'){draft.reviewPage=Math.max(0,(draft.reviewPage||0)+index);renderTrust();return;}
+      if(action==='exclude'){draft.excludedRows=value?[...new Set([...draft.excludedRows,index])]:draft.excludedRows.filter(row=>row!==index);draft.decisions={};draft.targets={};}
+      else if(action==='target'){draft.targets[index]=Number(value);draft.decisions={};}
+      else if(action==='conflict'){
+        const conflict=p.importPlan?.fieldReviews[index];if(!conflict||conflict.status!=='conflict')return;
+        if(['existing','incoming'].includes(value))draft.decisions[conflict.decisionKey]=value;else delete draft.decisions[conflict.decisionKey];
+      }else{
+        const cell=review.cells[index];if(!cell?.source)return;
+        const key=JSON.stringify([cell.row,cell.field]);
+        if(action==='blank'){if(value)draft.invalidDecisions[key]='blank';else delete draft.invalidDecisions[key];}
+        else if(action==='correct'){
+          if(typeof value!=='string'||value.length>12000||value.includes('\0'))throw new Error('Enter at most 12,000 characters without null characters.');
+          const rowIndex=draft.source?.sourceRows?draft.source.sourceRows.indexOf(cell.row):cell.row-2;
+          if(!draft.rows[rowIndex])throw new Error('The source row is unavailable. Import the file again.');
+          draft.rows=C.clone(draft.rows);draft.rows[rowIndex][cell.source]=value;
+          delete draft.invalidDecisions[key];draft.decisions={};draft.targets={};
+          if(cell.field===C.role('primary'))draft.duplicateMode=null;
+        }else return;
+      }
+      rebuildCsvImport(draft);
+    }catch(error){p.error=error.message;p.importReviewBlocked=true;toast(error.message);renderTrust();}
+  }
+  function handleImportClick(event){
+    const correct=event.target.closest('[data-import-correct]');
+    if(correct){const index=Number(correct.dataset.importCorrect);changeImportReview('correct',index,$('import-cell-'+index).value);return true;}
+    const page=event.target.closest('[data-import-page]');
+    if(page){changeImportReview('page',Number(page.dataset.importPage));return true;}
+    return false;
+  }
+  function handleImportChange(event){
+    for(const [attribute,action] of [['importBlank','blank'],['importExclude','exclude'],['importConflict','conflict'],['importTarget','target']]){
+      if(event.target.dataset[attribute]!==undefined){changeImportReview(action,Number(event.target.dataset[attribute]),['blank','exclude'].includes(action)?event.target.checked:event.target.value);return;}
+    }
+  }
+  async function confirmCsvImport(p){
+    if(p.importConfirmPending)return;
+    if(p.importReviewBlocked||p.importPlan.status!=='ready'||unresolvedImportCells(p).length){say('Review each invalid cell and field conflict before confirming.');renderTrust();return;}
+    if(p.importSchema!==JSON.stringify({tableSchema:S.tableSchema,customFields:S.customFields}))throw new Error('The schema changed. Import the file again.');
+    p.importConfirmPending=true;renderTrust();
+    try{
+      const envelope=JSON.stringify({version:1,workspaceVersion:p.importVersion,schema:p.importSchema,plan:p.importPlan});
+      const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(envelope))),byte=>byte.toString(16).padStart(2,'0')).join('');
+      if(S.pending!==p||p.importRevision!==S.revision||p.importGeneration!==S.generation)return;
+      if(S.updatedAt!==p.importVersion||p.importSchema!==JSON.stringify({tableSchema:S.tableSchema,customFields:S.customFields}))throw new Error('The workspace changed. Import the file again.');
+      const next=csvCore().applyImportPlan(S.records,p.importPlan,{approved:true}).records;
+      p.importReceipt={id:p.importPlan.importId,digest};p.importAttempted=true;
+      // The parent persistence layer routes this receipt to its atomic import API.
+      if(await persist(next,'Import saved',{exactRecords:true,importReceipt:p.importReceipt})){
+        const counts=p.importPlan.counts;
+        say(`Saved. ${counts.insertedRows} records added, ${counts.updatedRows} records merged, ${counts.skippedRows} matching rows skipped.`);
+      }
+    }finally{p.importConfirmPending=false;if(S.pending===p)renderTrust();}
   }
   async function analyzeCsvImport(draft=S.pending) {
     if(S.busy||S.saving||!currentCsvImport(draft))return;
@@ -1076,6 +1457,7 @@
     ].map(([account,stage,value,close,rep,next,follow],i)=>newRecord({account,stage,value,close,owner:rep,next,follow},i+1));
   }
   async function loadWorkspace(user) {
+    S.saveAttempt=null;S.lastPlanId=null;S.ownBusinessWorkspaceId=null;
     conversation?.stop();conversation=null;restoredProposal=null;S.chatReady=false;
     clearActivity();
     closeProfileMenu();S.settingsOpen=false;S.resetting=false;S.resetConfirmation=null;if($('resetDialog')?.open)$('resetDialog').close();
@@ -1083,7 +1465,7 @@
     S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();notificationsUI?.clear();
     const generation=S.generation;
     spreadsheetPicker?.close();clearSheetPreview();closeFieldDialog();S.sort=null;useSchema(null);S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.records=[];S.customFields=[];S.updatedAt=null;S.usage=null;S.health=null;
-    S.failedEdit=null;S.saving=false;$('authRetryBtn').hidden=true;
+    S.failedEdit=null;S.saving=false;$('authRetryBtn').hidden=true;setAuthLoading(true);
     document.body.classList.add('auth-locked');$('authScreen').hidden=false;
     $('chatFeed').innerHTML='';$('trustBody').innerHTML='';$('dealSearch').value='';$('authMessage').textContent='';
     $('shareRecipient').value='';$('shareMessage').value='';$('shareAccess').value='viewer';$('inviteStatus').textContent='';
@@ -1105,8 +1487,10 @@
       $('saveStatus').textContent='All changes saved';$('saveStatus').classList.remove('failed');
       restoreFailedEdit();if(S.failedEdit){$('saveStatus').textContent='Unsaved edit retained';$('saveStatus').classList.add('failed');}
       if(!await loadChat())say('What would you like to work on in your pipeline?');
+      await restoreDurableUndo();
       if(generation===S.generation)render();
     }catch(error){if(generation===S.generation){$('authMessage').textContent=`Could not load the workspace: ${error.message}`;$('authRetryBtn').hidden=false;}}
+    finally{if(generation===S.generation)setAuthLoading(false);}
   }
   function toggleAuthMode() {
     if(!S.signupAllowed)return;
@@ -1142,16 +1526,23 @@
       await loadWorkspace(result.user);
     }catch(error){$('authMessage').textContent=error.message;}finally{$('authSubmitBtn').disabled=false;}
   }
+  function setAuthLoading(loading){
+    if($('authLoading'))$('authLoading').hidden=!loading;
+    $('authForm').hidden=loading;
+  }
   async function restoreSession() {
     const generation=S.generation;
+    setAuthLoading(true);
     await loadAuthPolicy();
     if(generation!==S.generation)return;
     try{const result=await api('/api/auth/me');if(generation===S.generation&&result.user)await loadWorkspace(result.user);}
     catch(error){if(generation===S.generation){$('authMessage').textContent=`Server unavailable: ${error.message}`;$('authRetryBtn').hidden=false;}}
+    finally{if(generation===S.generation)setAuthLoading(false);}
   }
   async function logout() {
     if(S.saving||S.resetting){toast('Wait for the current save to finish.');return;}
     if(S.failedEdit&&!window.confirm('Sign out and discard the unsaved edit in this tab?'))return;
+    S.saveAttempt=null;S.lastPlanId=null;
     try{await conversation?.flush();await api('/api/auth/logout',{method:'POST'});conversation?.stop();conversation=null;restoredProposal=null;S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();S.customFields=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
   }
   function deleteFieldButton(id){return `<button class="icon-btn" data-delete-field="${id}" aria-label="Delete ${esc(labels()[id])} column" title="Delete column" ${S.saving||S.busy||S.failedEdit?'disabled':''}>${icon('Trash2')}</button>`;}
@@ -1381,7 +1772,29 @@
     };
     const addTodo=document.createElement('button');addTodo.id='addTodoBtn';addTodo.className='icon-btn';addTodo.title='Add task';addTodo.setAttribute('aria-label','Add task');addTodo.innerHTML=icon('Plus');addTodo.hidden=true;$('shareBtn').after(addTodo);
     todoUI=window.PipeChatTodoUI.create({S,esc,icon,persistTodo,prepare,render,toast,localDate});
-    inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast,editRecord,clearActivity});
+    inspectorUI=window.PipeChatInspectorUI.create({S,esc,icon,rowName,persist,refresh:refreshInspector,toast,editRecord,clearActivity,
+      onLoadRelationships:async({recordId})=>{
+        const generation=S.generation,snapshot=await api('/api/business/workspace');if(generation!==S.generation)return [];
+        S.ownBusinessWorkspaceId=snapshot.workspaceId;
+        const primaryId=window.PipeChatBusinessWorkspace.legacyId(snapshot.workspaceId,recordId);
+        return snapshot.state.relationships.filter(link=>link.fromId===primaryId||link.toId===primaryId).map(link=>{
+          const entityId=link.fromId===primaryId?link.toId:link.fromId,entity=snapshot.state.entities.find(item=>item.id===entityId);
+          if(!entity)return null;
+          const type=snapshot.state.entityTypes.find(item=>item.id===entity.typeId),identity=type.fields.find(f=>f.type==='text'&&f.required)||type.fields.find(f=>f.type==='text');
+          return {workspaceId:snapshot.workspaceId,entityId,typeId:entity.typeId,name:String(entity.values[identity?.id]||entity.id),relationshipId:link.id,relationshipName:snapshot.state.relationshipTypes.find(item=>item.id===link.typeId)?.name||'Related'};
+        }).filter(Boolean);
+      },onRelationships:async relationship=>{
+        const generation=S.generation;$('inspectorDialog').close();S.tab='entities';render();await loadBusinessView(relationship.workspaceId);
+        if(generation===S.generation&&businessUI.getSnapshot()?.workspaceId===relationship.workspaceId)businessUI.inspect(relationship.entityId);
+      }});
+    businessUI=window.PipeChatBusinessWorkspaceUI.mount({element:$('businessContent'),icon,
+      api:{read:workspaceId=>api('/api/business/workspace'+(workspaceId?'?workspaceId='+encodeURIComponent(workspaceId):'')),
+        history:(workspaceId,entityId,after='0')=>api('/api/business/history?'+new URLSearchParams({workspaceId,entityId,after})),
+        commit:plan=>{const {workspaceId,expectedVersion,expectedPrimaryUpdatedAt,next}=plan;return api('/api/business/workspace',{method:'PUT',body:JSON.stringify({workspaceId,expectedVersion,expectedPrimaryUpdatedAt,next})});},
+        share:(snapshot,input)=>api('/api/business/share',{method:'POST',body:JSON.stringify({...input,workspaceId:snapshot.workspaceId,expectedVersion:snapshot.version,confirm:true})}),
+        revoke:(snapshot,input)=>api('/api/business/revoke',{method:'POST',body:JSON.stringify({...input,workspaceId:snapshot.workspaceId,expectedVersion:snapshot.version,confirm:true})})},
+      onInspectPrimary:({workspaceId,recordId})=>{if(workspaceId===S.ownBusinessWorkspaceId)inspectorUI.open(recordId);else toast('Use the shared record inspector to view this workspace.');},onChange:()=>{clearDraft();}});
+    $('businessWorkspace').onchange=()=>loadBusinessView($('businessWorkspace').value);
     const sharePreview=document.createElement('section');sharePreview.id='sharePreview';sharePreview.setAttribute('aria-label','Recipient preview');$('shareView').append(sharePreview);
     notificationsUI=window.PipeChatNotificationsUI.create({S,esc,icon,core:()=>C,localDate,toast,refresh:refreshInspector,prepare,
       blocked:()=>!S.loaded||S.saving||S.busy||S.resetting||Boolean(S.failedEdit||S.pending||S.clarification||restoredProposal)||todoUI.dirty()||Boolean(document.querySelector('dialog[open]:not(#notificationDateDialog)'))||Boolean(document.activeElement?.closest('#dealRows input,#dealRows textarea,#dealRows select')),
@@ -1431,7 +1844,8 @@
     $('dealRows').addEventListener('input',event=>resizeTextCell(event.target,true));
     $('dealRows').addEventListener('focusout',event=>resizeTextCell(event.target,false));
     $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
-    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(event.target.closest('[data-import-primary]')){chooseImportPrimary();return;}const duplicateChoice=event.target.closest('[data-import-duplicates]');if(duplicateChoice){chooseImportDuplicates(duplicateChoice.dataset.importDuplicates);return;}if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
+    $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(handleImportClick(event))return;if(event.target.closest('[data-import-primary]')){chooseImportPrimary();return;}const duplicateChoice=event.target.closest('[data-import-duplicates]');if(duplicateChoice){chooseImportDuplicates(duplicateChoice.dataset.importDuplicates);return;}if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
+    $('trustBody').onchange=handleImportChange;
     $('trustBody').addEventListener('input',event=>{if(event.target.id==='failedEditValue'&&S.failedEdit){S.failedEdit.raw=event.target.value;S.failedEdit.reviewed=false;keepFailedEdit();$('failedEditForm').querySelector('[type="submit"]').disabled=true;}});
     $('chatClarification').onclick=$('trustBody').onclick;
     $('trustBody').addEventListener('submit',event=>{if(event.target.id==='failedEditForm'){event.preventDefault();retryFailedEdit();}else if(event.target.id==='dealEditor'){event.preventDefault();addManual(event.target);}});
@@ -1451,7 +1865,9 @@
     $('dashboardElement').onchange=()=>editDashboardGraph($('dashboardElement').value);
     $('resetReportBtn').onclick=()=>{S.dashboard=null;dashboardViews=[];dashboardRevision=-1;S.report=defaultReport();S.focus={kind:'report'};renderReport(visible());saveChatState();};
     if($('chatEarlierBtn'))$('chatEarlierBtn').onclick=async()=>{const current=conversation;if(!current)return;const feed=$('chatFeed'),height=feed.scrollHeight;$('chatEarlierBtn').disabled=true;try{const messages=await current.older();if(current!==conversation)return;[...messages].reverse().forEach(message=>paintMessage(message.content,message.role,true));feed.scrollTop+=feed.scrollHeight-height;$('chatEarlierBtn').hidden=!current.before;}catch(error){toast(error.message);}finally{$('chatEarlierBtn').disabled=false;}};
-    if($('chatRetryBtn'))$('chatRetryBtn').onclick=async()=>{try{if(conversation?.ready)await conversation.flush();else await loadChat();}catch(error){if(error.status===409&&window.confirm('Chat changed in another tab. Reload saved chat and discard any unsaved messages or proposals in this tab?')){clearDraft();await loadChat();}else toast(error.message);}};
+    if($('chatRetryBtn'))$('chatRetryBtn').onclick=async()=>{try{if(turnAwaiting)await checkPendingTurn(true);else if(conversation?.ready)await conversation.flush();else await loadChat();}catch(error){if(error.status===409&&window.confirm('Chat changed in another tab. Reload saved chat and discard any unsaved messages or proposals in this tab?')){clearDraft();await loadChat();}else toast(error.message);}};
+    if($('chatNewBtn'))$('chatNewBtn').onclick=()=>selectChat();
+    if($('chatThreadSelect'))$('chatThreadSelect').onchange=event=>selectChat(event.target.value);
     window.addEventListener('beforeunload',event=>{if(S.saving||S.busy||conversation?.dirty||(S.failedEdit&&!S.failedEditStored)){event.preventDefault();event.returnValue='';}});
   }
   wire();
