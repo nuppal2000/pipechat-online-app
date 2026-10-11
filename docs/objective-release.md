@@ -4,11 +4,11 @@
 
 Status supplied by the release coordinator on 2026-10-10:
 
-- Last deployed local regression: **873/873 passed**, with test concurrency 2. The first high-parallel run had a browser timeout; the bounded rerun passed without skipped tests.
-- Current follow-up candidate: **949/949 local tests passed**, concurrency 2, no skips. This includes explicit report-selection/focus, canonical-read evidence classification, workflow/business revision recovery, shared attention boundaries and late Undo hydration guards. Connected-AI acceptance must be repeated after deployment.
+- Last deployed local regression: **949/949 passed**, with test concurrency 2.
+- Current follow-up candidate: **1,025/1,025 non-browser tests passed**, concurrency 2, no skips in that run. Four browser-bearing test files were excluded from this run; their browser acceptance is separate. The first sandboxed run could not complete localhost connections, temporary atomic writes or browser launch. It is not counted as a passing run.
 - Exact atomic deployment bundle: **passed**.
 - Actual Supabase bundle: **`featureVersion: 2` verified**.
-- Application deployment: PRs 58 and 59 merged; Render verified live at `cbe564cfd3b4070a577a8a58c97358e43a07e71e`. Health, readiness and monitor endpoints returned 200; anonymous CRM, conversations and business-workspace endpoints returned 401.
+- Application deployment: PRs 58, 59 and 60 merged; Render verified live at `293b44ec446bf2dde7ebfa4571733c7b6ab2b1b5`. Health, readiness and monitor endpoints returned 200; anonymous CRM, conversations and business-workspace endpoints returned 401. The next candidate is not deployed yet and requires no migration.
 - Connected-AI acceptance: **in progress, not certified**. QA A has the 42-row synthetic baseline plus recruiting type definitions. QA B remains reserved for isolation/sharing checks. The existing user account has not received confirmed test writes.
 
 The live checks have already exposed additional defects beyond the first deployed fixes. The current scope-binding, revision-recovery and evidence-classification patches require another full regression and connected-AI retest. Passing local tests or deployment health does not close all 28 objectives.
@@ -16,13 +16,19 @@ The live checks have already exposed additional defects beyond the first deploye
 ### Acceptance Checkpoint
 
 - Exact open-stage/blank-follow-up query: nine correct records. Subsequent Ravi refinement: three records, total 161,000 and average 53,666.67, computed from saved data.
-- Aggregate variant: correct median 47,000, but grouped owner totals used all 42 records. This is a failed scope test, not an accepted answer. Report steps now have an explicit selection-reference patch awaiting deployment and retest.
-- Note search: correct two accounts and exact supporting text. Direct readback variant had contradictory free-form prose; requiring canonical read evidence is under test.
+- Aggregate variant: the latest live run asked unnecessarily whether the three-record focus or older nine-record table was meant. Local end-to-end conversation tests prove the three IDs persist through response handling, flush, reload and server preparation. The candidate materializes that conversational population separately from the table view; connected-AI retesting is still required.
+- Note search and direct readback variant now return the two correct accounts and canonical stored wording, without contradictory free-form data claims.
 - Conditional Sarah update: six eligible rows, three actual priority changes. Confirmed in QA A, refreshed, and undone using the durable inverse. All 42 records' field values matched the baseline afterward. Initial natural-language Undo unnecessarily asked for an action ID; better action context is still being implemented.
 - Email extraction preview: corrected amount and date retained, decision maker appended, embedded malicious deletion ignored. Revision retained the amount/date and existing text while changing the destination note field. Confirmed in QA A, reloaded, then undone using the durable journal. All 42 rows' field values matched the baseline afterward.
 - Partial-name clarification: Summit offered both saved candidates; the exact supplied name resumed a single priority-change preview, which was cancelled. No table write occurred.
-- Attention counts: overdue 16 and today 1 matched, but next seven days incorrectly included today (4 versus the UI's 3 future records). Shared date boundaries are in the follow-up candidate; live retest remains required.
-- Recruiting type creation saved and survived refresh. Representative linked entities, relationship correction and two-user sharing remain open. Contact linking and workflow revision failed their first live runs and require retesting.
+- Attention exact retest passed: overdue 16, today 1 and next seven days 3. Future starts tomorrow, so today is not counted twice.
+- XLSX import passed live mapping, two explicit invalid-cell acknowledgements, one genuine blank, case-insensitive duplicate detection and per-field merge choices. Confirmation/reload produced 45 records with the reviewed values. Natural-language durable Undo restored all 42 baseline rows exactly while preserving the tasks and paused workflow. A pending-save status briefly looked like a failed retry; the candidate distinguishes those states.
+- Workflow explicit-detail revision, inactive draft save/reload, separate activation, matching/nonmatching transitions, open-task exclusion, completed-task eligibility and execution history passed in QA A. It is now paused, Northstar's stage is restored, and two synthetic tasks remain. Initial interpretation still asked unnecessary defaults; event replay, failed-event retry and live DST checks remain open.
+- Recruiting type creation saved and survived refresh. Representative linked entities, relationship correction and two-user sharing remain open. The exact contact-link request still failed validation on the latest live run. Do not count underlying compiler tests as acceptance of that prompt.
+- Candidate security repairs clear private graph panels across account changes and invalidate late replies, preserve optional unset booleans, and align record sharing with the existing SQL scope contract. Hosted two-account sharing checks remain required.
+- Final code review caught a startup draft-deletion regression. Startup now clears inspector UI while preserving identity-matched session drafts; logout/reset remain destructive. Combined startup and late-response tests passed.
+- Blank-date bulk update also passed confirmation/reload: exactly nine previously blank dates became October 17, with every other field unchanged. The natural-language inverse restored the 42-row baseline exactly.
+- Natural intake still needed a clarification in a fresh thread, then created a complete Acorn fixture, preserving supplied product/contact/amount/date and blank optional fields. Save/reload and targeted Undo passed. Initial intake and contact-link failures now have bounded diagnostic stages/counts for the next connected-AI retest; raw prompts and model errors are not logged.
 - Proposal HTML downloaded with saved facts and unknown terms. Browser policy blocked opening the local file URL, so visual/print verification remains unverified; no workaround was used.
 
 Detailed local evidence is kept outside the published application under `work/objective-live-evidence.json` and `work/objective-acceptance-status.json`. Do not publish private backups, credentials or browser session material as test fixtures.
@@ -110,7 +116,7 @@ Capture a canonical before snapshot, IDs, versions, timezone, configured models,
 
 Historical numbers are conditional oracles, not current facts: the report's 42-record fixture totaled $1,624,800; its Ravi subset was 3/$161,000/$53,666.67. Use these only with a verified matching fixture. Otherwise independently calculate the current expected answer. Do not reconstruct a full dataset from a partial report. For relative dates record the actual app date/timezone; a controlled QA clock at 2026-10-10 gives two weeks = 2026-10-24 and seven days = 2026-10-17. Literal dates in pasted material remain literal.
 
-Every row requires the requested outcome, not just a plausible reply. Save redacted request/plan/action/turn IDs, preview and read-back evidence, artifact metadata where relevant, actual versus expected results, and an issue reference. A `None` response, generic failure, invented fact, omitted subrequest, or unsupported requested outcome is not a pass. Mark rows **Pass / Fail / Blocked** only after execution; all rows currently have status **Not run**.
+Every row requires the requested outcome, not just a plausible reply. Save redacted request/plan/action/turn IDs, preview and read-back evidence, artifact metadata where relevant, actual versus expected results, and an issue reference. A `None` response, generic failure, invented fact, omitted subrequest, or unsupported requested outcome is not a pass. Mark individual cases **Pass / Fail / Blocked** only after execution; the checkpoint above and private evidence files track the incomplete live run.
 
 ## 28-Objective Acceptance Checklist
 
