@@ -952,7 +952,10 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
     }
     grounded.coverage={requested:coverage.requested,compiled:coverage.compiled};
   }
-  if(grounded.crmAction?.action==='query_business')grounded.computedAnswer=businessCompiler.describe(pipeline.business,businessCompiler.query(pipeline.business,grounded.crmAction));
+  // The durable transcript must keep the same computed answer that the UI shows,
+  // never the planner's provisional prose about results it has not calculated.
+  const computedAnswer=actionReview.renderAnswer(payload,grounded);
+  if(computedAnswer)grounded.computedAnswer=computedAnswer;
   return {...grounded, ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
 }
 
