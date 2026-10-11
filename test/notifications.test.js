@@ -29,3 +29,17 @@ test('deleting a linked record removes its notification while duplicate names re
   const rows=[{...row(1,today),account:'Same'},{...row(2,today),account:'Same'}],cards=[{...T.create('todo_deleted',3),dueDate:today}];
   assert.deepEqual(collect(rows,cards).map(i=>i.id),[1,2]);
 });
+test('server attention windows agree with Notifications at boundaries and never double-count today',()=>{
+  const {dateContext}=require('../lib/date-context');
+  for(const date of ['2026-10-10','2026-12-31','2024-02-28','2026-03-08','2026-11-01']){
+    const windows=dateContext(date).attentionWindows;
+    assert.deepEqual(windows,N.windows(date));
+    const rows=[];for(let offset=-1;offset<=8;offset++)rows.push(row(offset+2,new Date(N.day(date)+offset*86400000).toISOString().slice(0,10)));
+    const items=collect(rows,[],{today:date});
+    assert.equal(items.filter(item=>item.section==='overdue').length,1);
+    assert.equal(items.filter(item=>item.section==='today').length,1);
+    const future=items.filter(item=>item.section==='upcoming');assert.equal(future.length,7);
+    assert(future.every(item=>item.date>=windows.nextSevenDays.from&&item.date<=windows.nextSevenDays.through&&item.date>date));
+    assert.equal(new Set(items.map(item=>item.key)).size,items.length);
+  }
+});

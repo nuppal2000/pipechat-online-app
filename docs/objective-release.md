@@ -4,13 +4,28 @@
 
 Status supplied by the release coordinator on 2026-10-10:
 
-- Local regression: **839/839 passed**.
+- Last deployed local regression: **873/873 passed**, with test concurrency 2. The first high-parallel run had a browser timeout; the bounded rerun passed without skipped tests.
+- Current follow-up candidate: **949/949 local tests passed**, concurrency 2, no skips. This includes explicit report-selection/focus, canonical-read evidence classification, workflow/business revision recovery, shared attention boundaries and late Undo hydration guards. Connected-AI acceptance must be repeated after deployment.
 - Exact atomic deployment bundle: **passed**.
 - Actual Supabase bundle: **`featureVersion: 2` verified**.
-- Application deployment: **underway through the GitHub UI**; completion is not asserted here.
-- Connected-AI acceptance: **not run for this release**. Every checklist row below remains open.
+- Application deployment: PRs 58 and 59 merged; Render verified live at `cbe564cfd3b4070a577a8a58c97358e43a07e71e`. Health, readiness and monitor endpoints returned 200; anonymous CRM, conversations and business-workspace endpoints returned 401.
+- Connected-AI acceptance: **in progress, not certified**. QA A has the 42-row synthetic baseline plus recruiting type definitions. QA B remains reserved for isolation/sharing checks. The existing user account has not received confirmed test writes.
 
-These are coordinator-reported results, not checks rerun while writing this guide. This documentation task changed no runtime, tests, database, or deployment settings.
+The live checks have already exposed additional defects beyond the first deployed fixes. The current scope-binding, revision-recovery and evidence-classification patches require another full regression and connected-AI retest. Passing local tests or deployment health does not close all 28 objectives.
+
+### Acceptance Checkpoint
+
+- Exact open-stage/blank-follow-up query: nine correct records. Subsequent Ravi refinement: three records, total 161,000 and average 53,666.67, computed from saved data.
+- Aggregate variant: correct median 47,000, but grouped owner totals used all 42 records. This is a failed scope test, not an accepted answer. Report steps now have an explicit selection-reference patch awaiting deployment and retest.
+- Note search: correct two accounts and exact supporting text. Direct readback variant had contradictory free-form prose; requiring canonical read evidence is under test.
+- Conditional Sarah update: six eligible rows, three actual priority changes. Confirmed in QA A, refreshed, and undone using the durable inverse. All 42 records' field values matched the baseline afterward. Initial natural-language Undo unnecessarily asked for an action ID; better action context is still being implemented.
+- Email extraction preview: corrected amount and date retained, decision maker appended, embedded malicious deletion ignored. Revision retained the amount/date and existing text while changing the destination note field. Confirmed in QA A, reloaded, then undone using the durable journal. All 42 rows' field values matched the baseline afterward.
+- Partial-name clarification: Summit offered both saved candidates; the exact supplied name resumed a single priority-change preview, which was cancelled. No table write occurred.
+- Attention counts: overdue 16 and today 1 matched, but next seven days incorrectly included today (4 versus the UI's 3 future records). Shared date boundaries are in the follow-up candidate; live retest remains required.
+- Recruiting type creation saved and survived refresh. Representative linked entities, relationship correction and two-user sharing remain open. Contact linking and workflow revision failed their first live runs and require retesting.
+- Proposal HTML downloaded with saved facts and unknown terms. Browser policy blocked opening the local file URL, so visual/print verification remains unverified; no workaround was used.
+
+Detailed local evidence is kept outside the published application under `work/objective-live-evidence.json` and `work/objective-acceptance-status.json`. Do not publish private backups, credentials or browser session material as test fixtures.
 
 The acceptance source is `C:/Users/nuppa/Downloads/PipeChat_Objective_Test_Report.docx`, titled *PipeChat beta objective assessment*. Its historical observations are not certification of this release. Report prompts below retain their wording, with typographic apostrophes normalized to ASCII. Added variants are explicitly labeled. Objectives 9, 23, 24, and 25 had UI/access checks, not recorded chatbot prompts.
 

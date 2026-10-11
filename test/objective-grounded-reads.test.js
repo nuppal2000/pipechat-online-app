@@ -81,7 +81,7 @@ test('durable read answer uses the complete canonical nine-row cohort, never the
 
 test('an approving completeness review cannot turn fabricated model totals into the durable answer',()=>{
   const p=payload(),r=result(F.plan([F.select('selected'),read([['count'],['sum','f_value'],['average','f_value']])]));
-  const approval={requirements:[{description:'The count and all amounts are correct',satisfied:true,stepIds:['answer']}],issues:[],clarificationQuestion:null};
+  const approval={requirements:[{description:'The count and all amounts are correct',evidenceKind:'computed_read',satisfied:true,stepIds:['answer']}],issues:[],clarificationQuestion:null};
   assert.equal(Review.validateReview(approval,r).ok,true);
   const answer=Review.renderAnswer(p,r);
   assert.match(answer,/Record count: 6/);assert.match(answer,/Total Value: \$295,000\.00/);assert.match(answer,/Average Value: \$49,166\.67/);

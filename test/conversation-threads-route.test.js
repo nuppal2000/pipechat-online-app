@@ -5,13 +5,13 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
   global.fetch = async (url,options) => {
     if (url !== 'https://api.openai.com/v1/responses') throw new Error('Offline fixture forbids external requests');
     const request = JSON.parse(options.body), input = JSON.parse(typeof request.input === 'string' ? request.input : request.input[0].content[0].text);
-    await fs.appendFile(process.env.CONVERSATION_CAPTURE,JSON.stringify(input)+'\n');
+    await fs.appendFile(process.env.CONVERSATION_CAPTURE,JSON.stringify({...input,_fixtureStage:request.text.format.name==='pipechat_action_review'?'review':'plan'})+'\n');
     await new Promise(resolve=>setTimeout(resolve,450));
     if (input.userCommand.includes('fixture failure')) throw new Error('PRIVATE_PROVIDER_EXCEPTION');
     if (input.userCommand.includes('fixture canonical')) {
       const F = require('./fixtures/workspace-plans.cjs');
       const result = request.text.format.name === 'pipechat_action_review'
-        ? {requirements:[{description:'Compute requested record statistics',stepIds:input.allowedStepIds,satisfied:true}],issues:[],clarificationQuestion:null}
+        ? {requirements:[{description:'Compute requested record statistics',evidenceKind:'computed_read',stepIds:input.allowedStepIds,satisfied:true}],issues:[],clarificationQuestion:null}
         : {assistantMessage:'I will calculate those numbers. Count: 99999.',memoryNote:null,crmAction:F.plan([
           F.select('population'),
           {op:'read_records',id:'statistics',label:'Saved amounts',selection:'population',showTable:false,
@@ -19,7 +19,10 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
         ])};
       return {ok:true,json:async()=>({usage:{input_tokens:20,output_tokens:10},output_text:JSON.stringify(result)})};
     }
-    return {ok:true,json:async()=>({usage:{input_tokens:20,output_tokens:10},output_text:JSON.stringify({assistantMessage:'Saved reply: '+input.userCommand,crmAction:null,memoryNote:null})})};
+    const result=request.text.format.name==='pipechat_action_review'
+      ? {requirements:[{description:'General discussion',evidenceKind:'conversation',stepIds:['root'],satisfied:true}],issues:[],clarificationQuestion:null}
+      : {assistantMessage:'Saved reply: '+input.userCommand,crmAction:null,memoryNote:null};
+    return {ok:true,json:async()=>({usage:{input_tokens:20,output_tokens:10},output_text:JSON.stringify(result)})};
   };
 } else {
   const test = require('node:test'), assert = require('node:assert/strict');
@@ -53,10 +56,11 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
       const catalog=(await api('/api/conversations')).body;
       return {userCommand:command,conversation:saved.body,turn:{threadId:catalog.activeThreadId,requestId:randomUUID(),userMessageId,assistantMessageId:randomUUID()}};
     }
-    const calls=async()=>{try{return (await fs.readFile(capture,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);}catch(error){if(error.code==='ENOENT')return [];throw error;}};
+    const providerCalls=async()=>{try{return (await fs.readFile(capture,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);}catch(error){if(error.code==='ENOENT')return [];throw error;}};
+    const calls=async()=>(await providerCalls()).filter(call=>call._fixtureStage==='plan');
     async function until(fn){for(let i=0;i<120;i++){const result=await fn();if(result)return result;await new Promise(resolve=>setTimeout(resolve,30));}throw new Error('Timed out: '+output);}
     const lookup=r=>api(`/api/conversations/${r.turn.threadId}/turns/${r.turn.requestId}`);
-    return {base,directory,user,cookie,api,call,prepare,calls,until,lookup};
+    return {base,directory,user,cookie,api,call,prepare,calls,providerCalls,until,lookup};
   }
 
   test('real AI route durably claims, finishes, replays, isolates threads and survives a disconnected client',{timeout:30000},async t=>{
@@ -65,10 +69,12 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
     assert.equal(replies.filter(reply=>reply.body.turn?.status==='succeeded').length,1);
     assert(replies.every(reply=>[200,202].includes(reply.status)),JSON.stringify(replies));
     assert.equal((await f.calls()).length,1);
+    assert.equal((await f.providerCalls()).length,2,'One planner plus one independent review, despite concurrent HTTP requests');
     const receipt=(await f.lookup(r)).body;
     assert.equal(receipt.turn.assistantMessageId,r.turn.assistantMessageId);
     assert.equal(receipt.turn.status,'succeeded');assert.equal(receipt.usage.used,1);
     const retry=await f.api('/api/pipechat-ai','POST',r);assert.deepEqual(retry.body,receipt);assert.equal((await f.calls()).length,1);
+    assert.equal((await f.providerCalls()).length,2,'Receipt replay dispatches neither planner nor reviewer');
     const page=(await f.api('/api/conversation')).body;
     assert.equal(page.messages.filter(message=>message.id===r.turn.assistantMessageId).length,1);
     assert.deepEqual(page.state,{focus:{ids:[]}});

@@ -11,6 +11,7 @@
   const defaultReport = () => ({metric:'sum',field:'value',groupBy:C.role('primary')||'account',chart:'bar',filter:null,owners:null,accounts:null,from:null,to:null});
   const S = {user:null,records:[],updatedAt:null,usage:null,health:null,history:[],pending:null,clarification:null,sourceAction:null,tab:'table',scope:'all',search:'',filter:null,report:defaultReport(),expanded:null,undo:null,saving:false,busy:false,generation:0,revision:0,signup:false,loaded:false};
   let chart=null, toastTimer;
+  let durableUndoRequest=0;
   let dashboardCharts=[],dashboardViews=[],dashboardRevision=-1;
   S.dashboard=null;
   let conversation=null, restoringChat=false, restoredProposal=null;
@@ -61,7 +62,7 @@
         try{await handleAction(response,command);}finally{quietTurnReply=false;applyingTurn=false;$('chatThreadSelect').disabled=threadChanging;$('chatNewBtn').disabled=threadChanging;}
       }
       else if(response.crmAction&&response.ai?.workspaceVersion===S.updatedAt){
-        restoredProposal={...chatState(),sourceAction:response.crmAction,originalCommand:command,workspaceVersion:response.ai.workspaceVersion};renderTrust();
+        restoredProposal={...chatState(),sourceAction:response.crmAction,originalCommand:(ownsDraft&&(S.clarification?.originalCommand||S.pending?.originalCommand||page.state?.originalCommand))||command,workspaceVersion:response.ai.workspaceVersion};renderTrust();
       }
     }else if(['failed','interrupted','cancelled'].includes(response.turn.status)&&response.turn.epoch===page.epoch&&ownsDraft){
       // A failed revision must not leave its superseded proposal confirmable.
@@ -138,15 +139,16 @@
     }finally{restoringChat=false;}
   }
   async function reviewRestoredProposal(){
-    const state=restoredProposal;if(!state||S.busy||S.saving)return;
+    const state=restoredProposal;if(!state||S.busy||S.saving||S.pending)return;
+    const generation=S.generation,version=S.updatedAt;
     restoredProposal=null;
     if(state.workspaceVersion!==S.updatedAt){say('The table changed. Please repeat this request so I can prepare a fresh preview.');saveChatState();renderTrust();return;}
     try{
       if(['move_record','move_field'].includes(state.sourceAction.action)&&JSON.stringify(state.tableView)!==JSON.stringify(tableView()))throw new Error('The visible table order changed. Please repeat the move request in this view.');
-      if(['business_plan','create_document','undo_action','create_workflow','set_workflow_activation','retry_workflow_event'].includes(state.sourceAction.action))await handleAction({action:state.sourceAction},state.originalCommand);
+      if(['business_plan','create_document','undo_action','create_workflow','set_workflow_activation','retry_workflow_event'].includes(state.sourceAction.action))await handleAction({crmAction:state.sourceAction},state.originalCommand);
       else prepare(state.sourceAction,state.originalCommand);
-    }catch(error){clearDraft();say(error.message);}
-    saveChatState();
+    }catch(error){if(generation!==S.generation||version!==S.updatedAt||S.pending)return;clearDraft();say(error.message);}
+    if(generation===S.generation)saveChatState();
   }
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];S.focus=null;let todoUI=null;
@@ -370,7 +372,7 @@
     const confirmation=S.resetConfirmation;
     if(!confirmation||!S.loaded||S.saving||S.busy||S.resetting)return;
     if(confirmation.generation!==S.generation||confirmation.revision!==S.revision){$('resetError').textContent='The workspace changed. Cancel and review it before resetting.';return;}
-    const generation=S.generation;S.resetting=true;$('resetYesBtn').disabled=true;$('resetNoBtn').disabled=true;$('resetError').textContent='Resetting...';render();
+    const generation=S.generation;S.resetting=true;durableUndoRequest++;$('resetYesBtn').disabled=true;$('resetNoBtn').disabled=true;$('resetError').textContent='Resetting...';render();
     try{
       await conversation?.flush();
       const saved=await api('/api/crm-reset',{method:'POST',body:JSON.stringify({confirm:true,expectedUpdatedAt:confirmation.updatedAt})});
@@ -545,7 +547,9 @@
     if(S.pending?.kind==='journal-undo'){
       const p=S.pending;$('trustTitle').textContent='Review undo';$('trustStatus').textContent='Only this saved action will be undone. Unrelated edits stay unchanged.';
       const value=slot=>!slot.exists?'Removed':typeof slot.value==='object'?JSON.stringify(slot.value):String(slot.value??'Not set');
-      panel.innerHTML=p.proposal.changes.map(c=>`<section class="proposal-record"><h3>${esc(c.path[0]==='records'?rowName(S.records.find(r=>String(r.id)===c.path[1])||{})+' / '+(labels()[c.path[2]]||c.path[2]||'Record'):c.path.join(' / '))}</h3><div class="diff-values"><span class="diff-before">${esc(value(c.before))}</span>${icon('ArrowRight')}<span class="diff-after">${esc(value(c.after))}</span></div></section>`).join('')+`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm undo</button><button class="secondary" data-cancel>Cancel</button></div>`;return;
+      panel.innerHTML=p.proposal.changes.map(c=>c.path[2]==='history'
+        ?'<section class="proposal-record"><h3>Activity history</h3><p>Activity history for this saved change will be restored.</p></section>'
+        :`<section class="proposal-record"><h3>${esc(c.path[0]==='records'?rowName(S.records.find(r=>String(r.id)===c.path[1])||{})+' / '+(labels()[c.path[2]]||c.path[2]||'Record'):c.path.join(' / '))}</h3><div class="diff-values"><span class="diff-before">${esc(value(c.before))}</span>${icon('ArrowRight')}<span class="diff-after">${esc(value(c.after))}</span></div></section>`).join('')+`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm undo</button><button class="secondary" data-cancel>Cancel</button></div>`;return;
     }
     if(S.pending?.kind==='workflow-save'){renderWorkflowReview();return;}
     if(S.pending?.kind==='business-plan'){
@@ -634,6 +638,16 @@
     clearClarification();render();if(plan.answers?.length)say(plan.answers.join('\n\n'));saveChatState();
   }
   let workflowUI=null;
+  function proposalRevision(action,kind){
+    if(S.saving||S.busy||S.failedEdit||S.resetting)throw new Error('Finish the current operation before preparing another proposal.');
+    const pending=S.pending,previous=S.sourceAction;
+    if(!pending)return null;
+    if(pending.kind!==kind||previous?.action!==action.action||['workflowId','eventId','recordId','actionId'].some(key=>previous[key]!==action[key]))throw new Error('Confirm or cancel the current draft first.');
+    if(pending.attempted)throw new Error('Retry the same save or refresh its result before revising this proposal.');
+    if(pending.generation!==S.generation||pending.expectedUpdatedAt!==S.updatedAt)throw new Error('The workspace changed. Refresh and review this proposal again.');
+    return pending;
+  }
+  function proposalOriginalCommand(command,replacing=null){return replacing?.originalCommand||S.clarification?.originalCommand||command||'';}
   function workflowsController(){
     if(!workflowUI){
       workflowUI=window.PipeChatWorkflowUI.create({element:$('workflowList'),S,api,icon,
@@ -658,18 +672,20 @@
     $('trustBody').innerHTML=window.PipeChatWorkflowUI.review(p.proposal,{saving:S.saving,error:p.error,attempted:p.attempted,refresh:p.refresh});
     if($('workflowReviewRefresh'))$('workflowReviewRefresh').onclick=()=>refreshWorkflowReview(p).catch(error=>toast(error.message));
   }
-  async function prepareWorkflow(action,replacing=null){
-    return prepareWorkflowRequest('/api/workflows/prepare',{action},action,replacing);
+  async function prepareWorkflow(action,replacing=null,originalCommand=''){
+    return prepareWorkflowRequest('/api/workflows/prepare',{action},action,replacing,originalCommand);
   }
-  async function prepareWorkflowRetry(workflowId,eventId){
-    return prepareWorkflowRequest('/api/workflows/retry',{workflowId,eventId},{action:'retry_workflow_event',workflowId,eventId});
+  async function prepareWorkflowRetry(workflowId,eventId,originalCommand=''){
+    const action={action:'retry_workflow_event',workflowId,eventId};
+    return prepareWorkflowRequest('/api/workflows/retry',{workflowId,eventId},action,proposalRevision(action,'workflow-save'),originalCommand);
   }
-  async function prepareWorkflowRequest(url,input,action,replacing=null){
-    if(S.saving||S.busy||S.failedEdit||S.resetting||S.pending&&S.pending!==replacing)throw new Error('Confirm or cancel the current draft first.');
+  async function prepareWorkflowRequest(url,input,action,replacing=null,originalCommand=''){
+    if(S.saving||S.busy||S.failedEdit||S.resetting||S.pending&&S.pending!==replacing||replacing&&(replacing!==S.pending||replacing.kind!=='workflow-save'))throw new Error('Confirm or cancel the current draft first.');
+    originalCommand=proposalOriginalCommand(originalCommand,replacing);
     const generation=S.generation,version=S.updatedAt,pending=S.pending;
     const proposal=await api(url,{method:'POST',body:JSON.stringify({...input,expectedUpdatedAt:version})});
     if(generation!==S.generation||version!==S.updatedAt||pending!==S.pending)throw new Error('The workspace or draft changed. Review the workflow again.');
-    S.pending={kind:'workflow-save',proposal,createdAt:Date.now(),generation,expectedUpdatedAt:version,attempted:false,error:'',refresh:false};
+    S.pending={kind:'workflow-save',proposal,originalCommand,createdAt:Date.now(),generation,expectedUpdatedAt:version,attempted:false,error:'',refresh:false};
     S.sourceAction=C.clone(action);S.clarification=null;
     say(proposal.operation==='create'?'Review the workflow draft. Saving it will not activate it.':proposal.operation==='retry'?'Review the saved event before retrying. Its original event date will be used.':'Review the workflow activation change.');
     renderTrust();focusTrust();workflowUI?.draw();
@@ -712,18 +728,22 @@
     await workflowsController().history(action.workflowId,action.limit);
     if(generation===S.generation)say('Saved workflow history is open. No changes were made.');
   }
-  async function prepareDocument(action){
-    const generation=S.generation,version=S.updatedAt;
+  async function prepareDocument(action,originalCommand=''){
+    const replacing=proposalRevision(action,'business-document');
+    originalCommand=proposalOriginalCommand(originalCommand,replacing);
+    const generation=S.generation,version=S.updatedAt,pending=S.pending;
     const proposal=await api('/api/documents/proposal',{method:'POST',body:JSON.stringify({recordId:action.recordId,expectedUpdatedAt:version,download:false})});
-    if(generation!==S.generation||version!==S.updatedAt)throw new Error('The workspace changed. Request the document again.');
-    S.pending={kind:'business-document',proposal,createdAt:Date.now(),expectedUpdatedAt:version,generation};
+    if(generation!==S.generation||version!==S.updatedAt||pending!==S.pending)throw new Error('The workspace or draft changed. Request the document again.');
+    S.pending={kind:'business-document',proposal,originalCommand,createdAt:Date.now(),expectedUpdatedAt:version,generation};
     S.sourceAction=C.clone(action);S.clarification=null;say('The proposal is ready to review and download. It uses saved record facts; any commercial terms not explicitly stored are marked Unknown.');renderTrust();focusTrust();
   }
-  async function prepareBusiness(action){
-    const generation=S.generation,proposal=await api('/api/business/prepare',{method:'POST',body:JSON.stringify({action})});
-    if(generation!==S.generation)return;
+  async function prepareBusiness(action,originalCommand=''){
+    const replacing=proposalRevision(action,'business-plan');
+    originalCommand=proposalOriginalCommand(originalCommand,replacing);
+    const generation=S.generation,version=S.updatedAt,pending=S.pending,proposal=await api('/api/business/prepare',{method:'POST',body:JSON.stringify({action})});
+    if(generation!==S.generation||version!==S.updatedAt||pending!==S.pending)throw new Error('The workspace or draft changed. Review the entity changes again.');
     if(!proposal.mutates){clearDraft();say('The requested entities and relationships already exist. No changes are needed.');return;}
-    S.pending={kind:'business-plan',proposal,createdAt:Date.now(),generation};S.sourceAction=C.clone(action);S.clarification=null;renderTrust();focusTrust();say('Review the linked records and relationships together. Your existing pipeline stays unchanged.');
+    S.pending={kind:'business-plan',proposal,originalCommand,createdAt:Date.now(),generation,expectedUpdatedAt:version};S.sourceAction=C.clone(action);S.clarification=null;renderTrust();focusTrust();say('Review the linked records and relationships together. Your existing pipeline stays unchanged.');
   }
   async function confirmBusiness(p){
     if(p.generation!==S.generation)throw new Error('The workspace changed. Prepare the entity changes again.');
@@ -850,8 +870,15 @@
     useSchema(saved.tableSchema);S.records=saved.deals;S.customFields=C.validateCustomFields(saved.customFields);S.todoCards=window.PipeChatTodo.validate(saved.todoCards,S.records,S.tableSchema,S.customFields);S.updatedAt=saved.updatedAt;S.revision++;S.report=C.reconcileReport(S.report,S.customFields);syncShareFields();render();
   }
   async function restoreDurableUndo(){
-    const generation=S.generation;
-    try{const result=await api('/api/actions');if(generation!==S.generation)return;const entry=result.actions.find(a=>!a.undoneBy&&!a.undoInvalidated&&!a.receipt.undoOf);S.undo=entry?{kind:'journal',actionId:entry.receipt.actionId,label:'Saved change / '+new Date(entry.createdAt).toLocaleString()}:null;render();}catch{}
+    if(S.resetting||S.undo?.dismissed)return;
+    const generation=S.generation,revision=S.revision,undo=S.undo,request=++durableUndoRequest;
+    try{
+      const result=await api('/api/actions');
+      // Hydration cannot supersede local Undo changes or a newer request.
+      if(generation!==S.generation||revision!==S.revision||undo!==S.undo||S.undo?.dismissed||S.resetting||request!==durableUndoRequest)return;
+      const entry=result.actions.find(a=>!a.undoneBy&&!a.undoInvalidated&&!a.receipt.undoOf);
+      S.undo=entry?{kind:'journal',actionId:entry.receipt.actionId,label:'Saved change / '+new Date(entry.createdAt).toLocaleString()}:null;render();
+    }catch{}
   }
   async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema,exactRecords=false,todoCards=null,verifyHistory=false,importReceipt=null,schemaChanges=[]}={}) {
     if(S.saving||S.resetting||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
@@ -991,10 +1018,12 @@
     finally{if(generation===S.generation){S.saving=false;render();}}
   }
   function dismissUndo(){if(S.undo)S.undo.dismissed=true;$('undoStrip').hidden=true;$('toast').hidden=true;}
-  async function prepareUndo(actionId){
-    const generation=S.generation;
-    try{const proposal=await api('/api/actions/preview-undo',{method:'POST',body:JSON.stringify({actionId})});if(generation!==S.generation)return;S.pending={kind:'journal-undo',proposal,generation,createdAt:Date.now(),metadata:{actionId:crypto.randomUUID(),requestId:crypto.randomUUID()}};S.clarification=null;S.sourceAction={action:'undo_action',actionId};renderTrust();focusTrust();}
-    catch(error){say(error.message);}
+  async function prepareUndo(actionId,originalCommand=''){
+    const action={action:'undo_action',actionId},replacing=proposalRevision(action,'journal-undo');
+    originalCommand=proposalOriginalCommand(originalCommand,replacing);
+    const generation=S.generation,version=S.updatedAt,pending=S.pending;
+    try{const proposal=await api('/api/actions/preview-undo',{method:'POST',body:JSON.stringify({actionId})});if(generation!==S.generation||version!==S.updatedAt||pending!==S.pending)return;S.pending={kind:'journal-undo',proposal,originalCommand,generation,expectedUpdatedAt:version,createdAt:Date.now(),metadata:{actionId:crypto.randomUUID(),requestId:crypto.randomUUID()}};S.clarification=null;S.sourceAction=action;renderTrust();focusTrust();}
+    catch(error){if(generation===S.generation&&pending===S.pending)say(error.message);}
   }
   async function undo() {if(!S.undo||S.saving)return;if(S.undo.kind==='journal')return prepareUndo(S.undo.actionId);if(S.undo.kind==='todo')return persistTodo(C.clone(S.undo.todoCards),'Last card change undone',{undo:false});const previous=S.undo;if(await persist(C.clone(previous.records),'Last change undone',{undo:false,customFields:C.clone(previous.customFields||[]),tableSchema:C.clone(previous.tableSchema||null),todoCards:C.clone(previous.todoCards||[])})){if(previous.view){for(const key of ['scope','search','filter','sort'])S[key]=C.clone(previous.view[key]);$('dealSearch').value=S.search;render();}}}
   async function refreshInspector(){
@@ -1066,11 +1095,12 @@
       if(!views.length)throw new Error('There is no current dashboard report to analyze. Which report would you like?');
       const answer=window.PipeChatDashboard.analyze(action.questions,views);S.focus={kind:'report'};clearClarification();say(answer);return;
     }
-    if(['create_workflow','set_workflow_activation'].includes(action?.action)){return prepareWorkflow(action);}
+    if(['create_workflow','set_workflow_activation'].includes(action?.action)){return prepareWorkflow(action,proposalRevision(action,'workflow-save'),command);}
+    if(action?.action==='retry_workflow_event'){return prepareWorkflowRetry(action.workflowId,action.eventId,command);}
     if(action?.action==='workflow_history'){return showWorkflowHistory(action);}
-    if(action?.action==='create_document'){return prepareDocument(action);}
-    if(action?.action==='undo_action'){return prepareUndo(action.actionId);}
-    if(action?.action==='business_plan'){return prepareBusiness(action);}
+    if(action?.action==='create_document'){return prepareDocument(action,command);}
+    if(action?.action==='undo_action'){return prepareUndo(action.actionId,command);}
+    if(action?.action==='business_plan'){return prepareBusiness(action,command);}
     if(action?.action==='query_business'){clearDraft();say(response.computedAnswer||response.assistantMessage);return;}
     if(action?.action==='workspace_plan'){prepare(action,command);return;}
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
@@ -1090,7 +1120,10 @@
     if(action.action==='audit_records'){
       const result=window.PipeChatReports.auditRecords(S.records,action,C,S.customFields,{today:localDate(),visibleIds:visible().map(r=>r.id)});
       if(action.scope==='all'){S.filter=action.where.length?{where:C.clone(action.where)}:null;S.scope='all';S.search='';$('dealSearch').value='';}
-      S.focus={kind:'table'};S.tab='table';clearClarification();render();say(window.PipeChatReports.describeAudit(result));return;
+      S.focus={kind:'table',ids:[...new Set(result.groups.flatMap(group=>group.records.map(row=>row.id)))]};
+      const auditGroups=result.groups.map(group=>({label:group.label,ids:group.records.map(row=>row.id)}));
+      if(new TextEncoder().encode(JSON.stringify(auditGroups)).length<=6000)S.focus.auditGroups=auditGroups;
+      S.tab='table';clearClarification();render();say(window.PipeChatReports.describeAudit(result));return;
     }
     if(action.action==='show_kpi'){
       const spec=window.PipeChatReports.kpiReport(action),board={version:1,elements:[{id:'answer',spec,visibleIds:visible().map(row=>row.id)}],sharedFilters:[],activeId:'answer'};
@@ -1104,7 +1137,7 @@
       S.sort=action.sortDirection==null?null:{field,direction:action.sortDirection};S.tab='table';S.clarification=null;render();say(S.sort?`Sorted by ${labels()[field]}, ${S.sort.direction==='asc'?'ascending':'descending'}. This changes the view, not the saved row order.`:'Showing the saved row order.');return;
     }
     if(action.action==='clarify'){
-      const originalCommand=S.clarification?.originalCommand||command;
+      const originalCommand=S.clarification?.originalCommand||S.pending?.originalCommand||command;
       const answers=S.clarification?[...(S.clarification.answers||[]),{question:S.clarification.question,answer:command}].slice(-8):[];
       S.clarification={originalCommand,question:action.question||response.assistantMessage,previousAction:S.sourceAction,options:action.clarificationOptions||null,answers};S.pending=null;
       say(S.clarification.question||'Which company or value did you mean?');renderTrust();return;

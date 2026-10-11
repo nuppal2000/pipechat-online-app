@@ -16,7 +16,10 @@ const modelData = { output_text: JSON.stringify(action) };
 const secret = 'TEST_ONLY_PROVIDER_DETAIL_DO_NOT_EXPOSE';
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const readAction={assistantMessage:'Computed below',crmAction:{action:'query_records',where:[],orderBy:null,direction:null},memoryNote:null};
-const completeReview={requirements:[{description:'Show records',stepIds:['root'],satisfied:true}],issues:[],clarificationQuestion:null};
+const completeReview={requirements:[{description:'Show records',evidenceKind:'computed_read',stepIds:['root'],satisfied:true}],issues:[],clarificationQuestion:null};
+const conversationReview={requirements:[{description:'General discussion',evidenceKind:'conversation',stepIds:['root'],satisfied:true}],issues:[],clarificationQuestion:null};
+const isReview=options=>JSON.parse(options.body).text.format.name==='pipechat_action_review';
+const reviewedConversation=()=>({ok:true,json:async()=>({output_text:JSON.stringify(conversationReview)})});
 
 function deferred() {
   let resolve;
@@ -186,7 +189,7 @@ for (const provider of ['supabase']) {
 
   test(`${provider}: success just before the deadline commits once and clears the timer`, { timeout: 2000 }, async () => {
     const body = deferred();
-    const h = harness(provider, async () => ({ ok: true, json: () => body.promise }));
+    const h = harness(provider, async (url,options) => isReview(options)?reviewedConversation():({ ok: true, json: () => body.promise }));
     const { done, res } = await h.request();
     h.clock.advance(79999); body.resolve(modelData); await done;
     assert.equal(res.status, 200);
@@ -197,7 +200,7 @@ for (const provider of ['supabase']) {
     assert.equal(h.clock.timers.size, 0);
     h.clock.advance(1); await settle();
     assert.equal(h.requests[0].options.signal.aborted, false);
-    assert.equal(h.requests.length, 1);
+    assert.equal(h.requests.length, 2);
   });
 
   test(`${provider}: late headers cannot resume body consumption or commit a released reservation`, { timeout: 2000 }, async () => {
@@ -250,21 +253,21 @@ for (const provider of ['supabase']) {
   });
 }
 
-test('JSON-only backend retains its existing model request behavior', { timeout: 2000 }, async () => {
-  const h = harness('json', async () => ({ ok: true, json: async () => modelData }));
+test('JSON-only planning also reviews conversational evidence and clears its review timer', { timeout: 2000 }, async () => {
+  const h = harness('json', async (url,options) => isReview(options)?reviewedConversation():({ ok: true, json: async () => modelData }));
   assert.equal((await h.plan({ userCommand: 'Offline local probe',pipeline:{records:[],primaryField:'account'} })).assistantMessage, action.assistantMessage);
   assert.equal(h.requests[0].options.signal, undefined);
-  assert.deepEqual(h.clock.delays, []);
+  assert.deepEqual(h.clock.delays, [80000]);assert.equal(h.clock.timers.size,0);assert.equal(h.requests.length,2);
 });
 
 test('mini escalation uses the remaining deadline and commits only one allowance',async()=>{
   const first=deferred();let count=0;
-  const h=harness('supabase',async()=>({ok:true,json:()=>++count===1?first.promise:Promise.resolve(modelData)}));
+  const h=harness('supabase',async(url,options)=>isReview(options)?reviewedConversation():({ok:true,json:()=>++count===1?first.promise:Promise.resolve(modelData)}));
   const {done,res}=await h.request();h.clock.advance(30000);
   first.resolve({output_text:JSON.stringify({...action,crmAction:{action:'workspace_plan'}})});await done;
   assert.equal(res.status,200);assert.equal(res.body.ai.model,'gpt-5.2');
-  assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.4-mini','gpt-5.2']);
-  assert.deepEqual(h.clock.delays,[80000,50000]);assert.deepEqual(h.calls,['reserve','commit']);assert.equal(h.meter.used,1);
+  assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.4-mini','gpt-5.2','gpt-5.4-mini']);
+  assert.deepEqual(h.clock.delays,[80000,50000,50000]);assert.deepEqual(h.calls,['reserve','commit']);assert.equal(h.meter.used,1);
 });
 
 test('a complex request goes directly to 5.2 before its independent mini review',async()=>{
@@ -275,11 +278,11 @@ test('a complex request goes directly to 5.2 before its independent mini review'
 });
 test('answered clarification repeat gets one bounded complex repair and one chat charge',async()=>{
   const question='Should I set the account value to 25000 and follow-up to 2026-10-18?',first=deferred();let count=0;
-  const h=harness('supabase',async()=>({ok:true,json:()=>++count===1?first.promise:Promise.resolve(modelData)}));
+  const h=harness('supabase',async(url,options)=>isReview(options)?reviewedConversation():({ok:true,json:()=>++count===1?first.promise:Promise.resolve(modelData)}));
   const {done,res}=await h.request({userCommand:'yes',pendingClarification:{originalCommand:'Quoted 25K, follow up in two weeks',question}});
   h.clock.advance(20000);first.resolve({output_text:JSON.stringify({crmAction:{action:'clarify',question}})});await done;
   assert.equal(res.status,200);assert.equal(res.body.ai.reason,'clarification_repair');assert.deepEqual(h.calls,['reserve','commit']);
-  assert.deepEqual(h.clock.delays,[80000,60000]);assert.equal(h.requests.length,2);
+  assert.deepEqual(h.clock.delays,[80000,60000,60000]);assert.equal(h.requests.length,3);
   const input=JSON.parse(JSON.parse(h.requests[0].options.body).input[0].content[0].text);
   assert.equal(input.clarificationAnswer.selectedKey,'yes');assert.match(JSON.parse(h.requests[1].options.body).instructions,/previous attempt repeated/);
 });
