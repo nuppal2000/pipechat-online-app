@@ -12,12 +12,14 @@ there is no automatic fallback between providers.
 - Manual editing, expandable notes, AI proposals, confirmation, undo and failed-edit draft recovery.
 - Append-only semantic imports, owner/account comparisons and configurable dashboard KPIs.
 - Authenticated per-user data and transactional usage accounting. Manual editing remains available at the chat cap.
-- Read-only sharing previews and HTML exports, not secure live collaboration links.
+- Typed linked business entities, authenticated workspace/record/view sharing, and saved entity history.
+- Durable action receipts and conflict-checked undo, reviewed import resolution, and stage-triggered task workflows.
 
-Conversation history is saved privately per user, with bounded AI context and
-rolling older-message summaries. See [Chat history](CHAT-HISTORY.md). Undo remains
-a page-session feature. Billing, team access and public email signup/recovery remain separate work.
-The current hosted rollout permits existing approved accounts only.
+Conversation history is saved privately per user, with bounded AI context,
+rolling older-message summaries, explicit chat threads and durable request outcomes.
+See [Chat history](CHAT-HISTORY.md) and the [objective release guide](docs/objective-release.md)
+for deployment order, current limits and the connected-AI acceptance checklist.
+Billing and email delivery/recovery remain separate work; preserve the deployment's existing signup policy.
 
 ## Files
 
