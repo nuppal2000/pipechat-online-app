@@ -116,6 +116,50 @@ test('standalone read requirements still reject proposal commentary even when it
   assert.equal(checked.ok,false);assert.equal(checked.compiled,0);
 });
 
+test('undo turn persists and replays the canonical nine-record preview instead of approved stale model prose',async t=>{
+  const directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),'pipechat-undo-answer-'));
+  t.after(async()=>{assert.equal(path.dirname(directory),path.resolve(os.tmpdir()));assert(path.basename(directory).startsWith('pipechat-undo-answer-'));await fs.promises.rm(directory,{recursive:true,force:true});});
+  const store=require('../lib/conversation-store').createConversationStore(directory,(_key,work)=>work())('offline-user');
+  const {buildActionEntry,validateReceipt}=require('../lib/action-journal');
+  const payload=fixture();payload.userCommand='Preview undo of the saved owner change.';payload.pipeline.workspaceVersion='v2';
+  const current={deals:Array.from({length:9},(_,i)=>({...Table.records[0],id:i+1,f_deal:`Current account ${i+1}`,f_owner:'Ravi'})),
+    customFields:[],tableSchema:copy(Table.schema),todoCards:[],updatedAt:'v2'};
+  const prior=copy(current);prior.updatedAt='v1';prior.deals.forEach(row=>{row.f_owner='Alex';});
+  const {changes,dependencies,...receipt}=buildActionEntry({actionId:randomUUID(),requestId:randomUUID(),before:prior,after:current});
+  const savedAction={receipt:validateReceipt({...receipt,importReceipt:null}),createdAt:'2026-10-10T12:00:00Z',undoneBy:null,undoInvalidated:false,paths:changes.map(change=>change.path)};
+  const result={crmAction:{action:'undo_action',actionId:receipt.actionId},memoryNote:null,
+    assistantMessage:'Restored 7 records from the old cohort: Stale Company and Old Account. Everything has been saved.'};
+  const h=harness(()=>result,input=>{
+    assert.equal(input.proposalMessage,result.assistantMessage);
+    assert.equal(input.computed.kind,'undo-preview');assert.equal(input.computed.savedAction.pathCount,9);
+    assert.equal(input.computed.savedAction.receipt.actionId,receipt.actionId);
+    assert.equal(input.computed.requiresInverseReview,true);assert.equal(input.computed.lifecycle.writesApplied,0);
+    return review([requirement('Preview undo of the saved owner change')]);
+  });
+  const initial=await store.readConversation(),userMessageId=randomUUID();
+  const saved=await store.writeConversation({epoch:initial.epoch,version:initial.version,messages:[{id:userMessageId,role:'user',content:payload.userCommand}],state:{}});
+  payload.conversation={epoch:saved.epoch,version:saved.version};
+  payload.turn={threadId:(await store.listConversationThreads()).activeThreadId,requestId,userMessageId,assistantMessageId:randomUUID()};
+  const original=copy(current),backend={...Object.fromEntries(Object.entries(store).map(([name,fn])=>[name,(...args)=>fn(...args.map(copy))])),
+    readCrm:async()=>copy(current),listActions:async()=>({actions:[copy(savedAction)]}),
+    reserveUsage:async()=>({reservationId:'offline'}),finishUsage:async()=>({used:1})};
+  const req={backend,headers:{}},user={id:'offline-user',name:'Offline'};
+  const response=copy(await h.turn(req,user,payload));
+  assert.equal(response.turn.status,'succeeded',JSON.stringify({response,logs:h.logs,calls:h.calls.length}));assert.deepEqual(response.crmAction,result.crmAction);
+  assert.match(response.assistantMessage,/Distinct records in the listed paths: 9\./);
+  for(const row of current.deals)assert(response.assistantMessage.includes(row.f_deal));
+  assert.doesNotMatch(response.assistantMessage,/Stale Company|Old Account|Restored 7|Everything has been saved/);
+  assert.equal(response.assistantMessage,response.computedAnswer);
+  assert.equal(response.lifecycle.requiresConfirmation,true);assert.equal(response.lifecycle.executed,false);
+  assert.equal(response.lifecycle.writesApplied,0);assert.deepEqual(current,original);
+  assert.equal(h.calls.length,2);assert.deepEqual(h.logs,[]);
+  const page=await store.readConversation(),messages=page.messages.filter(message=>message.id===payload.turn.assistantMessageId);
+  assert.equal(messages.length,1);assert.equal(messages[0].content,response.computedAnswer);
+  const replay=copy(await h.turn(req,user,payload));
+  assert.deepEqual(replay.turn,response.turn);assert.equal(replay.assistantMessage,response.computedAnswer);
+  assert.equal(h.calls.length,2,'Replaying a durable turn must not re-run the model');
+});
+
 test('invalid review envelopes and provider errors have separate sanitized diagnostic codes',async()=>{
   const malformed=harness(()=>contact(),()=>({requirements:[],issues:['PRIVATE_MALFORMED'],clarificationQuestion:null}));
   assert.equal((await malformed.plan(fixture())).outcome,'validation_failed');
@@ -153,7 +197,7 @@ for(const failure of ['structural','semantic'])test(`${failure} validation failu
   const response=copy(await h.turn(req,user,payload));
   assert.equal(response.turn.status,'failed');assert.equal(response.turn.publicErrorCode,'validation');
   assert.equal(response.crmAction,null);assert.equal(response.turn.resultReceipt,null);
-  assert.equal(response.assistantMessage,'The request could not be validated.','Reproduce the existing durable public-code mapping without allowing raw failure text');
+  assert.equal(response.assistantMessage,"Sorry, I couldn't prepare every part of that request reliably. Please try again or narrow the request.",'Durable public-code copy stays conversational without allowing raw failure text');
   assert.deepEqual(usageCalls,['reserve','commit']);assert.deepEqual(current,before);
   const calls=h.calls.length,logs=h.logs.length;
   const replay=copy(await h.turn(req,user,payload));assert.deepEqual(replay.turn,response.turn);assert.equal(h.calls.length,calls);assert.equal(h.logs.length,logs);
