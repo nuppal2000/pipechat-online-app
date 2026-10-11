@@ -733,9 +733,9 @@ async function recordModelAttempt(payload,model,started,usage,success){
     outcome:success?'succeeded':'failed',latencyMs:Date.now()-started,errorCode:success?'none':'unavailable',
     usage:usage?{inputTokens:usage.input_tokens??null,outputTokens:usage.output_tokens??null,cachedTokens:usage.input_tokens_details?.cached_tokens??null}:null});
 }
-function recordValidationFailure(payload,stage,review,coverage){
+function recordValidationFailure(payload,stage,review,coverage,action,error){
   try{console.warn(JSON.stringify(actionReview.validationDiagnostic({requestId:payload._requestId,
-    attempt:stage==='response'?payload._responseAttempt:payload._reviewAttempt,stage,review,coverage})));}
+    attempt:stage==='response'?payload._responseAttempt:payload._reviewAttempt,stage,review,coverage,action,error})));}
   catch{ /* Diagnostics must not change validation, repair or durable failure handling. */ }
 }
 async function reviewCompiledAction(input,startedAt,payload){
@@ -926,7 +926,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
   else if (typeof result.memoryNote !== 'string' || result.memoryNote.length > 3200) result.memoryNote = null;
   try { result=actionLifecycle.normalizeResult(result); }
   catch(error) {
-    recordValidationFailure(payload,'response');
+    recordValidationFailure(payload,'response',null,null,result?.crmAction,error);
     if(!payload._responseAttempt&&Date.now()-startedAt<55000)return planPipeChatAction({...payload,_responseAttempt:1,_reviewFeedback:{issues:[error.message]}},{tier:'complex',model:AI_MODELS.complex,reason:'response_contract_repair'},startedAt);
     return {crmAction:null,memoryNote:null,assistantMessage:"Sorry, I couldn't prepare a complete response. Nothing was saved. Please try again; your request has not been applied.",ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
   }
@@ -945,11 +945,11 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
       stage='review';
       review=await reviewCompiledAction({userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed},startedAt,payload);
       stage='mapping';
-      coverage=actionReview.validateReview(review,result);
-      if(!coverage.ok)recordValidationFailure(payload,stage,review,coverage);
+      coverage=actionReview.validateReview(review,result,{pipeline});
+      if(!coverage.ok)recordValidationFailure(payload,stage,review,coverage,result.crmAction);
       review.issues.push(...coverage.mappingIssues);
     }catch(error){
-      recordValidationFailure(payload,stage,review,coverage);
+      recordValidationFailure(payload,stage,review,coverage,result.crmAction,error);
       if(error instanceof RequestError)throw error;
       // Structural execution errors are repairable; transport failures cannot authorize a partial plan.
       review={issues:[error.name==='TimeoutError'?'The request reached its time limit.':error.message],requirements:[],clarificationQuestion:null};coverage={ok:false};
