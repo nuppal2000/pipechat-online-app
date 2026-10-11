@@ -1,8 +1,18 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const pipelineCore=require('../public/pipeline-core.js'),tableSchemaCore=require('../public/table-schema.js'),customization=require('../public/workspace-customization.js');
 const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
-const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),todoActions:require('../public/todo-actions.js'),reportEngine:require('../public/report-engine.js'),dashboardBoard:require('../public/dashboard-board.js'),workspacePlan:require('../public/workspace-plan.js')};
+const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),todoActions:require('../public/todo-actions.js'),reportEngine:require('../public/report-engine.js'),dashboardBoard:require('../public/dashboard-board.js'),workspacePlan:require('../public/workspace-plan.js'),businessActions:require('../public/business-actions.js'),businessCompiler:require('../lib/business-compiler.js')};
 vm.runInNewContext(source.slice(source.indexOf('const actionSchema ='),source.indexOf('function sendJson('))+'\nthis.getSchema=responseSchema;',context);
+
+function assertStrictSchema(node){
+  if(!node||typeof node!=='object')return;
+  if(node.type==='object'||Array.isArray(node.type)&&node.type.includes('object')){
+    assert.equal(node.additionalProperties,false);
+    assert.deepEqual([...node.required].sort(),Object.keys(node.properties).sort());
+  }
+  if(node.anyOf)assert(Array.isArray(node.anyOf)&&node.anyOf.length>0);
+  for(const value of Object.values(node))if(value&&typeof value==='object')assertStrictSchema(value);
+}
 test('new AI actions retain strict schema and per-request KPI/field IDs without cross-user mutation',()=>{
   const schema=tableSchemaCore.legacySchema(),request=context.getSchema([],schema),action=request.properties.crmAction.anyOf[1];
   for(const name of ['rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','move_record','move_field','sort_table','delete_records','propose_field','add_records','add_todos'])assert(action.properties.action.enum.includes(name));
@@ -10,7 +20,7 @@ test('new AI actions retain strict schema and per-request KPI/field IDs without 
   assert.deepEqual([...action.properties.orderScope.enum],['visible','all',null]);
   assert(action.properties.kpiId.enum.includes('kpi_value'));assert(action.required.includes('dropdownOptions'));assert(action.required.includes('kpi'));
   assert.deepEqual([...action.properties.targetType.enum],['choice','date','text',null]);assert(action.required.includes('targetType'));
-  const visit=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual([...node.required].sort(),Object.keys(node.properties).sort());}for(const value of Object.values(node))if(value&&typeof value==='object')visit(value);};visit(request);
+  assertStrictSchema(request);
   const other={...schema,fields:schema.fields.map(f=>f.id==='value'?{...f,id:'f_score',name:'Score',type:'number'}:f)};
   const second=context.getSchema([],other).properties.crmAction.anyOf[1];assert(second.properties.kpiId.enum.includes('kpi_f_score'));assert(!second.properties.kpiId.enum.includes('kpi_value'));assert(action.properties.kpiId.enum.includes('kpi_value'));
 });
@@ -96,7 +106,11 @@ test('card edits, saved focus and chart refinements have compact typed contracts
     assert(query&&edit&&report&&refine);assert.deepEqual([...query.required],['action','selection']);assert.deepEqual([...edit.required],['action','updates']);
     assert.deepEqual([...report.required],['action','smartReport']);assert.equal(find('update_todo'),undefined);assert.equal(find('move_todos'),undefined);
     assert.deepEqual([...edit.properties.updates.items.properties.changes.items.properties.field.enum],['status','nextAction','notes','dueDate']);
-    assert.deepEqual([...query.properties.selection.anyOf].map(s=>s.properties.source.enum[0]),['all','ids']);
+    assert.deepEqual([...query.properties.selection.anyOf].map(s=>s.properties.source.enum[0]),['all','ids','references']);
+    const references=query.properties.selection.anyOf.find(s=>s.properties.source.enum[0]==='references');
+    assert.deepEqual([...references.required],['source','references','conditions']);assert.equal(references.properties.references.minItems,1);assert.equal(references.properties.references.maxItems,200);
+    assert.deepEqual([...references.properties.references.items.required],['taskName','recordName']);
+    for(const field of ['taskName','recordName'])assert.deepEqual([...references.properties.references.items.properties[field].type],['string','null']);
     const focused=context.getSchema([],table,{kind:'todos',id:'current-selection',ids:['todo_1','todo_2']}).properties.crmAction.anyOf.find(b=>b.properties?.action.enum.includes('update_todos')).properties.updates.items.properties.selection.anyOf;
     assert.deepEqual([...focused.find(s=>s.properties.source.enum[0]==='focus').properties.focusId.enum],['current-selection']);
     const filtering=find('filter_records');assert(filtering);assert.deepEqual([...filtering.properties.target.enum],['context','report','pipeline_table']);assert(filtering.required.includes('removeFields'));assert(!filtering.properties.replaceFields);assert.equal(refine.properties.changes.minItems,1);
@@ -122,4 +136,33 @@ test('live model contract uses one plan path while legacy actions remain interpr
   for(const name of ['workspace_plan','query_todos','audit_records','dashboard_plan','analyze_dashboard','add_records','delete_records','rename_field','clear_table_view'])assert(names.includes(name),name);
   assert.equal(JSON.stringify(legacy),before);
   assert.match(source,/schema:modelResponseSchema/);assert.match(source,/supportedActions:modelResponseSchema/);
+});
+
+test('model action union stays strict and within supported actions including business operations',()=>{
+  const Review=require('../lib/action-review.js'),Business=require('../public/business-workspace.js');
+  const blocked=new Set(['update_records','add_todo','add_todos','update_todos','query_records','filter_records','show_kpi','show_report','refine_report']);
+  const businessNames=['create_document','create_workflow','set_workflow_activation','workflow_history','business_plan','query_business'];
+  for(const table of [null,tableSchemaCore.legacySchema(),require('./fixtures/record-additions.cjs').schema]){
+    const legacy=context.getSchema([{id:'cf_contract',name:'Contract',type:'text'}],table),before=JSON.stringify(legacy),model=Review.modelSchema(legacy);
+    assertStrictSchema(model);
+    const branches=model.properties.crmAction.anyOf,names=branches.flatMap(branch=>branch.properties?.action?.enum||[]);
+    const supported=legacy.properties.crmAction.anyOf.flatMap(branch=>branch.properties?.action?.enum||[]);
+    assert.equal(branches.filter(branch=>branch.type==='null').length,1);
+    for(const branch of branches.filter(branch=>branch.type!=='null')){
+      assert.equal(branch.type,'object');assert.equal(branch.properties.action.type,'string');
+      assert(branch.required.includes('action'));assert(branch.properties.action.enum.length>0);
+    }
+    assert.equal(new Set(names).size,names.length,'Action discriminators must not overlap');
+    assert.deepEqual([...names].sort(),supported.filter(name=>!blocked.has(name)).sort());
+    for(const name of [...businessNames,'undo_action'])assert(names.includes(name),name);
+    for(const expected of [...context.businessActions.actionSchemas(),...context.businessCompiler.schemas()]){
+      assert.deepEqual(branches.find(branch=>branch.properties?.action.enum[0]===expected.properties.action.enum[0]),expected);
+    }
+    const operations=branches.find(branch=>branch.properties?.action.enum[0]==='business_plan').properties.operations;
+    assert.equal(operations.maxItems,200);
+    assert.deepEqual(operations.items.anyOf.map(branch=>branch.properties.op.enum[0]),['put_type','put_relationship_type','upsert_entity','update_entity','delete_entity','merge_entities','link','unlink']);
+    assert.deepEqual(operations.items.anyOf[0].properties.type.properties.fields.items.properties.type.enum,Business.fieldTypes);
+    assert.deepEqual(operations.items.anyOf[1].properties.type.properties.cardinality.enum,Business.cardinalities);
+    assert.equal(JSON.stringify(legacy),before,'Compiling model actions must not mutate the request schema');
+  }
 });

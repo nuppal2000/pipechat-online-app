@@ -11,10 +11,10 @@ const original={id:8,account:'Existing',stage:'Warm',value:500,owner:'A',close:'
 function harness(handler) {
   const nodes=new Map(),calls=[],messages=[];
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',classList:{add(){},remove(){}},insertAdjacentHTML(){}});return nodes.get(id);};
-  const context={window:{PipeChatImportDuplicates:require('../public/import-duplicates.js'),PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatCsv:I,PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},Papa,AbortSignal,
+  const context={crypto:require('node:crypto').webcrypto,TextEncoder,window:{PipeChatImportDuplicates:require('../public/import-duplicates.js'),PipeChatInspector:require('../public/inspector-core.js'),PipeChatTodo:require('../public/todo-core.js'),PipelineCore:C,PipeChatCsv:I,PipeChatIcons:{}},document:{getElementById:node,querySelector:()=>null},Papa,AbortSignal,
     sessionStorage:{removeItem(){}},fetch:async(url,options)=>{calls.push({url,options});return handler(url,options);}};
   const ctx={...context,window:{PipeChatSchema:require('../public/table-schema.js'),PipeChatInspector:require('../public/inspector-core.js'),...context.window,messages}};
-  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`const actualTrust=renderTrust;render=()=>{};renderTrust=()=>{};focusTrust=()=>{};updateUsage=()=>{};toast=()=>{};say=(text)=>window.messages.push(text);window.test={S,importCsv,analyzeCsvImport,basicCsvImport,confirmDraft,cancelDraft,chooseImportDuplicates,chooseImportPrimary,useSchema,send,handleAction,actualTrust,undo,display};`),ctx);
+  vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`const actualTrust=renderTrust;render=()=>{};renderTrust=()=>{};focusTrust=()=>{};updateUsage=()=>{};toast=()=>{};say=(text)=>window.messages.push(text);window.test={S,importCsv,analyzeCsvImport,basicCsvImport,confirmDraft,cancelDraft,chooseImportDuplicates,chooseImportPrimary,changeImportReview,useSchema,send,handleAction,actualTrust,undo,display};`),ctx);
   const h=ctx.window.test;Object.assign(h.S,{records:[structuredClone(original)],user:{id:1,name:'QA'},loaded:true,updatedAt:'v1',usage:{used:0,remaining:10},health:{aiConfigured:true}});
   return {...h,calls,messages,node,import:csv=>h.importCsv({name:'synthetic.csv',size:csv.length,text:async()=>csv})};
 }
@@ -27,8 +27,10 @@ test('AI import previews blanks, appends only after confirmation and supports un
   assert.equal(h.calls.length,1); assert.deepEqual(h.S.records,[original]);
   assert.equal(h.S.pending.records[0].id,9); assert.equal(h.S.pending.records[0].stage,'Proposal Sent');
   assert.equal(h.S.pending.records[1].stage,''); assert.equal(h.S.pending.records[1].value,null);
-  assert.equal(h.S.pending.importReview.issues.length,1); assert.equal(h.display('value',null),'Not set'); assert.equal(h.display('value',0),'$0');
+  assert.equal(h.S.pending.importReview.issues.length,2); assert.equal(h.display('value',null),'Not set'); assert.equal(h.display('value',0),'$0');
   const request=JSON.parse(h.calls[0].options.body);assert(!request.pipeline.records);assert.equal(request.pipeline.tableSchema,null);assert.equal(request.csvImport.totalRows,2);
+  await h.confirmDraft();assert.equal(h.S.records.length,1);
+  for(const [index,cell] of h.S.pending.importReview.cells.entries())if(cell.status==='invalid')h.changeImportReview('blank',index,true);
   await h.confirmDraft();assert.equal(h.S.records.length,3);assert.deepEqual(h.S.records[0],original);
   assert.equal(h.S.records[2].value,null);assert.equal(h.S.usage.used,1);
   await h.undo();assert.deepEqual(h.S.records,[original]);assert.equal(h.S.usage.used,1);
@@ -124,18 +126,18 @@ test('reading a CSV locks out a second file and discards stale file reads',async
   assert.equal(h.S.pending,null);assert.equal(h.S.busy,false);assert.equal(h.calls.length,0);
 });
 
-test('duplicates require a choice; merge preserves saved values, skips file duplicates, confirms and undoes',async()=>{
+test('duplicates require a choice; skip preserves saved values, skips file duplicates, confirms and undoes',async()=>{
   const h=harness((url,options)=>response(200,{...JSON.parse(options.body),updatedAt:'v2'}));h.S.health.aiConfigured=false;
   await h.import('Company,Value\n existing ,900\nNew,20\nNEW,99');h.basicCsvImport();
   assert.equal(h.S.pending.kind,'import-duplicates');assert.equal(h.S.pending.duplicates.existingMatches,1);assert.equal(h.S.pending.duplicates.fileMatches,1);
   await h.confirmDraft();assert.equal(h.calls.length,0);
-  h.chooseImportDuplicates('merge');assert.equal(h.S.pending.records.length,1);assert.equal(h.S.pending.records[0].value,20);assert.equal(h.calls.length,0);
+  h.chooseImportDuplicates('skip');assert.equal(h.S.pending.records.length,1);assert.equal(h.S.pending.records[0].value,20);assert.equal(h.calls.length,0);
   await h.confirmDraft();assert.equal(h.S.records.length,2);assert.deepEqual(h.S.records[0],original);
   await h.undo();assert.deepEqual(h.S.records,[original]);
 });
 
-test('keep appends every duplicate; cancel and all-matched merge do not save',async()=>{
-  for(const mode of ['keep','cancel','merge']){
+test('keep appends every duplicate; cancel and all-matched skip do not save',async()=>{
+  for(const mode of ['keep','cancel','skip']){
     const h=harness((url,options)=>response(200,{...JSON.parse(options.body),updatedAt:'v2'}));h.S.health.aiConfigured=false;
     await h.import('Company,Value\nExisting,900\nEXISTING,99');h.basicCsvImport();
     if(mode==='cancel')h.cancelDraft();else h.chooseImportDuplicates(mode);
@@ -159,4 +161,11 @@ test('merge checks capacity after skipping duplicates while keep can be retried'
   h.S.records=Array.from({length:1999},(_,i)=>({...original,id:i+1,account:i===0?'Existing':'Saved '+i}));
   await h.import('Company\nExisting\nNew');h.basicCsvImport();h.chooseImportDuplicates('keep');assert.equal(h.S.pending.kind,'import-duplicates');
   h.chooseImportDuplicates('merge');assert.equal(h.S.pending.kind,'add');assert.equal(h.S.pending.records.length,1);assert.equal(h.calls.length,0);
+});
+
+test('CSV import keeps source coordinates after interior empty rows',async()=>{
+  const h=harness(()=>{throw Error('Unexpected request');});h.S.health.aiConfigured=false;
+  await h.import('Company,Value\nFirst,20\n,\nSecond,TBD\n');h.basicCsvImport();
+  assert.equal(h.S.pending.importReview.skipped,1);
+  assert.equal(h.S.pending.importReview.issues[0].row,4);assert.equal(h.S.pending.importReview.issues[0].address,'B4');
 });

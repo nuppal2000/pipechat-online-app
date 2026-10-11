@@ -17,7 +17,8 @@ test('semantic AI mappings append useful fields and leave uncertain cells blank'
   assert.deepEqual(result.records[0],{account:'Acme',stage:'Proposal Sent',value:1250.5,close:'2026-11-30',owner:'Sarah',next:'',follow:'',notes:'Call first'});
   assert.equal(result.records[1].stage,''); assert.equal(result.records[1].value,null); assert.equal(result.records[1].close,'');
   assert.equal(result.records[2].account,''); assert.equal(result.records[2].owner,'Daniel');
-  assert.deepEqual(result.ignored,['Favorite color']); assert.equal(result.issues.length,4);
+  assert.deepEqual(result.ignored,['Favorite color']); assert.equal(result.issues.length,5);
+  assert(result.issues.some(issue=>issue.raw==='TBD'&&issue.field==='value'));
   assert.equal(rows[0].Journey,'Quotation delivered');
 });
 test('local mapping handles aliases but does not guess broad or competing columns', () => {
