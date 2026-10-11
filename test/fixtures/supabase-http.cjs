@@ -61,7 +61,7 @@ global.fetch = async (input, options = {}) => {
     return response(200, sessionFor(previous.user));
   }
   if (url.pathname === '/rest/v1/rpc/pipechat_health') {
-    return response(200, { ok: true, contract: 'pipechat-supabase-v1', database: 'ok', schemaVersion: 1 });
+    return response(200, { ok: true, contract: 'pipechat-supabase-v1', database: 'ok', schemaVersion: 1, featureVersion: 2 });
   }
   const token = headers.get('Authorization')?.replace(/^Bearer /, ''), session = sessions.get(token);
   if (!session) return error(401, 'PT401', 'Session no longer valid');

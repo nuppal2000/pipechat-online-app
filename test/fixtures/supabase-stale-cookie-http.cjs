@@ -5,7 +5,7 @@ let authCalls = 0, server;
 global.fetch = async (input, init = {}) => {
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.origin !== 'https://pipechat-test.supabase.co') throw new Error('Offline destination denied.');
-  if (url.pathname === '/rest/v1/rpc/pipechat_health') return Response.json({ok:true,contract:'pipechat-supabase-v1',database:'ok',schemaVersion:1});
+  if (url.pathname === '/rest/v1/rpc/pipechat_health') return Response.json({ok:true,contract:'pipechat-supabase-v1',database:'ok',schemaVersion:1,featureVersion:2});
   if (url.pathname === '/auth/v1/token' && url.search === '?grant_type=refresh_token' && init.method === 'POST') {
     authCalls++;
     await new Promise(resolve => setTimeout(resolve, 40));
