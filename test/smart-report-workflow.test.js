@@ -5,7 +5,7 @@ function harness(multiple=false){
  const nodes=new Map(),charts=[],messages=[];const node=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',value:'',innerHTML:'',style:{},setAttribute(){}});return nodes.get(id);};
  class Chart{constructor(canvas,config){charts.push(config);}destroy(){}}
  const window={PipeChatReports:R,PipeChatDashboard:require('../public/dashboard-board'),PipelineCore:C,PipeChatIcons:{},Chart,PipeChatCustomize:require('../public/workspace-customization')};
- const context={window,document:{getElementById:node,querySelector:node},Chart};
+ const context={window,document:{getElementById:node,querySelector:node},Chart,TextEncoder};
  // The browser exposes globalThis and window as the same object.
  vm.runInNewContext(fs.readFileSync(require.resolve('../public/report-ui'),'utf8'),{...context,globalThis:window});
  if(multiple){window.PipeChatDashboard=require('../public/dashboard-board');window.PipeChatReportsUI.drawBoard=()=>[];}

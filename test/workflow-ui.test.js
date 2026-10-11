@@ -141,8 +141,41 @@ test('stale or changed-session workflow confirmations cannot apply data or claim
   assert.equal(h.applied.length, 0); assert.equal(h.S.undo, undefined);
 });
 
+test('explicit workflow replacement prepares a fresh proposal while retaining its original request', async () => {
+  const { proposal, action } = fixture(), calls = [];
+  const h = handlers(async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return { ...clone(proposal), action: JSON.parse(options.body).action };
+  });
+  const original = 'Create a follow-up workflow and preview before saving.';
+  await h.actions.prepareWorkflow(action, null, original);
+  const first = h.S.pending, revision = clone(action);
+  revision.spec.action.due.offsetDays = 5;
+  await h.actions.prepareWorkflow(revision, first, 'Use five calendar days.');
+  assert.notEqual(h.S.pending, first);
+  assert.equal(h.S.pending.originalCommand, original);
+  assert.equal(h.S.pending.proposal.action.spec.action.due.offsetDays, 5);
+  assert.equal(h.S.pending.attempted, false);
+  assert.equal(h.applied.length, 0);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.url === '/api/workflows/prepare'));
+});
+
+test('an explicit replacement must still be the current workflow draft', async () => {
+  const { proposal, action } = fixture();
+  let calls = 0;
+  const h = handlers(async () => { calls++; return proposal; });
+  await h.actions.prepareWorkflow(action);
+  const old = h.S.pending;
+  h.S.pending = null;
+  await assert.rejects(() => h.actions.prepareWorkflow(action, old), /current draft/);
+  h.S.pending = { kind: 'business-plan' };
+  await assert.rejects(() => h.actions.prepareWorkflow(action, h.S.pending), /current draft/);
+  assert.equal(calls, 1);
+});
+
 test('workflow routing hooks exist in action handling, trust panel and confirmation', () => {
-  assert.match(source, /\['create_workflow','set_workflow_activation'\].*prepareWorkflow\(action\)/);
+  assert.match(source, /\['create_workflow','set_workflow_activation'\].*prepareWorkflow\(action,proposalRevision\(action,'workflow-save'\),command\)/);
   assert.match(source, /workflow_history.*showWorkflowHistory\(action\)/);
   assert.match(source, /p\.kind==='workflow-save'.*confirmWorkflow\(p\)/);
   assert.match(source, /S\.pending\?\.kind==='workflow-save'.*renderWorkflowReview/);

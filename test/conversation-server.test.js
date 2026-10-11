@@ -31,7 +31,9 @@ test('archive API persists across sessions, bounds real model input, rolls memor
       const reply=await call('/api/pipechat-ai','POST',{userCommand:'Remember earlier sales follow-ups?',conversation:{epoch:latest.epoch,version:latest.version},conversationHistory:[{role:'user',content:'CLIENT_HISTORY_MUST_NOT_BE_SENT'}]},a.cookie);
       assert.equal(reply.status,200,JSON.stringify(reply.body));assert.equal(reply.body.usage.used,i+1);assert.equal(reply.body.memoryNote,null);
     }
-    const inputs=(await fs.readFile(capture,'utf8')).trim().split('\n').map(JSON.parse);assert.equal(inputs.length,2);
+    const attempts=(await fs.readFile(capture,'utf8')).trim().split('\n').map(JSON.parse);
+    const inputs=attempts.filter(input=>input._fixtureStage==='plan');assert.equal(inputs.length,2);
+    assert.equal(attempts.filter(input=>input._fixtureStage==='review').length,2,'Each answer gets a completeness review, not an extra memory call');
     for(const input of inputs){const {conversationHistory,conversationMemory,recalledMessages,memoryUpdate}=input;assert(conversationHistory.length<=12);assert(Buffer.byteLength(JSON.stringify({conversationHistory,conversationMemory,recalledMessages,memoryUpdate}))<=12000);assert(!JSON.stringify(input).includes('CLIENT_HISTORY_MUST_NOT_BE_SENT'));assert(memoryUpdate);}
     assert.match(inputs[1].conversationMemory,/Prefers concise replies/);
     const remembered=(await call('/api/conversation','GET',null,a.cookie)).body;assert(remembered.summaryThrough>0);assert.equal(remembered.messages.at(-1).content,latest.messages.at(-1).content);

@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {dateContext,instructions}=require('../lib/date-context.js');
 test('calendar gives real relative dates for every weekday, including next Monday from Thursday',()=>{
-  assert.deepEqual(dateContext('2026-09-24'),{today:'2026-09-24',weekday:'Thursday',tomorrow:'2026-09-25',nextWeekdays:{Sunday:'2026-09-27',Monday:'2026-09-28',Tuesday:'2026-09-29',Wednesday:'2026-09-30',Thursday:'2026-10-01',Friday:'2026-09-25',Saturday:'2026-09-26'}});
+  assert.deepEqual(dateContext('2026-09-24'),{today:'2026-09-24',weekday:'Thursday',tomorrow:'2026-09-25',nextWeekdays:{Sunday:'2026-09-27',Monday:'2026-09-28',Tuesday:'2026-09-29',Wednesday:'2026-09-30',Thursday:'2026-10-01',Friday:'2026-09-25',Saturday:'2026-09-26'},attentionWindows:{overdue:{before:'2026-09-24'},today:{on:'2026-09-24'},nextSevenDays:{from:'2026-09-25',through:'2026-10-01'}}});
   for(let day=20;day<=26;day++){
     const c=dateContext('2026-09-'+day),base=Date.parse(c.today+'T12:00:00Z');
     for(const [weekday,date]of Object.entries(c.nextWeekdays)){
