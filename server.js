@@ -23,6 +23,7 @@ const actionJournal = require('./lib/action-journal.js');
 const dateCalendar = require('./lib/date-context.js');
 const clarificationContext = require('./lib/clarification-context.js');
 const modelRouter = require('./lib/model-router.js');
+const modelResponse = require('./lib/model-response.js');
 const aiGrounding = require('./lib/ai-grounding.js');
 const reportInstructions = [
   'DASHBOARD COMPOSITION AND ANALYSIS: For multiple graphs, adding/removing graphs, graph-specific filters, shared filters, or ANY chart creation PLUS a requested statistical explanation, use dashboard_plan. operations are applied atomically to a temporary dashboard, never saved KPI cards. Different units in SEPARATE graphs are valid and need no clarification. Start a replacement view with clear only when requested to replace/start fresh. Add/keep wording appends; never clear existing graphs when told to keep them. Give every added element a unique stable lowercase id. Use pipeline.dashboard.board for existing IDs/specs and displayed for actual results. Keep IDs stable; update with only requested changed properties rather than remove/recreate. New unrelated graphs default to scope all with their OWN explicit where; never inherit another element\'s scope silently. A date-grouped chart can exclude blank dates while an all-record Stage chart includes a Not set group (no stage blank filter). An explicitly enumerated stage cohort must use exactly those options in an in array; do not substitute not Won/Lost, because blank stages differ.',
@@ -738,7 +739,15 @@ function recordValidationFailure(payload,stage,review,coverage,action,error){
     attempt:stage==='response'?payload._responseAttempt:payload._reviewAttempt,stage,review,coverage,action,error})));}
   catch{ /* Diagnostics must not change validation, repair or durable failure handling. */ }
 }
-async function reviewCompiledAction(input,startedAt,payload){
+function parseModelResponse(response,data,model){
+  try{return modelResponse.parse(response,data);}
+  catch(error){
+    console.warn(JSON.stringify({event:'pipechat.ai_response',model,
+      outcome:'failed',code:error instanceof modelResponse.ModelResponseError?error.code:'invalid_response'}));
+    throw error;
+  }
+}
+async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simple){
   const controller=new AbortController();let timer;
   const deadline=new Promise((resolve,reject)=>{timer=setTimeout(()=>{reject(new RequestError('The completeness review timed out. No changes were prepared.',502));controller.abort();},Math.max(1,80000-(Date.now()-startedAt)));});
   try{
@@ -747,14 +756,23 @@ async function reviewCompiledAction(input,startedAt,payload){
       try{response=await fetch('https://api.openai.com/v1/responses',{
         method:'POST',signal:controller.signal,
         headers:{'Content-Type':'application/json',Authorization:`Bearer ${OPENAI_API_KEY}`},
-        body:JSON.stringify({model:AI_MODELS.simple,store:false,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled)}}})
+        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled)}}})
       });data=await response.json();}
-      catch(error){await recordModelAttempt(payload,AI_MODELS.simple,modelStarted,null,false);throw error;}
-      await recordModelAttempt(payload,AI_MODELS.simple,modelStarted,data.usage,response.ok);
+      catch(error){await recordModelAttempt(payload,model,modelStarted,null,false);throw error;}
       controller.signal.throwIfAborted();
-      if(!response.ok)throw new RequestError('The completeness review could not finish. No changes were prepared.',502);
+      let result;
+      try{result=parseModelResponse(response,data,model);}
+      catch(error){
+        await recordModelAttempt(payload,model,modelStarted,data?.usage,false);
+        if(modelResponse.takeFallback(error,payload,model,AI_MODELS,startedAt,Date.now())){
+          clearTimeout(timer);
+          return reviewCompiledAction(input,startedAt,payload,AI_MODELS.complex);
+        }
+        throw error;
+      }
+      await recordModelAttempt(payload,model,modelStarted,data?.usage,true);
       controller.signal.throwIfAborted();
-      return JSON.parse(extractOutputText(data));
+      return result;
     })()]);
   }catch(error){throw error instanceof RequestError?error:new RequestError('The completeness review could not finish. No changes were prepared.',502);}
   finally{clearTimeout(timer);}
@@ -782,6 +800,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
     body: JSON.stringify({
       model: selectedRoute.model,
       store: false,
+      max_output_tokens: 16384,
       instructions: spreadsheetBuild ? spreadsheetTypes.instructions : tableBuild ? tableSchemaCore.instructions : csv ? csvCore.instructions : tableSchema?.status==='ready' ? [
         conversationInstructions,
         todoInstructions,
@@ -894,21 +913,16 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
   } catch(error){await recordModelAttempt(payload,selectedRoute.model,modelStarted,null,false);throw error;} finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  await recordModelAttempt(payload,selectedRoute.model,modelStarted,data.usage,response.ok);
-  if (!response.ok) {
-    const messages = {
-      401: "The AI provider rejected the server credentials. Check OPENAI_API_KEY.",
-      429: "The AI provider is rate limiting requests or has no available quota."
-    };
-    throw new RequestError(messages[response.status] || "The AI provider could not complete the request. No CRM changes were made.", 502);
+  let result;
+  try{result=parseModelResponse(response,data,selectedRoute.model);}
+  catch(error){
+    await recordModelAttempt(payload,selectedRoute.model,modelStarted,data?.usage,false);
+    if(modelResponse.takeFallback(error,payload,selectedRoute.model,AI_MODELS,startedAt,Date.now())){
+      return planPipeChatAction(payload,{tier:'complex',model:AI_MODELS.complex,reason:'incomplete_response_fallback'},startedAt);
+    }
+    throw new RequestError('The AI provider could not complete the request. No CRM changes were made.',502);
   }
-
-  const outputText = extractOutputText(data);
-  if (!outputText) {
-    throw new Error("Model returned no action JSON");
-  }
-
-  let result = JSON.parse(outputText);
+  await recordModelAttempt(payload,selectedRoute.model,modelStarted,data?.usage,true);
   if (selectedRoute.tier === 'simple' && selectedRoute.model !== AI_MODELS.complex && modelRouter.needsEscalation(result)) {
     return planPipeChatAction(payload, {tier:'complex',model:AI_MODELS.complex,reason:'structured_plan_escalation'}, startedAt);
   }

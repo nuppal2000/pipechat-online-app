@@ -293,3 +293,58 @@ test('persistent model repetition is stopped rather than returning the same ques
   assert.equal(res.status,200);assert.equal(h.requests.length,2);assert.equal(res.body.crmAction,null);assert(!res.body.assistantMessage.includes(question));assert.match(res.body.assistantMessage,/nothing has been saved/);
   assert.deepEqual(h.calls,['reserve','commit']);
 });
+
+const incompleteData={status:'incomplete',incomplete_details:{reason:'max_output_tokens'},output:[],usage:{input_tokens:0,output_tokens:0}};
+test('HTTP 200 incomplete planner response falls back once with the unchanged snapshot and one quota charge',async()=>{
+  const first=deferred();let attempts=0;
+  const h=harness('supabase',async(url,options)=>isReview(options)?reviewedConversation():
+    {ok:true,json:()=>++attempts===1?first.promise:Promise.resolve({...modelData,status:'completed'})});
+  const {done,res}=await h.request({userCommand:'Hello. Do not change anything.'});
+  h.clock.advance(30000);first.resolve(incompleteData);await done;
+  assert.equal(res.status,200);assert.equal(res.body.ai.reason,'incomplete_response_fallback');
+  assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.4-mini','gpt-5.2','gpt-5.4-mini']);
+  const [before,after]=h.requests.map(r=>JSON.parse(r.options.body));
+  assert.deepEqual(before.input,after.input);assert.deepEqual(before.text,after.text);
+  assert.deepEqual(h.clock.delays,[80000,50000,50000]);
+  assert.deepEqual(h.calls,['reserve','commit']);assert.equal(h.meter.used,1);
+});
+test('incomplete output on both models stops, releases quota and cannot return partial actions',async()=>{
+  const h=harness('supabase',async()=>({ok:true,json:async()=>({...incompleteData,output_text:JSON.stringify(readAction)})}));
+  const {done,res}=await h.request();await done;
+  assert.equal(res.status,502);assert.equal(res.body.crmAction,undefined);
+  assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.4-mini','gpt-5.2']);
+  assert.deepEqual(h.calls,['reserve','release']);assert.equal(h.meter.used,0);assert.equal(h.clock.timers.size,0);
+});
+test('a stalled fallback inherits the remaining deadline, not another 80 seconds',async()=>{
+  const first=deferred();let attempts=0;
+  const h=harness('supabase',async()=>++attempts===1?{ok:true,json:()=>first.promise}:new Promise(()=>{}));
+  const {done,res}=await h.request();h.clock.advance(30000);first.resolve(incompleteData);await settle();
+  assert.deepEqual(h.clock.delays,[80000,50000]);h.clock.advance(50000);await done;
+  assert.equal(res.status,502);assert.deepEqual(h.calls,['reserve','release']);assert.equal(h.clock.timers.size,0);
+  assert.equal(h.requests[1].options.signal.aborted,true);
+});
+test('reviewer can use the single completion fallback but cannot reuse a planner fallback',async()=>{
+  for(const plannerFails of [false,true]){
+    let planners=0;
+    const h=harness('supabase',async(url,options)=>{
+      const body=JSON.parse(options.body);
+      const data=isReview(options)?body.model==='gpt-5.2'?{output_text:JSON.stringify(conversationReview)}:incompleteData:
+        plannerFails&&++planners===1?incompleteData:modelData;
+      return {ok:true,json:async()=>data};
+    });
+    const {done,res}=await h.request();await done;
+    assert.equal(res.status,plannerFails?502:200);
+    assert.deepEqual(h.calls,['reserve',plannerFails?'release':'commit']);
+    assert.equal(h.requests.filter(r=>JSON.parse(r.options.body).model==='gpt-5.2').length,1);
+  }
+});
+test('failed completion telemetry cannot be reported as success',async()=>{
+  let planners=0;const events=[];
+  const h=harness('supabase',async(url,options)=>isReview(options)?reviewedConversation():
+    {ok:true,json:async()=>++planners===1?incompleteData:modelData});
+  await h.plan({userCommand:'Hello',pipeline:{records:[],primaryField:'account'},
+    _modelAttempts:{next:0},_recordTelemetry:async event=>events.push(event)});
+  assert.deepEqual(events.map(e=>[e.model,e.outcome]),[
+    ['gpt-5.4-mini','failed'],['gpt-5.2','succeeded'],['gpt-5.4-mini','succeeded']
+  ]);
+});

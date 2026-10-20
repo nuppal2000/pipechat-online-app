@@ -88,7 +88,8 @@ test('HTTP monitoring and errors omit secrets; API no-store and origin protectio
       assert.equal(result.headers.get('content-security-policy'), "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
       assert.equal(result.headers.get('strict-transport-security'), null);
     }
-    const events = () => output.split(/\r?\n/).filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+    const diagnostics = () => output.split(/\r?\n/).filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+    const events = () => diagnostics().filter(event => event.event === 'pipechat.request');
     for (let i = 0; i < 40 && events().length < responses.length; i++) await delay(25);
     const logs = events();
     assert.equal(logs.length, responses.length);
@@ -99,6 +100,8 @@ test('HTTP monitoring and errors omit secrets; API no-store and origin protectio
       assert.equal(event.outcome, 'finished');
     }
     assert.equal(logs.find(entry => entry.status === 404).route, 'other_api');
+    const modelFailure=diagnostics().find(event=>event.event==='pipechat.ai_response');
+    assert.deepEqual(modelFailure,{event:'pipechat.ai_response',model:'gpt-5.4-mini',outcome:'failed',code:'http_error'});
     assert(!output.includes('PRIVATE_'));
     assert(!output.includes('private-email-canary'));
     assert(!output.includes(cookie.split('=')[1]));
