@@ -91,3 +91,37 @@ test('merge refuses unresolved relationship cardinality instead of dropping dist
   assert.throws(() => B.prepare(f.snapshot, [f.command()]), /cardinality/);
   assert.deepEqual(f.state, before);
 });
+
+test('keep_survivor_fill_blanks retains nonblank identity, zero and false without per-field choices', () => {
+  const f = fixture(), before = structuredClone(f.snapshot);
+  f.state.entities[1].values.amount = 20; f.state.entities[1].values.active = true;
+  const original = structuredClone(f.snapshot), command = { ...f.command({}), policy: 'keep_survivor_fill_blanks' };
+  const preview = B.mergePreview(f.state, command);
+  assert.deepEqual(preview.unresolvedFieldIds, []);
+  assert.deepEqual(preview.fieldResolutions, { name: 'Survivor', amount: 0, active: false, detail: 'Fill blank' });
+  const result = B.prepare(f.snapshot, [command]);
+  assert.deepEqual(result.next.entities[0].values, preview.fieldResolutions);
+  assert.equal(result.next.entities[0].id, f.survivorId);
+  assert.equal(result.next.relationships.length, 4); assert.deepEqual(result.next.views.map(v => v.entityIds), [[], [f.survivorId, f.targetId]]);
+  assert.deepEqual(f.snapshot, original); assert.deepEqual(f.snapshot.primary, before.primary);
+});
+
+test('fill-blanks policy asks only for distinct source values when the survivor is blank', () => {
+  const f = fixture(); f.state.entities[2].values.detail = 'Different source value';
+  const command = { ...f.command({}), policy: 'keep_survivor_fill_blanks' }, before = structuredClone(f.snapshot);
+  assert.deepEqual(B.mergePreview(f.state, command).unresolvedFieldIds, ['detail']);
+  assert.throws(() => B.prepare(f.snapshot, [command]), /conflicting field: detail/);
+  assert.deepEqual(f.snapshot, before);
+  command.fieldResolutions.detail = 'Different source value';
+  assert.equal(B.prepare(f.snapshot, [command]).next.entities[0].values.detail, 'Different source value');
+  assert.throws(() => B.prepare(f.snapshot, [{ ...command, fieldResolutions: { name: 'Source', detail: 'Different source value' } }]), /keeps the survivor/);
+});
+
+test('merge policies reject unknown policy and still enforce permissions and cardinality', () => {
+  const f = fixture(), command = { ...f.command({}), policy: 'keep_survivor_fill_blanks' };
+  assert.throws(() => B.prepare(f.snapshot, [{ ...command, policy: 'guess' }]), /policy/);
+  assert.throws(() => B.prepare({ ...f.snapshot, role: 'viewer' }, [command]), /read-only/);
+  f.state.relationshipTypes.push({ id: 'parent', name: 'Parent', fromType: 'item', toType: 'primary', cardinality: 'many_to_one' });
+  f.state.relationships.push(...f.sourceIds.map((source, index) => ({ id: id('lnk'), typeId: 'parent', fromId: source, toId: B.legacyId(f.snapshot.workspaceId, index + 1) })));
+  assert.throws(() => B.prepare(f.snapshot, [{ ...f.command({}), policy: 'keep_survivor_fill_blanks' }]), /cardinality/);
+});

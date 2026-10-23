@@ -64,3 +64,18 @@ test('an explicit entity merge preserves the survivor and refuses unresolved fie
   const result=Compiler.prepare(input,plan([{...operation,fieldResolutions:[{field:'email',value:'second@example.invalid'}]}]),'merge');
   assert.equal(result.next.entities.length,1);assert.equal(result.next.entities[0].id,survivor.id);assert.equal(result.next.entities[0].values.email,'second@example.invalid');assert.equal(result.next.relationships[0].fromId,survivor.id);assert.notEqual(result.next.relationships[0].id,input.state.relationships[0].id);assert.equal(input.state.entities.length,2);
 });
+
+test('typed merge policy resolves the live Contact blank-phone case without reconstructing literal resolutions',()=>{
+  const input=snapshot(),contactType=structuredClone(type);contactType.type.fields.push({id:'f_phone',name:'Phone',type:'text',required:false,options:[]});
+  input.state=Compiler.prepare(input,plan([contactType,relation,person('QAE Morgan Lane','lane'),person('QAE Morgan Duplicate','duplicate'),
+    {op:'link',typeId:'contact_deals',from:{source:'alias',key:'duplicate'},to:{source:'primary',key:'Northstar Design'}}]),'seed-policy').next;
+  const [survivor,source]=input.state.entities;survivor.values.email='morgan@example.com';source.values.f_phone='555-0107';
+  const action=plan([{op:'merge_entities',survivorId:survivor.id,sourceIds:[source.id],policy:'keep_survivor_fill_blanks',fieldResolutions:[]}]),before=structuredClone(input);
+  const result=Compiler.prepare(input,JSON.parse(JSON.stringify(action)),'policy');
+  assert.deepEqual(result.next.entities[0],{id:survivor.id,typeId:'contacts',values:{name:'QAE Morgan Lane',email:'morgan@example.com',f_phone:'555-0107'}});
+  assert.equal(result.next.entities.length,1);assert.equal(result.next.relationships[0].fromId,survivor.id);
+  assert.equal(result.review[0].policy,'keep_survivor_fill_blanks');assert.deepEqual(result.review[0].before.unresolvedFieldIds,[]);
+  assert.deepEqual(result,Compiler.prepare(input,action,'policy'));assert.deepEqual(input,before);
+  assert.match(Compiler.instructions,/blank survivor field with one distinct nonblank source value is filled automatically/);
+  assert.doesNotMatch(Compiler.instructions,/QAE Morgan|555-0107/);
+});

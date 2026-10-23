@@ -9,7 +9,7 @@ const schema = {status:'ready', useCase:'Other', description:'', title:'Work que
   {id:'f_title', name:'Title', type:'text', role:'primary', options:[]},
   {id:'f_state', name:'State', type:'choice', role:'status', options:['Queued','Ready','Closed']}
 ]};
-const spec = () => ({version:1, name:'Review follow-up', timezone:'America/New_York',
+const spec = () => ({version:2, scope:{type:'all_records'}, name:'Review follow-up', timezone:'America/New_York',
   trigger:{type:'field_changes_to', field:'f_state', to:'Ready'},
   conditions:[{type:'no_open_qualifying_task', match:{field:'nextAction', operator:'contains', value:'review'}}],
   action:{type:'create_linked_task', nextAction:'Schedule review', notes:'Confirm outstanding items', due:{anchor:'event_date', offsetDays:2}}});
@@ -259,4 +259,67 @@ test('failed event retried after pause is consumed without creating a task', () 
   assert.equal(retry.execution.reason, 'inactive');
   assert.equal(retry.additions.length, 0);
   Workflows.validateState(retry.workflow);
+});
+
+function scoped(due = null) {
+  const value = spec(); value.scope = {type:'record_ids', recordIds:[41]}; value.action.due = due;
+  const context = {schema, records:records(), workflows:[]};
+  const created = Workflows.apply(Workflows.plan({action:'create_workflow', spec:value}, context),
+    {...context, id:'workflow_scoped', now:'2026-03-01T00:00:00Z'});
+  return Workflows.apply(Workflows.plan({action:'set_workflow_activation', workflowId:created.workflow.id, active:true},
+    {...context, workflows:created.workflows}), {...context, workflows:created.workflows, now:'2026-03-02T00:00:00Z'}).workflow;
+}
+
+test('F01 scoped workflow matches stable IDs, not names, and never assigns an unrequested due date', () => {
+  const workflow = scoped(), result = run(workflow);
+  assert.equal(result.execution.status, 'succeeded');
+  assert.equal(result.execution.dueDate, null);
+  assert.equal(result.additions[0].dueDate, '');
+  assert.equal(result.additions[0].recordId, 41);
+  assert.deepEqual(Workflows.validateState(stored(result.workflow)), result.workflow);
+  const wrong = run(workflow, {event:{...event(), recordId:42}, records:records().map(r => ({...r, f_title:'Same name'}))});
+  assert.equal(wrong.execution.reason, 'record_out_of_scope');
+  assert.deepEqual(wrong.cards, []);
+  assert.equal(run(wrong.workflow, {event:{...event(), recordId:42}}).duplicate, true);
+  const renamed = run(workflow, {records:records().map(r => ({...r, f_title:'Renamed'}))});
+  assert.equal(renamed.execution.status, 'succeeded');
+  assert.equal(run(workflow, {records:records().slice(1)}).execution.reason, 'record_missing');
+  const replacement = {...records()[0], id:43};
+  assert.equal(run(workflow, {records:[replacement], event:{...event(), recordId:43}}).execution.reason, 'record_out_of_scope');
+  assert.equal(run(result.workflow, {cards:[]}).duplicate, true, 'task deletion cannot reopen an event');
+  assert.equal(run(active(), {event:{...event(), recordId:42}}).execution.status, 'succeeded', 'explicit all-record intent');
+});
+
+test('undated scoped workflows preserve failures, retry, dedup, pause and creation validation', () => {
+  const workflow = scoped(), full = Array.from({length:2000}, (_,i) => card(i));
+  const failed = run(workflow, {cards:full});
+  assert.equal(failed.execution.reason, 'board_capacity');
+  const retried = run(failed.workflow, {now:'2026-03-20T00:00:00Z'});
+  assert.equal(retried.execution.status, 'succeeded');
+  assert.equal(retried.execution.attempts, 2);
+  assert.equal(retried.execution.dueDate, null);
+  assert.equal(retried.cards[0].dueDate, '');
+  Workflows.validateState(retried.workflow);
+  const pause = Workflows.plan({action:'set_workflow_activation', workflowId:workflow.id, active:false}, {workflows:[failed.workflow], schema});
+  const paused = Workflows.apply(pause, {workflows:[failed.workflow], schema, now}).workflow;
+  const skipped = run(paused);
+  assert.equal(skipped.execution.reason, 'inactive');
+  assert.equal(run(skipped.workflow).duplicate, true);
+  const plan = Workflows.plan({action:'create_workflow', spec:workflow.spec}, {schema, records:records()});
+  assert.throws(() => Workflows.apply(plan, {workflows:[], schema, records:[], id:'workflow_new', now}), /current workspace/);
+  const invalid = stored(retried.workflow); invalid.executions[0].dueDate = '2026-03-09';
+  assert.throws(() => Workflows.validateState(invalid), /persisted task result/);
+});
+
+test('persisted legacy states retain global scope, due dates and lifecycle without normalization', () => {
+  const legacy = active(); legacy.spec.version = 1; delete legacy.spec.scope;
+  const original = stored(legacy);
+  assert.deepEqual(Workflows.validateState(legacy), original);
+  const result = run(legacy, {event:{...event(), recordId:42}});
+  assert.equal(result.execution.status, 'succeeded');
+  assert.equal(result.execution.dueDate, '2026-03-09');
+  assert.deepEqual(result.workflow.spec, original.spec);
+  assert.deepEqual(legacy, original);
+  const invalid = stored(result.workflow); invalid.executions[0].dueDate = null;
+  assert.throws(() => Workflows.validateState(invalid), /persisted task result/);
 });

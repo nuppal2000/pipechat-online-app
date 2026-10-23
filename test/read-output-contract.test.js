@@ -1,7 +1,7 @@
 'use strict';
 
 const test=require('node:test'),assert=require('node:assert/strict');
-const {schema,supports}=require('../lib/read-output-contract');
+const {schema,supports,evidenceIds}=require('../lib/read-output-contract');
 const spec=(metric='sum',field=metric==='count'||metric==='percentage'?null:'amount')=>({version:1,title:'Report',chart:'bar',
   scope:'all',groupBy:'owner',bucket:'none',splitBy:null,where:[],sort:'label_asc',limit:null,measures:[{label:'Measure',metric,field,where:[]}]});
 const pipeline=(...elements)=>({dashboard:{board:{version:1,elements:elements.map(([id,value])=>({id,spec:value,visibleIds:[]})),sharedFilters:[],activeId:elements[0]?.[0]??null}}});
@@ -21,8 +21,8 @@ const update=(ids,changes)=>({op:'update',ids,mode:'add_filter',where:[],replace
 const root=(action,required,p)=>supports(action,['root'],required,{pipeline:p});
 
 test('exports a bounded array schema and treats only explicit empty requirements as noncomputed',()=>{
-  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages']);
-  assert.equal(schema.type,'array');assert.equal(schema.maxItems,11);
+  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes']);
+  assert.equal(schema.type,'array');assert.equal(schema.maxItems,13);
   assert.equal(supports(null,[],[]),true);assert.equal(supports({action:'undo_action'},['root'],[]),true);
   for(const required of [undefined,null,'count',{},['unknown'],['count','count'],Array(12).fill('count'),new Array(1)]){
     assert.equal(supports(read('answer','count'),['root'],required),false);
@@ -72,7 +72,7 @@ test('graph metrics and reference statistics resolve exactly, including distinct
     assert.equal(root(analyze({kind:'summary',elementIds:['graph']}),[output,'count'].filter((v,i,a)=>a.indexOf(v)===i),p),true);
     assert.equal(root(analyze(groups('graph')),[output,'groups'],p),true);
     assert.equal(root(analyze(value(reference('graph','maximum'))),['max'],p),true);
-    if(output!=='count'&&output!=='max')assert.equal(root(analyze(value(reference('graph','maximum'))),[output],p),false);
+    assert.equal(root(analyze(value(reference('graph','maximum'))),[output,'names'],p),true,'Extrema return a measure value and its tied group labels');
   }
   const p=pipeline(['graph',spec('sum')]);
   assert.equal(root(analyze(value({...reference('graph','group'),group:'A',series:null})),['sum'],p),true);
@@ -103,7 +103,7 @@ test('new and updated graph specs determine capabilities in operation order',()=
   assert.equal(root(action,['average','percentages'],p),true);assert.equal(root(action,['sum'],p),false);
   assert.deepEqual({p,action},original);
   assert.equal(root(dashboard([add('new',spec('sum'))]),['sum','count']),true,'Empty dashboard questions default to summary');
-  assert.equal(root(dashboard([add('new',spec('sum'))]),['groups']),false);
+  assert.equal(root(dashboard([add('new',spec('sum'))]),['groups']),true,'The graph displays grouped values even without a groups question');
   assert.equal(root(dashboard([update(['missing'],[])]),['count'],p),false);
   assert.equal(root(dashboard([add('existing',spec())]),['sum'],p),false);
   assert.equal(root(dashboard([{op:'remove',ids:['existing']}],[groups('existing')]),['groups'],p),false);
@@ -173,4 +173,114 @@ test('invalid measure indexes, unknown metrics and duplicate updates cannot lend
   const changes=[{field:'measures',value:spec('sum').measures},{field:'measures',value:spec('average').measures}];
   assert.equal(root(dashboard([update(['graph'],changes)]),['sum'],p),false);
   assert.equal(root(analyze({kind:'summary',elementIds:['graph','missing']}),['sum'],p),false);
+});
+
+test('dashboard completeness resolves canonical component IDs without borrowing sibling metrics',()=>{
+  const action=dashboard([add('counts',spec('count')),add('averages',spec('average'))]);
+  assert.deepEqual(evidenceIds(action),['root','graph:counts','graph:averages']);
+  assert.equal(supports(action,['graph:counts'],['count','groups']),true);
+  assert.equal(supports(action,['graph:averages'],['average','groups']),true);
+  assert.equal(supports(action,['graph:counts'],['average']),false);
+  assert.equal(supports(action,['graph:averages'],['sum','percentages']),false);
+  assert.equal(supports(action,['counts'],['count']),false,'Raw IDs are not canonical evidence IDs');
+  assert.equal(supports(action,['graph:missing'],['count']),false);
+  assert.equal(supports(action,['root'],['count','average','groups']),true,'Legacy root covers the whole rendered action');
+  const collision=dashboard([add('root',spec('count')),add('averages',spec('average'))]);
+  assert.equal(supports(collision,['graph:root'],['average']),false,'The graph named root cannot become the whole action');
+  assert.deepEqual(evidenceIds(collision),['root','graph:root','graph:averages']);
+});
+
+test('read-only questions cannot borrow graph display outputs; comparisons keep both operand identities',()=>{
+  const p=pipeline(['counts',spec('count')],['averages',spec('average')],['other',spec('count')]);
+  const action=analyze({kind:'summary',elementIds:['counts']});
+  assert.deepEqual(evidenceIds(action,{pipeline:p}),['root','graph:counts']);
+  assert.equal(supports(action,['graph:counts'],['groups'],{pipeline:p}),false);
+  assert.equal(supports(action,['graph:averages'],['average'],{pipeline:p}),false);
+  const comparison=analyze(compare('percentage',reference('counts','records'),reference('other','records')));
+  assert.equal(root(comparison,['percentages'],p),true);
+  for(const elementId of ['counts','other'])assert.equal(supports(comparison,[`graph:${elementId}`],['percentages'],{pipeline:p}),false);
+});
+
+test('nested dashboards namespace equal element IDs by their containing workspace step',()=>{
+  const action=plan({op:'dashboard',id:'first',plan:dashboard([add('same',spec('count'))])},
+    {op:'dashboard',id:'second',plan:dashboard([{op:'clear'},add('same',spec('average'))])});
+  assert.deepEqual(evidenceIds(action),['first/graph:same','first','second/graph:same','second']);
+  assert.equal(supports(action,['first/graph:same'],['count','groups']),true);
+  assert.equal(supports(action,['first/graph:same'],['average']),false);
+  assert.equal(supports(action,['second/graph:same'],['average','groups']),true);
+  assert.equal(supports(action,['graph:same'],['count']),false);
+  const removed=dashboard([add('gone',spec('sum')),{op:'remove',ids:['gone']}]);
+  assert.deepEqual(evidenceIds(removed),['root']);
+  assert.equal(supports(removed,['graph:gone'],['sum']),false);
+});
+
+test('canonical entity reads actually return the count, names and saved fields covered by the contract',()=>{
+  const Business=require('../lib/business-compiler'),Workspace=require('../public/business-workspace');
+  const business={workspaceId:'11111111-1111-4111-a111-111111111111',version:0,role:'owner',scope:'workspace',state:Workspace.empty(),
+    primary:{tableSchema:null,customFields:[],records:[]}};
+  business.state=Business.prepare(business,{action:'business_plan',version:1,title:'Fixture',operations:[
+    {op:'put_type',type:{id:'contacts',name:'Contacts',fields:[{id:'full_name',name:'Full name',type:'text',required:true,options:[]},
+      {id:'email',name:'Email',type:'text',required:false,options:[]}]}},
+    {op:'upsert_entity',alias:'person',typeId:'contacts',matchField:'full_name',matchValue:'Alex Smith',mode:'reuse',values:[{field:'email',value:'alex@example.invalid'}]}
+  ]},'read-output').next;
+  const query={typeId:'contacts',selector:{kind:'all'},linkedTo:null,relationshipTypeId:null};
+  const action={action:'query_business',...query},computed=Business.query(business,action);
+  assert.equal(computed.count,1);assert.equal(computed.records[0].name,'Alex Smith');
+  assert.deepEqual(computed.records[0].values,{email:'alex@example.invalid',full_name:'Alex Smith'});
+  assert.equal(root(action,['count','names','fields']),true);
+  for(const kind of ['sum','average','groups','percentages'])assert.equal(root(action,[kind]),false);
+  const batch={action:'query_business_batch',queries:[{id:'people',...query},{id:'empty',...query,selector:{kind:'text_search',text:'absent'}}]};
+  const results=Business.query(business,batch).results;
+  assert.deepEqual(results.map(result=>[result.id,result.count]),[['people',1],['empty',0]]);
+  assert.equal(supports(batch,['people'],['fields','names','count']),true);
+  assert.equal(supports(batch,['empty'],['fields','names','count']),true,'A canonical empty result represents no saved names or field values');
+  assert.equal(supports(batch,['missing'],['fields']),false);
+  assert.equal(root({action:'business_plan'},['fields']),false,'A proposed entity is not a saved-data read');
+});
+
+test('typed history reads cover saved entries, with notes only for all or note selection',()=>{
+  for(const kind of ['all','note','activity']){
+    const step={op:'read_history',id:'history',label:'Saved history',selection:'selected',kind,from:null,to:null,limit:500};
+    const action=plan({op:'select_records',id:'selected'},step);
+    assert.deepEqual(evidenceIds(action),['selected','history']);
+    assert.equal(supports(action,['history'],['count','names','fields','history']),true);
+    assert.equal(supports(action,['history'],['notes']),kind!=='activity');
+    for(const output of ['sum','average','groups','percentages'])assert.equal(supports(action,['history'],[output]),false);
+    step.from='2026-10-22';step.to='2026-10-23';step.limit=1;
+    assert.equal(supports(action,['history'],['history',...(kind==='activity'?[]:['notes'])]),true,'Date filters and an empty canonical result do not remove typed outputs');
+  }
+  const action=plan(read('table','count','names','fields'),{op:'read_history',id:'activities',label:'Activity',selection:'selected',kind:'activity',from:null,to:null,limit:20});
+  assert.equal(supports(action,['table'],['history','notes']),false,'Stored table projections are not inspector history');
+  assert.equal(supports(action,['activities'],['notes']),false);
+});
+
+test('malformed history contracts fail closed without falling back to other reads',()=>{
+  const step={op:'read_history',id:'history',label:'Saved history',selection:'selected',kind:'all',from:null,to:null,limit:20};
+  for(const change of [{kind:'notes'},{kind:null},{selection:null},{from:'yesterday'},{from:'2026-02-30'},
+    {from:'2026-10-24',to:'2026-10-23'},{to:undefined},{limit:0},{limit:501},{limit:1.5},{outputs:['notes']}]){
+    assert.equal(supports(plan({...step,...change}),['history'],['history']),false);
+  }
+  assert.equal(root({action:'query_business'},['history','notes']),false);
+  assert.equal(root({action:'workflow_history'},['notes']),false);
+});
+
+test('F06 history completeness agrees with actual saved inspector notes and date-filtered empty results',()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),Inspector=require('../public/inspector-core'),Review=require('../lib/action-review');
+  const workspace=F.workspace();workspace.records[0].f_deal='QA Acorn Supplies';
+  workspace.records=Inspector.addNote(workspace.records,1,'Prefers email updates','QA','preference',new Date('2026-10-20T12:00:00Z'));
+  const step={op:'read_history',id:'history',label:'Saved preferences',selection:'selected',kind:'note',from:null,to:null,limit:100};
+  const action=F.plan([F.select('selected',[[F.where('f_deal','equals','QA Acorn Supplies')]]),step]);
+  const pipeline={...workspace,currentDate:'2026-10-23',visibleIds:[]},result={crmAction:action};
+  const requirement={description:'Saved preferences',evidenceKind:'computed_read',stepIds:['history'],requiredOutputs:['history','notes','fields','names','count'],satisfied:true};
+  const review={requirements:[requirement],issues:[],clarificationQuestion:null};
+  const before=structuredClone(pipeline),computed=Review.evidence({pipeline},result);
+  assert.match(computed.answers[0],/Prefers email updates/);assert.equal(computed.queryResults[0].history.total,1);
+  assert.equal(Review.validateReview(review,result,{pipeline}).ok,true);
+  step.from='2026-10-22';step.to='2026-10-23';
+  const empty=Review.evidence({pipeline},result);
+  assert.equal(empty.queryResults[0].history.total,0);assert.deepEqual(empty.queryResults[0].history.entries,[]);
+  assert.equal(Review.validateReview(review,result,{pipeline}).ok,true);
+  step.kind='activity';
+  assert.equal(Review.validateReview(review,result,{pipeline}).ok,false,'Activity cannot borrow the saved note');
+  assert.deepEqual(pipeline,before);
 });

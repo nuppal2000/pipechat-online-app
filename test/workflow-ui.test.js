@@ -10,7 +10,7 @@ const Workflows = require('../lib/business-workflows');
 const { legacySchema } = require('../public/table-schema');
 const clone = x => structuredClone(x);
 const version = '2026-01-01T00:00:00.000Z';
-const spec = { version: 1, name: '<img src=x onerror=alert(1)>', timezone: 'America/New_York',
+const spec = { version: 2, scope: { type: 'all_records' }, name: '<img src=x onerror=alert(1)>', timezone: 'America/New_York',
   trigger: { type: 'field_changes_to', field: 'stage', to: 'Won' },
   conditions: [{ type: 'no_open_qualifying_task', match: { field: 'nextAction', operator: 'contains', value: 'Follow up' } }],
   action: { type: 'create_linked_task', nextAction: 'Follow up', notes: '<script>bad()</script>', due: { anchor: 'event_date', offsetDays: 2 } } };
@@ -29,6 +29,49 @@ function button(dataset = {}, attributes = []) {
   const value = { dataset, disabled: false, hasAttribute: key => attributes.includes(key) };
   return { target: { closest: () => value } };
 }
+
+test('scope and no-due policy are canonical in draft, activation, retry and saved list previews', () => {
+  const {snapshot} = fixture(); snapshot.deals = [{id:1,account:'Acorn',stage:'Won'}];
+  const scoped = clone(spec); scoped.scope = {type:'record_ids',recordIds:[1]}; scoped.action.due = null;
+  const context = {schema:snapshot.tableSchema,records:snapshot.deals,workflows:[]};
+  const action = {action:'create_workflow',spec:scoped};
+  const created = Workflows.apply(Workflows.plan(action,context), {...context,id:'workflow_scoped',now:version});
+  snapshot.workflows = created.workflows;
+  const proposal = HTTP.prepare('owner',{action,expectedUpdatedAt:version},snapshot,snapshot);
+  const activation = HTTP.prepare('owner',{action:{action:'set_workflow_activation',workflowId:created.workflow.id,active:true},expectedUpdatedAt:version},snapshot,snapshot);
+  for (const p of [proposal,activation]) {
+    assert.equal(p.preview.scope, 'Only records: Acorn (#1)');
+    assert.match(UI.review(p), /<dt>Scope<\/dt><dd>Only records: Acorn \(#1\)<\/dd>/);
+    assert.match(UI.review(p), /<dt>Due<\/dt><dd>No due date<\/dd>/);
+  }
+  const el = element(), controller = UI.create({element:el,S:{user:{id:'owner'},generation:1,updatedAt:version,
+    tableSchema:snapshot.tableSchema,records:snapshot.deals}});
+  controller.setSnapshot(snapshot);
+  assert.match(el.innerHTML, /Only records: Acorn \(#1\)/); assert.match(el.innerHTML, /No due date/);
+  assert.doesNotMatch(el.innerHTML, /Event date|undefined/);
+  const active = Workflows.apply(Workflows.plan(activation.action,{...context,workflows:created.workflows}),
+    {...context,workflows:created.workflows,now:version}).workflow;
+  const cards = Array.from({length:2000},(_,i) => ({id:'todo_'+i,recordId:1,status:'Done',nextAction:'Other',notes:'',dueDate:''}));
+  const failed = Workflows.handleEvent({workflow:active,records:snapshot.deals,cards,schema:snapshot.tableSchema,now:version,
+    event:{eventId:'scope_retry',recordId:1,field:'stage',from:'Discovery',to:'Won',occurredAt:version}});
+  snapshot.workflows = [failed.workflow];
+  const retry = HTTP.prepare('owner',{workflowId:active.id,eventId:'scope_retry',expectedUpdatedAt:version},snapshot,snapshot,true);
+  assert.equal(retry.preview.scope, proposal.preview.scope); assert.equal(retry.preview.due, 'No due date');
+  assert.match(UI.review(retry), /Only records: Acorn \(#1\)/);
+  const changedSchema = clone(snapshot);
+  changedSchema.tableSchema.fields = changedSchema.tableSchema.fields.filter(field => field.id !== 'stage');
+  const retryAfterSchemaChange = HTTP.prepare('owner',{workflowId:active.id,eventId:'scope_retry',expectedUpdatedAt:version},
+    changedSchema,changedSchema,true);
+  assert.equal(retryAfterSchemaChange.preview.scope, 'Only records: Acorn (#1)', 'display names do not revalidate a broken trigger');
+  assert.equal(UI.reason('record_out_of_scope'), 'Record outside workflow scope');
+  const tampered = clone(proposal); tampered.preview.scope = 'All records';
+  assert.throws(() => HTTP.confirmation('owner',{proposal:tampered,confirm:true}), /proposal changed/);
+  const legacy = clone(created.workflow); legacy.spec.version = 1; delete legacy.spec.scope;
+  legacy.spec.action.due = {anchor:'event_date',offsetDays:2};
+  controller.setSnapshot({...snapshot,workflows:[legacy]});
+  assert.match(el.innerHTML, /All records \(legacy workflow\)/);
+  assert.match(el.innerHTML, /Event date \+ 2 calendar days/);
+});
 
 test('workflow list is escaped, draft activation is review-only, and history is read-only', async () => {
   const { snapshot, workflow } = fixture(), el = element(), calls = [], prepared = [], retries = [];

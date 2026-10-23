@@ -13,7 +13,7 @@ function fixture(kind = 'schema', to = 'Proposal Sent') {
     { id: 'f_company', name: 'Company', type: 'text', role: 'primary', options: [] }, { ...field, role: 'status' }
   ] } : null;
   const customFields = kind === 'schema' ? [] : [field];
-  const spec = { version: 1, name: 'Proposal follow-up', timezone: 'America/New_York',
+  const spec = { version: 2, scope: { type: 'all_records' }, name: 'Proposal follow-up', timezone: 'America/New_York',
     trigger: { type: 'field_changes_to', field: field.id, to },
     conditions: [{ type: 'no_open_qualifying_task', match: { field: 'nextAction', operator: 'contains', value: 'Follow up' } }],
     action: { type: 'create_linked_task', nextAction: 'Follow up', notes: '', due: { anchor: 'event_date', offsetDays: 2 } } };
@@ -28,7 +28,8 @@ function setStatus(snapshot, status) {
   snapshot.workflows = Workflows.apply(plan, { ...context, now: version }).workflows;
 }
 function renderList(snapshot) {
-  const S = { user: { id: 'owner' }, generation: 1, updatedAt: version, tableSchema: structuredClone(snapshot.tableSchema), customFields: structuredClone(snapshot.customFields) };
+  const S = { user: { id: 'owner' }, generation: 1, updatedAt: version, tableSchema: structuredClone(snapshot.tableSchema),
+    customFields: structuredClone(snapshot.customFields), records: structuredClone(snapshot.deals) };
   const element = { innerHTML: '', handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; }, removeEventListener() {} };
   const prepared = [];
   const controller = UI.create({ element, S, prepare: action => prepared.push(action) });
@@ -151,3 +152,34 @@ test('draft, active and paused switches show an action label and still require c
     assert.equal(prepared.length, 1);
   }
 });
+
+for (const kind of ['schema','custom']) {
+  test(`${kind} scoped previews and list show escaped current names while IDs alone control membership`, () => {
+    const snapshot = fixture(kind), primary = kind === 'schema' ? 'f_company' : 'account';
+    snapshot.deals = [{id:43,[primary]:'Acorn <img src=x> & "Co"'}, {id:44,[primary]:'Acorn <img src=x> & "Co"'}];
+    snapshot.workflows[0].spec.scope = {type:'record_ids',recordIds:[43,44]};
+    const original = structuredClone(snapshot), action = {action:'create_workflow',spec:snapshot.workflows[0].spec};
+    const proposal = HTTP.prepare('owner',{action,expectedUpdatedAt:version},snapshot,snapshot);
+    const expected = 'Only records: Acorn &lt;img src=x&gt; &amp; &quot;Co&quot; (#43), Acorn &lt;img src=x&gt; &amp; &quot;Co&quot; (#44)';
+    const {element,S,controller} = renderList(snapshot);
+    for (const html of [element.innerHTML,UI.review(proposal),UI.review(prepare(snapshot,true)),UI.review(prepare(snapshot,false))]) {
+      assert.ok(html.includes(expected)); assert.ok(!html.includes('<img'));
+    }
+    S.records[0][primary] = 'Renamed Acorn';
+    controller.draw();
+    assert.match(element.innerHTML, /Renamed Acorn \(#43\)/);
+    S.records = S.records.filter(r => r.id !== 43);
+    controller.draw();
+    assert.match(element.innerHTML, /Unavailable record \(#43\)/);
+    assert.deepEqual(controller.getSnapshot().workflows[0].spec.scope,original.workflows[0].spec.scope);
+    assert.deepEqual(snapshot,original);
+    snapshot.deals[0][primary] = 'Renamed Acorn';
+    assert.match(prepare(snapshot,true).preview.scope,/Renamed Acorn \(#43\)/);
+    assert.ok(proposal.preview.scope.includes('Acorn <img'), 'a reviewed preview remains bound to its original version');
+    const changed = structuredClone(proposal); changed.preview.scope = 'Only records: Someone else (#43)';
+    assert.throws(() => HTTP.confirmation('owner',{proposal:changed,confirm:true}), /proposal changed/);
+    removeField(snapshot,kind);
+    snapshot.deals = [];
+    assert.match(UI.review(prepare(snapshot,false)), /Unavailable record \(#43\)/);
+  });
+}

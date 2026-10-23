@@ -10,7 +10,7 @@ const schema = {status:'ready', useCase:'Other', description:'', title:'Review q
   {id:'f_title', name:'Title', type:'text', role:'primary', options:[]},
   {id:'f_state', name:'Review state', type:'choice', role:'status', options:['Queued','Ready']}
 ]};
-const spec = () => ({version:1, name:'Review follow-up', timezone:'America/New_York',
+const spec = () => ({version:2, scope:{type:'all_records'}, name:'Review follow-up', timezone:'America/New_York',
   trigger:{type:'field_changes_to', field:'f_state', to:'Ready'},
   conditions:[{type:'no_open_qualifying_task', match:{field:'nextAction', operator:'contains', value:'review'}}],
   action:{type:'create_linked_task', nextAction:'Schedule review', notes:'', due:{anchor:'event_date', offsetDays:2}}});
@@ -106,4 +106,56 @@ test('history preview is read-only and activation requires a resolved existing I
   assert.throws(() => Actions.plan({action:'set_workflow_activation', workflowId:'workflow_missing', active:true}, {workflows}), /no longer exists/);
   assert.throws(() => Actions.plan({action:'workflow_history', workflowId:'workflow_fixture', limit:0}, {workflows}));
   assert.throws(() => Actions.plan({action:'none'}), /Unsupported/);
+});
+
+test('new drafts require explicit scope, canonical owned IDs, and an explicit nullable due policy', () => {
+  const value = spec(); value.scope = {type:'record_ids', recordIds:[41, 42]}; value.action.due = null;
+  const action = {action:'create_workflow', spec:value}, records = [{id:41,f_title:'Acorn'}, {id:42,f_title:'Birch'}];
+  const planned = Actions.plan(action, {schema, records});
+  assert.equal(planned.preview.scope, 'Only records: Acorn (#41), Birch (#42)');
+  assert.equal(planned.preview.due, 'No due date');
+  assert.deepEqual(planned.spec, value);
+  assert.throws(() => Actions.plan(action, {schema}), /current workspace/);
+  assert.throws(() => Actions.plan(action, {schema, records:[{id:41}]}), /current workspace/);
+  const legacy = spec(); legacy.version = 1; delete legacy.scope;
+  assert.deepEqual(Actions.validateWorkflowSpec(legacy, schema), legacy);
+  assert.equal(Actions.workflowPreview(legacy, schema).scope, 'All records (legacy workflow)');
+  assert.throws(() => Actions.plan({action:'create_workflow', spec:legacy}, {schema, records}), /version 2/);
+  legacy.action.due = null;
+  assert.throws(() => Actions.validateWorkflowSpec(legacy, schema));
+  for (const scope of [null, {}, {type:'all_records', recordIds:[41]}, {type:'record_ids'},
+    {type:'record_ids', recordIds:[]}, {type:'record_ids', recordIds:[41,41]}, {type:'record_ids', recordIds:['41']},
+    ...[0,-1,1.5,9007199254740992].map(id => ({type:'record_ids', recordIds:[id]})),
+    {type:'record_ids', recordIds:[41], ownerId:'other'}, {type:'record_ids', recordIds:Array.from({length:2001}, (_,i) => i+1)},
+    {type:'expression', expression:'true'}, {type:'record_name', name:'Acorn'}]) {
+    assert.throws(() => Actions.validateWorkflowSpec({...value, scope}, schema));
+  }
+  const missing = structuredClone(value); delete missing.scope;
+  assert.throws(() => Actions.validateWorkflowSpec(missing, schema));
+  delete missing.action.due; missing.scope = value.scope;
+  assert.throws(() => Actions.validateWorkflowSpec(missing, schema));
+  const modelSpec = Actions.actionSchemas()[1].properties.spec;
+  assert.deepEqual(modelSpec.properties.version.enum, [2]);
+  assert.ok(modelSpec.required.includes('scope'));
+  assert.equal(modelSpec.properties.action.properties.due.anyOf[0].type, 'null');
+  assert.match(Actions.instructions, /workflow name is NOT a predicate/);
+  assert.match(Actions.instructions, /never invent offsetDays 0/);
+});
+
+test('scope names use the current primary field with IDs retained and honest context fallbacks', () => {
+  const value = spec(); value.scope = {type:'record_ids',recordIds:[41,42]};
+  const records = [{id:41,f_title:' Acorn ',account:'Not the configured name',f_alias:'Current identity'}, {id:42,f_title:'  '}];
+  const before = structuredClone({value,records,schema});
+  assert.equal(Actions.workflowScopeText(value,schema,records), 'Only records: Acorn (#41), Unnamed record (#42)');
+  assert.equal(Actions.workflowScopeText(value,undefined,records), 'Only records: Record #41, Record #42');
+  assert.equal(Actions.workflowScopeText(value,{status:'pending'},records), 'Only records: Record #41, Record #42');
+  assert.equal(Actions.workflowScopeText(value,schema), 'Only records: Record #41, Record #42');
+  assert.equal(Actions.workflowScopeText(value,schema,[]), 'Only records: Unavailable record (#41), Unavailable record (#42)');
+  assert.equal(Actions.workflowScopeText(value,null,[{id:41,account:'Legacy Acorn'},{id:42,account:'Legacy Birch'}]),
+    'Only records: Legacy Acorn (#41), Legacy Birch (#42)');
+  const reordered = {...schema,fields:[...schema.fields,{id:'f_alias',name:'Alias',type:'text',role:'none',options:[]}],
+    columnOrder:['f_alias','f_title','f_state']};
+  assert.equal(Actions.workflowScopeText(value,reordered,records), 'Only records: Current identity (#41), Unnamed record (#42)');
+  assert.deepEqual({value,records,schema},before);
+  assert.equal(Actions.workflowPreview(value,undefined,[],records).scope, 'Only records: Record #41, Record #42');
 });

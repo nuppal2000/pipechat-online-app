@@ -10,7 +10,7 @@ const Workflow = require('../lib/business-workflows');
 const { buildActionEntry, planInverse } = require('../lib/action-journal');
 const { createBusinessAutomationService } = require('../lib/business-automation-service');
 
-const spec = () => ({ version: 1, name: 'Won follow-up', timezone: 'America/New_York',
+const spec = () => ({ version: 2, scope: { type: 'all_records' }, name: 'Won follow-up', timezone: 'America/New_York',
   trigger: { type: 'field_changes_to', field: 'stage', to: 'Won' },
   conditions: [{ type: 'no_open_qualifying_task', match: { field: 'nextAction', operator: 'contains', value: 'follow up' } }],
   action: { type: 'create_linked_task', nextAction: 'Follow up with customer', notes: 'Saved workflow', due: { anchor: 'event_date', offsetDays: 2 } } });
@@ -22,7 +22,7 @@ test('durable business automations on PGlite PostgreSQL', { timeout: 180000 }, a
   const run = async file => db.exec(await fs.readFile(path.join(__dirname, '../db', file), 'utf8'));
   await run('tests/mock-supabase.sql');
   await db.exec('alter table auth.users add column email text');
-  const files = (await fs.readdir(path.join(__dirname, '../db/migrations'))).filter(f => /^\d{3}-.*\.sql$/.test(f) && f < '017').sort();
+  const files = (await fs.readdir(path.join(__dirname, '../db/migrations'))).filter(f => /^\d{3}-.*\.sql$/.test(f) && f < '020').sort();
   for (const file of files) await run('migrations/' + file);
 
   async function user() {
@@ -52,12 +52,12 @@ test('durable business automations on PGlite PostgreSQL', { timeout: 180000 }, a
     requestId: randomUUID(), expectedUpdatedAt: s.updatedAt, workflowId: id, spec: value });
   const activate = (u, s, w, active = true) => service(u).setActivation({ actionId: randomUUID(), requestId: randomUUID(),
     expectedUpdatedAt: s.updatedAt, workflowId: w.id, revision: w.revision, active });
-  async function fixture(active = true) {
+  async function fixture(active = true, value = spec()) {
     const u = await user();
     let s = await save(u, { ...await read(u), tableSchema: legacySchema(), deals: [], todoCards: [] });
     s = await save(u, { ...s, deals: [{ id: 1, account: 'First', stage: 'Discovery', history: [] },
       { id: 2, account: 'Second', stage: 'Discovery', history: [] }] });
-    const created = await create(u, s); s = created.snapshot;
+    const created = await create(u, s, 'workflow_followup', value); s = created.snapshot;
     if (active) s = (await activate(u, s, created.workflow)).snapshot;
     return { u, s };
   }
@@ -68,6 +68,117 @@ test('durable business automations on PGlite PostgreSQL', { timeout: 180000 }, a
     p_request_id: randomUUID(), p_conversation_id: null, p_plan_id: null, p_expected_updated_at: s.updatedAt, p_workspace: body(s), p_metadata: metadata });
   const undo = (u, id, s) => rpc(u, 'pipechat_undo_action', { p_action_id: id, p_undo_action_id: randomUUID(),
     p_request_id: randomUUID(), p_expected_updated_at: s.updatedAt });
+
+  await t.test('021 upgrades deployed migrations without 020, preserves legacy data and exact replay, and retains ACLs', async () => {
+    const legacy = spec(); legacy.version = 1; delete legacy.scope;
+    const {u, s} = await fixture(true, legacy);
+    let before = await save(u, transition(s));
+    const draft = await create(u, before, 'workflow_legacy_draft', legacy); before = draft.snapshot;
+    const paused = await activate(u, before, before.workflows.find(w => w.id === 'workflow_followup'), false); before = paused.snapshot;
+    const persisted = async () => (await db.query(`select
+      (select jsonb_agg(to_jsonb(x)) from pipechat.business_automations x) workflows,
+      (select jsonb_agg(to_jsonb(x)) from pipechat.business_automation_events x) events,
+      (select jsonb_agg(to_jsonb(x)) from pipechat.business_automation_receipts x) receipts,
+      (select jsonb_agg(to_jsonb(x)) from pipechat.action_journal x) journal`)).rows;
+    const permissions = async () => (await db.query(`select p.oid,p.proacl,p.prosecdef,p.proconfig from pg_proc p
+      join pg_namespace n on n.oid=p.pronamespace where n.nspname in ('public','pipechat') order by p.oid`)).rows;
+    const saved = await persisted(), acl = await permissions();
+    await run('migrations/021-workflow-record-scope.sql');
+    assert.deepEqual(await read(u), before);
+    assert.deepEqual(await persisted(), saved, 'migration has no data rewrite');
+    assert.deepEqual(await permissions(), acl, 'no new callable surface or privilege changes');
+    before.workflows.forEach(Workflow.validateState);
+    const replay = await service(u).create({actionId:draft.receipt.actionId, requestId:draft.receipt.requestId,
+      expectedUpdatedAt:draft.receipt.beforeVersion, workflowId:draft.workflow.id, spec:legacy});
+    assert.equal(replay.replayed, true); assert.deepEqual(replay.snapshot, draft.snapshot);
+    const resumed = await activate(u, before, before.workflows.find(w => w.id === 'workflow_followup'));
+    const next = structuredClone(resumed.snapshot); next.deals[1].stage = 'Won';
+    const fired = await save(u, next);
+    assert.equal(fired.todoCards.length, 2, 'legacy workflows remain global');
+    assert.ok(fired.todoCards.every(c => c.dueDate));
+    assert.deepEqual(fired.workflows.find(w => w.id === 'workflow_followup').spec, legacy);
+    await fails(() => create(u, fired, 'workflow_new_legacy', legacy), 'PT400');
+  });
+
+  await t.test('F01 canonical record scope and no-due execution agree with JS for matched and unmatched records', async () => {
+    const value = spec(); value.scope = {type:'record_ids', recordIds:[1]}; value.action.due = null;
+    const {u, s} = await fixture(true, value), next = structuredClone(s);
+    next.deals.forEach(r => { r.stage = 'Won'; r.account = 'Same name'; });
+    const after = await save(u, next), w = after.workflows[0];
+    assert.deepEqual(after.todoCards.map(c => [c.recordId,c.dueDate]), [[1,'']]);
+    assert.deepEqual(w.executions.map(e => [e.status,e.reason,e.dueDate]),
+      [['succeeded','task_created',null], ['skipped','record_out_of_scope',null]]);
+    let expected = {workflow:s.workflows[0], cards:s.todoCards};
+    for (const e of w.executions) expected = Workflow.handleEvent({...expected, event:e.event, records:after.deals,
+      schema:s.tableSchema, customFields:s.customFields, now:e.lastAttemptAt});
+    assert.deepEqual(w, expected.workflow); assert.deepEqual(after.todoCards, expected.cards);
+    Workflow.validateState(w);
+    assert.deepEqual((await save(u, after)).workflows, after.workflows, 'unchanged writes do not retrigger');
+  });
+
+  await t.test('scope survives rename, deletion and replacement without following names or changing stored IDs', async () => {
+    const value = spec(); value.scope = {type:'record_ids', recordIds:[1]}; value.action.due = null;
+    const {u, s} = await fixture(true, value), renamed = transition(s);
+    renamed.deals[0].account = 'Renamed';
+    const after = await save(u, renamed);
+    assert.equal(after.todoCards[0].recordId, 1);
+    let current = await save(u, {...after, deals:after.deals.filter(r => r.id !== 1), todoCards:[]});
+    const replacement = {...current.deals[0], id:3, account:'First', stage:'Discovery'};
+    current = await save(u, {...current, deals:[...current.deals,replacement]});
+    const next = structuredClone(current); next.deals.find(r => r.id === 3).stage = 'Won';
+    current = await save(u, next);
+    assert.equal(current.todoCards.length, 0);
+    assert.equal(current.workflows[0].executions.at(-1).reason, 'record_out_of_scope');
+    assert.deepEqual(current.workflows[0].spec.scope, value.scope);
+    const paused = await activate(u, current, current.workflows[0], false);
+    assert.equal(paused.workflow.status, 'paused', 'a deleted target never prevents pausing');
+    const replay = await service(u).retry({actionId:randomUUID(), requestId:randomUUID(), expectedUpdatedAt:paused.updatedAt,
+      workflowId:paused.workflow.id, eventId:after.workflows[0].executions[0].event.eventId});
+    assert.equal(replay.snapshot.todoCards.length, 0, 'success tombstone survives record and task deletion');
+  });
+
+  await t.test('undated scoped failures retry atomically and pause consumes the event without tasks', async () => {
+    for (const pause of [false,true]) {
+      const value = spec(); value.scope = {type:'record_ids', recordIds:[1]}; value.action.due = null;
+      const {u, s} = await fixture(true, value), next = transition(s);
+      next.todoCards = Array.from({length:2000}, (_,i) => ({id:'todo_full_'+i, recordId:1, status:'Done', nextAction:'Other', notes:'', dueDate:''}));
+      const failed = await save(u, next), event = failed.workflows[0].executions[0].event;
+      assert.equal(failed.workflows[0].executions[0].reason, 'board_capacity');
+      let current = await save(u, {...failed, todoCards:[]});
+      if (pause) current = (await activate(u, current, current.workflows[0], false)).snapshot;
+      const input = {actionId:randomUUID(), requestId:randomUUID(), expectedUpdatedAt:current.updatedAt,
+        workflowId:current.workflows[0].id, eventId:event.eventId};
+      const result = await service(u).retry(input);
+      assert.equal(result.execution.reason, pause ? 'inactive' : 'task_created');
+      assert.equal(result.execution.dueDate, null);
+      assert.equal(result.snapshot.todoCards.length, pause ? 0 : 1);
+      const expected = Workflow.handleEvent({workflow:current.workflows[0], event, records:current.deals, cards:[],
+        schema:current.tableSchema, now:result.workflow.updatedAt});
+      assert.deepEqual(result.workflow, expected.workflow); assert.deepEqual(result.snapshot.todoCards, expected.cards);
+      const replay = await service(u).retry(input);
+      assert.equal(replay.replayed, true); assert.deepEqual(replay.snapshot, result.snapshot);
+    }
+  });
+
+  await t.test('SQL rejects malformed, omitted, foreign and disappeared scope IDs independently of JS', async () => {
+    const {u, s} = await fixture(false), foreign = await user();
+    const foreignTable = await save(foreign, {...await read(foreign), tableSchema:legacySchema(), deals:[], todoCards:[]});
+    await save(foreign, {...foreignTable, deals:[{id:99,account:'Foreign',stage:'Discovery',history:[]}]});
+    const value = spec(); value.action.due = null;
+    const bad = [null, {}, {type:'all_records',recordIds:[1]}, {type:'record_ids'},
+      ...[[],[1,1],['1'],[0],[-1],[1.5],[9007199254740992],[99],[1,99]].map(recordIds => ({type:'record_ids',recordIds})),
+      {type:'record_ids',recordIds:[1],expression:'true'}, {type:'name',value:'First'},
+      {type:'record_ids',recordIds:Array.from({length:2001}, (_,i) => i+1)}].map(scope => ({...value,scope}));
+    const omitted = structuredClone(value); delete omitted.scope; bad.push(omitted);
+    const missingDue = structuredClone(value); delete missingDue.action.due; bad.push(missingDue);
+    for (const spec of bad) await fails(() => rpc(u, 'pipechat_create_workflow', {p_action_id:randomUUID(),
+      p_request_id:randomUUID(),p_expected_updated_at:s.updatedAt,p_workflow_id:'workflow_bad_scope',p_spec:spec}), 'PT400');
+    assert.deepEqual(await read(u), s);
+    const removed = await save(u, {...s, deals:s.deals.filter(r => r.id !== 1)});
+    await fails(() => create(u, removed, 'workflow_deleted_target', {...value, scope:{type:'record_ids',recordIds:[1]}}), 'PT400');
+    const all = await create(u, removed, 'workflow_all_undated', value);
+    assert.deepEqual(all.workflow.spec.scope, {type:'all_records'});
+  });
 
   await t.test('draft persistence, separate activation, history, stale CAS and exact replay', async () => {
     const { u, s } = await fixture(false), svc = service(u), w = s.workflows[0];

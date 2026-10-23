@@ -6,7 +6,7 @@ const { createSupabaseBackend, BackendError } = require('../lib/supabase-backend
 const Workflows = require('../lib/business-workflows');
 const { legacySchema } = require('../public/table-schema');
 const at = '2026-01-01T00:00:00.000Z';
-const spec = { version: 1, name: 'Follow up', timezone: 'America/New_York',
+const spec = { version: 2, scope: { type: 'all_records' }, name: 'Follow up', timezone: 'America/New_York',
   trigger: { type: 'field_changes_to', field: 'stage', to: 'Won' },
   conditions: [{ type: 'no_open_qualifying_task', match: { field: 'nextAction', operator: 'contains', value: 'Follow up' } }],
   action: { type: 'create_linked_task', nextAction: 'Follow up', notes: '', due: { anchor: 'event_date', offsetDays: 2 } } };
