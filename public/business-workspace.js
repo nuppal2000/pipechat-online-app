@@ -169,7 +169,9 @@
     const populated = entities.filter(entity => !blank(entity.values[fieldId])).map(entity => entity.id), dependencies = [];
     if (field.id === identity.id) dependencies.push({ kind: 'identity_field', message: 'The identifying field cannot be removed.' });
     if (field.required) dependencies.push({ kind: 'required_field', message: 'A required field cannot be removed.' });
-    if (populated.length) dependencies.push({ kind: 'stored_values', message: populated.length + ' entities still have values in this field.', entityIds: populated });
+    if (populated.length) dependencies.push({ kind: 'stored_values',
+      message: 'This field contains saved values in ' + populated.length + (populated.length === 1 ? ' entity.' : ' entities.'),
+      count: populated.length, entityIds: populated.slice(0, 200), omittedCount: Math.max(0, populated.length - 200) });
     return clone({ typeId, typeName: type.name, field, removable: !dependencies.length, dependencies,
       affectedEntityIds: entities.filter(entity => Object.hasOwn(entity.values, fieldId)).map(entity => entity.id) });
   }
