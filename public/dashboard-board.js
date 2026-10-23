@@ -45,6 +45,44 @@
     if(board.activeId!==null&&!seen.has(board.activeId))bad('Choose an existing active dashboard element.');
     return board;
   }
+  function sameValue(left,right){
+    if(left===right)return true;
+    if(!left||!right||typeof left!=='object'||typeof right!=='object'||Array.isArray(left)!==Array.isArray(right))return false;
+    const keys=Object.keys(left);
+    return keys.length===Object.keys(right).length&&keys.every(key=>Object.hasOwn(right,key)&&sameValue(left[key],right[key]));
+  }
+  function immutable(value){
+    if(value&&typeof value==='object'){Object.values(value).forEach(immutable);Object.freeze(value);}
+    return value;
+  }
+  // Compare already-compiled boards, never client totals or a second report execution.
+  function preservation(beforeBoard,afterBoard,{prefix=''}={}){
+    if(typeof prefix!=='string'||prefix!==''&&!/^[a-z][a-z0-9_]{0,39}\/$/.test(prefix))bad('Use a valid workspace step prefix for dashboard preservation evidence.');
+    const before=clone(validate(beforeBoard??empty())),after=clone(validate(afterBoard));
+    const snapshots=board=>new Map(board.elements.map((element,position)=>{
+      if(!element.spec||typeof element.spec!=='object'||Array.isArray(element.spec)||element.spec.version!==1)bad('Dashboard preservation requires materialized report specifications.');
+      const sharedFilters=board.sharedFilters.filter(filter=>filter.targets.includes(element.id))
+        .map(filter=>({id:filter.id,where:filter.where})).sort((left,right)=>left.id<right.id?-1:left.id>right.id?1:0);
+      return [element.id,{position,spec:element.spec,visibleIds:element.visibleIds,sharedFilters}];
+    }));
+    const left=snapshots(before),right=snapshots(after),beforeOrder=[...left.keys()].filter(id=>right.has(id)),afterOrder=[...right.keys()].filter(id=>left.has(id));
+    const predecessors=(order,id)=>order.slice(0,order.indexOf(id)).sort();
+    const elements=[...left.keys(),...[...right.keys()].filter(id=>!left.has(id))].map(id=>{
+      const previous=left.get(id)||null,current=right.get(id)||null,reasons=[];
+      if(!previous)reasons.push('added');
+      else if(!current)reasons.push('removed');
+      else{
+        if(!sameValue(previous.spec,current.spec))reasons.push('spec');
+        if(!sameValue(previous.visibleIds,current.visibleIds))reasons.push('visible_ids');
+        if(!sameValue(previous.sharedFilters,current.sharedFilters))reasons.push('shared_filters');
+        // Additions/removals may shift indices; a retained graph must not cross another retained graph.
+        if(!sameValue(predecessors(beforeOrder,id),predecessors(afterOrder,id)))reasons.push('order');
+      }
+      const unchanged=reasons.length===0;
+      return {id,unchanged,evidenceId:unchanged?prefix+'unchanged:graph:'+id:null,reasons,before:previous,after:current};
+    });
+    return immutable({evidenceIds:elements.filter(element=>element.unchanged).map(element=>element.evidenceId),elements,orderPreserved:sameValue(beforeOrder,afterOrder)});
+  }
   function intersect(left,right){if(!right.length)return clone(left);if(!left.length)return clone(right);if(left.length*right.length>12)bad('The combined dashboard filter is too complex. Please simplify the alternatives.');return left.flatMap(a=>right.map(b=>[...a,...b]));}
   function evaluate(board,records,core,custom=[],options={}){
     validate(board);
@@ -155,7 +193,7 @@
   }
   function apply(current,action,records,core,custom=[],options={}){
     shape(action,['action','operations','questions']);if(action.action!=='dashboard_plan'||!Array.isArray(action.operations)||!action.operations.length||action.operations.length>24)bad('Supply a bounded dashboard plan.');
-    const next=clone(current||empty());validate(next);
+    const before=clone(current??empty());validate(before);const next=clone(before);
     for(const op of action.operations){
       if(op.op==='clear'){shape(op,['op']);next.elements=[];next.sharedFilters=[];next.activeId=null;}
       else if(op.op==='add'){
@@ -177,7 +215,7 @@
     const views=evaluate(next,records,core,custom,options);
     const questions=action.questions.length?action.questions:next.elements.length?[{kind:'summary',elementIds:next.elements.map(e=>e.id)}]:[];
     const answer=analyze(questions,views);
-    return {board:next,views,answer};
+    return {board:next,views,answer,preservation:preservation(before,next,{prefix:options.preservationPrefix??''})};
   }
-  return {empty,validate,validateChartMeasures,schemas,evaluate,apply,analyze,context,format};
+  return {empty,validate,preservation,validateChartMeasures,schemas,evaluate,apply,analyze,context,format};
 });
