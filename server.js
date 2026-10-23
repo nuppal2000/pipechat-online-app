@@ -756,7 +756,7 @@ async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simp
       try{response=await fetch('https://api.openai.com/v1/responses',{
         method:'POST',signal:controller.signal,
         headers:{'Content-Type':'application/json',Authorization:`Bearer ${OPENAI_API_KEY}`},
-        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline}).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline})}}})
+        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed}).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed})}}})
       });data=await response.json();}
       catch(error){await recordModelAttempt(payload,model,modelStarted,null,false);throw error;}
       controller.signal.throwIfAborted();
@@ -951,6 +951,9 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
     }
     return {crmAction:null,memoryNote:null,assistantMessage:"Sorry, I understood your reply, but couldn't safely prepare the complete change. I have stopped the repeated question. Please restate the change with the record and values you want; nothing has been saved.",ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
   }
+  let canonicalAnswer,answerPresentation;
+  // Planner extras never carry authority for a computed answer or its provenance.
+  delete grounded.computedAnswer;delete grounded.answerPresentation;
   if(grounded===result&&actionReview.needsReview(payload,result)){
     let review,coverage,stage='evidence';
     try{
@@ -959,7 +962,11 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
       stage='review';
       review=await reviewCompiledAction({userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed},startedAt,payload);
       stage='mapping';
-      coverage=actionReview.validateReview(review,result,{pipeline});
+      coverage=actionReview.validateReview(review,result,{pipeline,computed});
+      if(coverage.ok){
+        canonicalAnswer=coverage.answer?.text??actionReview.renderAnswer(payload,result,computed);
+        if(coverage.answer)answerPresentation={mode:'extractive',snapshotId:coverage.answer.snapshotId,workspaceVersion:coverage.answer.workspaceVersion};
+      }
       if(!coverage.ok)recordValidationFailure(payload,stage,review,coverage,result.crmAction);
       review.issues.push(...coverage.mappingIssues);
     }catch(error){
@@ -979,8 +986,9 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
   }
   // The durable transcript must keep the same computed answer that the UI shows,
   // never the planner's provisional prose about results it has not calculated.
-  const computedAnswer=actionReview.renderAnswer(payload,grounded);
+  const computedAnswer=canonicalAnswer??actionReview.renderAnswer(payload,grounded);
   if(computedAnswer)grounded.computedAnswer=computedAnswer;
+  if(answerPresentation)grounded.answerPresentation=answerPresentation;
   return {...grounded, ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};
 }
 
