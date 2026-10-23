@@ -34,7 +34,7 @@ function harness(override){
   const window={PipelineCore:Core,PipeChatSchema:Schema,PipeChatTodo:Todo,PipeChatIcons:{},PipeChatPlan:Plan,PipeChatReports:Reports,PipeChatDashboard:Dashboard,PipeChatWorkflowUI:require('../public/workflow-ui')};
   const startup='  wire();\n  restoreSession();';assert(source.includes(startup));
   vm.runInNewContext(source.replace(startup,`const actualTrust=renderTrust;render=()=>{};renderTrust=()=>{};syncWorkspacePanes=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};paintMessage=()=>{};say=text=>messages.push(text);api=handler;
-    window.test={S,useSchema,handleAction,prepareWorkflow,chatState,saveChatState,clearDraft,reviewRestoredProposal,acceptTurnResponse,actualTrust,
+    window.test={S,useSchema,handleAction,prepareWorkflow,chatState,saveChatState,clearDraft,reviewRestoredProposal,acceptTurnResponse,actualTrust,aiPayload,
       restore(state){restoredProposal=state;},restored(){return restoredProposal;},connect(value){conversation=value;chatThread='thread';},
       beginTurn(){turnAwaiting={draftSignature:draftSignature()};}};`),
     {window,document:{getElementById:node},crypto,handler,messages,Intl,Date,TextEncoder,setTimeout,clearTimeout,sessionStorage:{getItem(){return null;},setItem(){},removeItem(){}}});
@@ -56,6 +56,51 @@ test('chat workflow revision replaces only its unconfirmed compatible draft and 
   assert.equal(h.saved.at(-1).originalCommand,original);assert.equal(h.S.pending.attempted,false);
   assert.deepEqual(h.calls.map(c=>c.url),['/api/workflows/prepare','/api/workflows/prepare']);
   assert.equal(h.S.updatedAt,version);assert.deepEqual(h.S.records,h.w.records);
+});
+
+test('read-only workspace plans display the same canonical extractive or numeric answer as the server',()=>{
+  for(const extractive of [false,true]){
+    const h=harness(),canonical=extractive?'Acorn (#1): "Use email."\nSource: Saved note':'Selected records: 1';
+    const action=F.plan([F.select('one',[[F.where('f_deal','equals',h.w.records[0].f_deal)]]),
+      {op:'read_records',id:'read',label:'Read selected record',selection:'one',outputs:[{kind:'count',field:null}],showTable:false}]);
+    const before=plain(h.S.records);
+    h.handleAction({crmAction:action,computedAnswer:canonical,ai:{workspaceVersion:version},
+      ...(extractive?{answerPresentation:{mode:'extractive',snapshotId:'current-snapshot',workspaceVersion:version}}:{})},'Read');
+    assert.deepEqual(h.messages,[canonical]);assert.deepEqual(plain(h.S.focus.ids),[1]);assert.deepEqual(h.S.records,before);assert.equal(h.S.pending,null);
+  }
+});
+
+test('stale or malformed canonical workspace answers fail before changing focus or draft',()=>{
+  for(const failure of ['missing version','stale version','missing body','empty body','bad mode','stale presentation','oversize']){
+    const h=harness(),pending={kind:'existing'};h.S.pending=pending;h.S.focus={kind:'table',ids:[2]};
+    const action=F.plan([F.select('one'),{op:'read_records',id:'read',label:'Read',selection:'one',outputs:[{kind:'count',field:null}],showTable:false}]);
+    const response={crmAction:action,computedAnswer:'Canonical answer',ai:{workspaceVersion:version},answerPresentation:{mode:'extractive',snapshotId:'snapshot',workspaceVersion:version}};
+    if(failure==='missing version')delete response.ai;
+    if(failure==='stale version')response.ai.workspaceVersion='old';
+    if(failure==='missing body')delete response.computedAnswer;
+    if(failure==='empty body')response.computedAnswer='';
+    if(failure==='bad mode')response.answerPresentation.mode='unchecked';
+    if(failure==='stale presentation')response.answerPresentation.workspaceVersion='old';
+    if(failure==='oversize')response.computedAnswer='x'.repeat(30001);
+    assert.throws(()=>h.handleAction(response,'Read'),/verified|workspace changed/);
+    assert.deepEqual(h.messages,[]);assert.equal(h.S.pending,pending);assert.deepEqual(h.S.focus.ids,[2]);
+  }
+});
+
+test('pending write plans do not publish computed read answers before confirmation',()=>{
+  const h=harness(),before=plain(h.S.records),action=F.plan([F.select('one',[[F.where('f_deal','equals',h.w.records[0].f_deal)]]),
+    F.update('change','one','f_notes','Proposed note'),{op:'read_records',id:'read',label:'Proposed read',selection:'one',outputs:[{kind:'fields',field:'f_notes'}],showTable:false}]);
+  h.handleAction({crmAction:action,computedAnswer:'WITHHELD_READ_RESULT',ai:{workspaceVersion:version}},'Change note and read it');
+  assert(h.S.pending);assert.deepEqual(h.S.records,before);assert.doesNotMatch(h.messages.join('\n'),/WITHHELD_READ_RESULT|Proposed note/);
+  assert.match(h.messages.join('\n'),/Nothing is saved until/);
+});
+
+test('both AI payload branches preserve the current report dashboard for server grounding',()=>{
+  const h=harness(),board={version:1,elements:[],sharedFilters:[],activeId:null};
+  h.S.dashboard=board;h.S.report={metric:'sum',field:'f_value'};
+  assert.deepEqual(plain(h.aiPayload('Read').currentReport),{metric:'sum',field:'f_value',dashboard:board});
+  h.useSchema(null);h.S.report={metric:'sum',field:'value'};h.S.dashboard=board;
+  assert.deepEqual(plain(h.aiPayload('Read').currentReport),{metric:'sum',field:'value',dashboard:board});
 });
 
 test('workflow revision refuses unrelated, stale, changed-session and uncertain-save drafts',async()=>{

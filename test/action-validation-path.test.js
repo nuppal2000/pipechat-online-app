@@ -27,13 +27,19 @@ function contact(){return {assistantMessage:'The company and deal are one combin
 const requirement=(description,evidenceKind='compiled_action',satisfied=true,stepIds=['root'])=>({description,evidenceKind,satisfied,stepIds});
 const review=requirements=>({requirements,issues:[],clarificationQuestion:null});
 function harness(planner,reviewer){
+  const evidencePipelines=new WeakMap();
   const calls=[],logs=[],assertions=[],context={__dirname:path.dirname(serverPath),Buffer,URL,structuredClone,AbortController,AbortSignal,setTimeout,clearTimeout,
     console:{log:line=>logs.push(JSON.parse(line)),warn:line=>logs.push(JSON.parse(line))},
     process:{env:{PIPECHAT_STORAGE_PROVIDER:'json',OPENAI_API_KEY:'OFFLINE_FIXTURE_ONLY',NODE_ENV:'test'}},
     require(name){
       if(name==='node:http')return {createServer:()=>({})};
       // The real server and validators share a realm; deserialize VM model data into that realm.
-      if(name==='./lib/action-review.js')return {...Review,evidence:(payload,result)=>Review.evidence(copy(payload),copy(result))};
+      if(name==='./lib/action-review.js')return {...Review,evidence:(payload,result)=>{
+        const normalized=copy(payload);
+        if(payload.pipeline.recordHistories instanceof Map)Object.defineProperty(normalized.pipeline,'recordHistories',{value:payload.pipeline.recordHistories});
+        const computed=Review.evidence(normalized,copy(result));evidencePipelines.set(computed,normalized.pipeline);return computed;
+      },schemaFor:(action,context)=>Review.schemaFor(copy(action),{...context,pipeline:evidencePipelines.get(context.computed)||context.pipeline}),
+      validateReview:(review,result,context)=>Review.validateReview(copy(review),copy(result),{...context,pipeline:evidencePipelines.get(context.computed)||context.pipeline})};
       if(name==='./lib/conversation-core.js'){
         const core=localRequire(name);return {...core,validateState:input=>core.validateState(copy(input)),contextFor:(page,command,recalled)=>core.contextFor(copy(page),command,copy(recalled))};
       }
@@ -175,6 +181,98 @@ test('diagnostic boundary drops arbitrary values and bounds counters without ech
   assert.equal(result.requestId,null);assert.equal(result.attempt,0);assert.equal(result.stage,'review');
   assert.deepEqual(result.codes,['review_unavailable']);assert.equal(result.counts.unsatisfied,40);assert.equal(result.counts.issues,20);
   assert.doesNotMatch(JSON.stringify(result),/credential|PRIVATE|SECRET/);
+});
+
+function factFixture(){
+  const payload=fixture();payload.userCommand='How should we contact Harbor Studio?';
+  payload.pipeline.records[0].history=Array.from({length:9},(_,i)=>JSON.stringify({pipechatHistory:1,type:'note',id:'note_'+i,actor:'QA',
+    at:'2026-10-10T12:00:00.000Z',text:i===0?'Prefers email updates.':'Unrelated history entry '+i+'.'}));
+  const F=require('./fixtures/workspace-plans.cjs');
+  return {payload,result:{crmAction:F.plan([F.select('selected'),{op:'read_history',id:'saved',label:'Saved context',selection:'selected',kind:'all',from:null,to:null,limit:100}]),
+    assistantMessage:'Provisional ungrounded summary',computedAnswer:'FORGED_PLANNER_ANSWER',answerPresentation:{mode:'extractive',snapshotId:'forged',workspaceVersion:'v1'}}};
+}
+function factReview(input){
+  const bundle=input.computed.qualitativeSources;
+  return {...review([{...requirement('Requested saved fact','computed_read',true,['saved']),requiredOutputs:['fields']}]),answerIntent:'qualitative_fact',
+    answerSelection:{mode:'extractive',snapshotId:bundle.snapshotId,results:[{requirementIndex:0,recordId:1,status:'supported',
+      citations:[{sourceId:bundle.sources.find(source=>source.text==='Prefers email updates.').id,quote:'Prefers email updates.'}]}]}};
+}
+
+test('review pass selects one exact source and server returns it with no extra model call',async()=>{
+  const {payload,result}=factFixture();
+  const h=harness(()=>result,(input,body)=>{
+    const r=factReview(input),selection=body.text.format.schema.properties.answerSelection.anyOf[1];
+    assert.deepEqual(selection.properties.snapshotId.enum,[r.answerSelection.snapshotId]);
+    assert(selection.properties.results.items.properties.citations.items.properties.sourceId.enum.includes(r.answerSelection.results[0].citations[0].sourceId));
+    assert.equal(body.text.format.schema.properties.requirements.items.properties.description.enum,undefined);
+    return r;
+  });
+  const response=await h.plan(payload);assert.equal(response.crmAction.action,'workspace_plan');assert.equal(h.calls.length,2);
+  assert.equal(response.computedAnswer,'Harbor Studio (#1): "Prefers email updates."\nSource: Saved note (2026-10-10T12:00:00.000Z)');
+  assert.equal(response.answerPresentation.mode,'extractive');assert.equal(response.answerPresentation.workspaceVersion,'v1');
+  assert.doesNotMatch(response.computedAnswer,/Unrelated|FORGED|Provisional/);assert.deepEqual(h.logs,[]);
+});
+
+test('server passes the same preservation evidence through schema and validation without empty-ID exceptions',async()=>{
+  const Dashboard=require('../public/dashboard-board'),Core=require('../public/pipeline-core'),payload=fixture();
+  const spec=(metric,groupBy)=>({version:1,title:metric+' by '+groupBy,chart:'bar',scope:'all',groupBy,bucket:'none',splitBy:null,
+    where:[],sort:'label_asc',limit:null,measures:[{label:metric,metric,field:metric==='count'?null:'f_value',where:[]}]});
+  const add=(id,metric,groupBy)=>({op:'add',id,spec:spec(metric,groupBy)});
+  const board=Dashboard.apply(null,{action:'dashboard_plan',operations:[add('old_count','count','f_stage'),add('old_average','average','f_stage')],questions:[]},
+    payload.pipeline.records,Core.create(payload.pipeline.tableSchema),[],{today:'2026-10-10'}).board;
+  payload.pipeline.dashboard={board};payload.userCommand='Keep both stage graphs unchanged and append separate count and average graphs by owner.';
+  const result={crmAction:{action:'dashboard_plan',operations:[add('new_count','count','f_owner'),add('new_average','average','f_owner')],questions:[]},assistantMessage:'Graph preview'};
+  for(const invalid of [false,true]){
+    const h=harness(()=>result,input=>{
+      const invariants=input.computed.preservation.evidenceIds;
+      assert.deepEqual(invariants,['unchanged:graph:old_count','unchanged:graph:old_average']);
+      assert(invariants.every(id=>input.allowedStepIds.includes(id)));
+      const req=(description,stepIds,requiredOutputs)=>({...requirement(description,'computed_read',true,stepIds),requiredOutputs});
+      return {...review([req('Keep count',invalid?[]:[invariants[0]],['unchanged_graphs']),req('Keep average',[invariants[1]],['unchanged_graphs']),
+        req('Count by owner',['graph:new_count'],['count']),req('Average by owner',['graph:new_average'],['average']),
+        req('Separate graphs',invalid?['graph:new_count']:['graph:new_count','graph:new_average'],['separate_graphs'])]),answerIntent:'canonical',answerSelection:null};
+    });
+    const response=await h.plan(payload);
+    if(invalid){
+      assert.equal(response.outcome,'validation_failed');assert.equal(h.calls.length,4);
+      assert(h.logs.every(log=>log.counts.requested===5&&log.counts.compiled===3&&log.mappingReasons.missing_step_ids===1&&log.mappingReasons.unsupported_required_output===1));
+    }else{assert.equal(response.coverage.compiled,5);assert.equal(h.calls.length,2);assert.deepEqual(h.logs,[]);}
+  }
+});
+
+for(const repair of [false,true])test('invalid source selection uses bounded '+(repair?'repair':'fail-closed')+' without full dump',async()=>{
+  const {payload,result}=factFixture();let attempts=0;
+  const h=harness(()=>result,input=>{
+    const r=factReview(input);if(!repair||attempts===0)r.answerSelection.results[0].citations[0].quote='Fabricated fact.';attempts++;return r;
+  });
+  const response=await h.plan(payload);assert.equal(h.calls.length,4);assert.equal(attempts,2);
+  assert.equal(response.crmAction?.action,repair?'workspace_plan':undefined);
+  if(repair)assert.match(response.computedAnswer,/Prefers email/);
+  else{assert.equal(response.outcome,'validation_failed');assert.equal(response.computedAnswer,undefined);assert.equal(response.answerPresentation,undefined);}
+  assert(h.logs.every(log=>log.mappingReasons.invalid_answer_selection===1));
+  assert.doesNotMatch(JSON.stringify(h.logs),/Fabricated|Prefers|Harbor|Unrelated/);
+});
+
+test('extractive answer is identical in durable text, result receipt and replay',async t=>{
+  const directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),'pipechat-extractive-'));
+  t.after(async()=>{assert.equal(path.dirname(directory),path.resolve(os.tmpdir()));assert(path.basename(directory).startsWith('pipechat-extractive-'));await fs.promises.rm(directory,{recursive:true,force:true});});
+  const store=require('../lib/conversation-store').createConversationStore(directory,(_key,work)=>work())('offline-user');
+  const {payload,result}=factFixture(),current={deals:copy(payload.pipeline.records),tableSchema:copy(payload.pipeline.tableSchema),customFields:[],todoCards:[],updatedAt:'v1'};
+  const h=harness(input=>{assert.doesNotMatch(JSON.stringify(input.pipeline),/Prefers email|Unrelated history/);return result;},factReview);
+  const initial=await store.readConversation(),userMessageId=randomUUID();
+  const saved=await store.writeConversation({epoch:initial.epoch,version:initial.version,messages:[{id:userMessageId,role:'user',content:payload.userCommand}],state:{}});
+  payload.conversation={epoch:saved.epoch,version:saved.version};
+  payload.turn={threadId:(await store.listConversationThreads()).activeThreadId,requestId,userMessageId,assistantMessageId:randomUUID()};
+  const before=copy(current),backend={...Object.fromEntries(Object.entries(store).map(([name,fn])=>[name,(...args)=>fn(...args.map(copy))])),
+    readCrm:async()=>copy(current),reserveUsage:async()=>({reservationId:'offline'}),finishUsage:async()=>({used:1})};
+  const req={backend,headers:{}},user={id:'offline-user',name:'Offline'},response=copy(await h.turn(req,user,payload));
+  assert.equal(response.turn.status,'succeeded',JSON.stringify({response,logs:h.logs}));assert.equal(h.calls.length,2);
+  assert.equal(response.assistantMessage,response.computedAnswer);assert.match(response.computedAnswer,/Prefers email/);
+  assert.doesNotMatch(response.computedAnswer,/Unrelated|FORGED/);assert.deepEqual(current,before);
+  const page=await store.readConversation();assert.equal(page.messages.find(message=>message.id===payload.turn.assistantMessageId).content,response.computedAnswer);
+  assert.equal(response.turn.resultReceipt.computedAnswer,response.computedAnswer);
+  const replay=copy(await h.turn(req,user,payload));assert.equal(replay.assistantMessage,response.computedAnswer);
+  assert.deepEqual(replay.answerPresentation,response.answerPresentation);assert.equal(h.calls.length,2);
 });
 
 for(const failure of ['structural','semantic'])test(`${failure} validation failure persists and replays as failed, never a partial success`,async t=>{

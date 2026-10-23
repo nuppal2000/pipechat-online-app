@@ -18,6 +18,14 @@ PR64 (`3be5ff6`) is deployed. Live acceptance has verified named/email Contact r
 
 The first live pass exposed three remaining evidence-contract gaps: semantic saved-note questions, an actionable explanation for blocked field removal, and independent axes for side-by-side count/value charts. A largest-record variant also failed output mapping despite the exact request passing earlier. The follow-up candidate supplies typed source-read evidence, read-only field-removal dependency checks, metric-family validation and explicit multi-graph layout evidence. No additional migration is needed. Exact and variant connected-AI acceptance must be rerun after deployment; the earlier passing variants are not a substitute for these checks.
 
+### Cumulative Follow-Up Evidence
+
+PR65 (`dabd941`) passed 1,208 local non-browser tests and is deployed. Connected-AI checks passed the exact two-chart request, refresh persistence, independent group counts/averages, saved KPI preservation, populated-field dependency explanation, and largest-record lookup before and after a reversible QA value change. The original 42 table rows still matched the captured baseline; all three saved workflows were paused and the four original task cards remained unchanged.
+
+Additional variants exposed incomplete compound entity reads, generic protected-field explanations, overlong saved-note answers, and rejected graph-addition requests with preservation requirements. The next follow-up introduces source-bound extractive answers for qualitative saved facts, typed schema-dependency evidence, relationship-anchor context, and materialized before/after dashboard invariants. Explicit full-text lists, dated history and numerical results keep canonical complete output. No extra answer-generation API call or migration is required. Connected-AI retests of this candidate remain separate from local regressions.
+
+F10 dependency boundary: typed saved views currently contain entity IDs, not field predicates; workflow rules reference primary-table fields, not Contact fields. The requested Contact-field view/rule dependency fixture is not representable and is not marked passed. Existing checks cover stored values, required/identifying fields, isolated removal, and preservation of unrelated views/relationships.
+
 ## Latest Follow-Up Checkpoint
 
 PR61 (`f1bff2be93a8637d8a91a4c0ade71760bd5972d0`) is live. Its 19 uploaded files matched the tested bundle; 1,025 non-browser tests passed. All three public health probes returned 200 and all three anonymous private-data probes returned 401.
