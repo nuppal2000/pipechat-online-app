@@ -1,10 +1,10 @@
 (function(root,factory){
-  const api=typeof module==='object'&&module.exports?factory(require('./pipeline-core.js'),require('./report-engine.js'),require('./todo-core.js'),require('./todo-actions.js'),require('./dashboard-board.js')):factory(root.PipelineCore,root.PipeChatReports,root.PipeChatTodo,root.PipeChatTodoActions,root.PipeChatDashboard);
+  const api=typeof module==='object'&&module.exports?factory(require('./pipeline-core.js'),require('./report-engine.js'),require('./todo-core.js'),require('./todo-actions.js'),require('./dashboard-board.js'),require('./inspector-core.js')):factory(root.PipelineCore,root.PipeChatReports,root.PipeChatTodo,root.PipeChatTodoActions,root.PipeChatDashboard,root.PipeChatInspector);
   if(typeof module==='object'&&module.exports)module.exports=api;else root.PipeChatPlan=api;
-})(typeof globalThis!=='undefined'?globalThis:this,function(Core,Reports,Todo,TaskActions,Dashboard){
+})(typeof globalThis!=='undefined'?globalThis:this,function(Core,Reports,Todo,TaskActions,Dashboard,Inspector){
   'use strict';
   const clone=value=>JSON.parse(JSON.stringify(value));
-  const supportedOps=new Set(['select_records','add_field','rename_choice_option','update_records','add_todos','add_unlinked_task','update_tasks','read_records','report','dashboard']);
+  const supportedOps=new Set(['select_records','add_field','rename_choice_option','update_records','add_todos','add_unlinked_task','update_tasks','read_records','read_history','report','dashboard']);
   const reasonCodes=new Set(['plan_validation','date_invalid','date_offset_invalid','current_date_unavailable','field_unavailable','selection_dependency','focus_unavailable','record_selection_stale','numeric_field_required','unsupported_operation',
     'task_validation','task_reference_ambiguous','task_reference_missing','task_focus_unavailable','task_selection_stale','task_selection_empty','task_write_conflict','task_no_changes']);
   const fail=(message,reasonCode='plan_validation')=>{const error=new Error(message);error.clarification=true;error.reasonCode=reasonCode;throw error;};
@@ -36,6 +36,7 @@
         step('add_unlinked_task',{customTitle:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('update_tasks',{selection:TaskActions.actionSchemas(focus)[1].properties.updates.items.properties.selection,changes:{type:'array',minItems:1,maxItems:4,items:object({field:{type:'string',enum:['status','nextAction','notes','dueDate']},operation:{type:'string',enum:['set','append']},value:{anyOf:[str,date]}})}}),
         step('read_records',{selection:str,showTable:{type:'boolean'},outputs:{type:'array',minItems:1,maxItems:40,items:outputs}}),
+        step('read_history',{selection:str,kind:{type:'string',enum:['all','note','activity']},from:{type:['string','null']},to:{type:['string','null']},limit:{type:'integer',minimum:1,maximum:500}}),
         step('report',{selection:{type:['string','null'],description:'A preceding select_records step ID, or null for an independent report population.'},spec:Reports.responseSchema(core,custom).anyOf[1],questions:Dashboard.schemas(core,custom)[1].properties.questions,showDashboard:{type:'boolean'}}),
         step('dashboard',{plan:Dashboard.schemas(core,custom)[0]})
       ]}}
@@ -62,7 +63,7 @@
     return {value,explanation:`${today} ${spec.offset<0?'-':'+'} ${Math.abs(spec.offset)} ${business?'business':'calendar'} days = ${value}${business?' (Monday-Friday; weekends skipped, holidays not excluded)':''}.${business&&dates.length<=10?' Counted: '+(dates.join(', ')||'today'):''}`};
   }
   function snapshot(workspace){return JSON.stringify([workspace.records,workspace.customFields,workspace.tableSchema,workspace.todoCards]);}
-  function prepare(workspace,action,{today,nonce,now=Date.now(),visibleIds=[],focus=null,dashboard=null}={}){
+  function prepare(workspace,action,{today,nonce,now=Date.now(),visibleIds=[],focus=null,dashboard=null,timezone='UTC'}={}){
     if(action?.action!=='workspace_plan'||action.version!==1||!Array.isArray(action.steps)||!action.steps.length||action.steps.length>30)fail('Please provide a complete plan with at most 30 steps.');
     if(!/^[a-z0-9_]{1,36}$/.test(nonce||''))throw new Error('A unique plan identifier is required.');
     if(typeof action.title!=='string'||!action.title.trim()||action.title.length>300)fail('Please name the complete plan.');
@@ -206,6 +207,12 @@
           });
           queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),projected,viewEffect:step.showTable?'show_table':'answer_only'});
           answers.push(lines.join('\n'));effects.push({kind:'table',show:step.showTable,ids:recordIds});review.push({id:step.id,op:step.op,label:step.label,count:rows.length});
+        }else if(step.op==='read_history'){
+          const recordIds=selected(step.selection),rows=recordIds.map(id=>next.records.find(row=>row.id===id));
+          const history=Inspector.query(rows,core.role('primary'),{kind:step.kind,from:step.from,to:step.to,limit:step.limit,timezone});
+          queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),history,viewEffect:'answer_only'});
+          answers.push(history.answer);effects.push({kind:'table',show:false,ids:recordIds.slice()});
+          review.push({id:step.id,op:step.op,label:step.label,count:rows.length,entries:history.total,omitted:history.omitted});
         }else if(step.op==='report'){
           const selection=Object.hasOwn(step,'selection')?step.selection:null;
           if(selection!==null&&typeof selection!=='string')fail('A report selection must reference a prior select_records step or be null.');
@@ -245,7 +252,7 @@
     const text=value=>esc(value===''||value==null?'(blank)':String(value));
     const diff=change=>`<div class="field-diff"><span>${esc(change.field)}</span><div class="diff-values"><span class="diff-before">${text(change.before)}</span><span aria-label="to">&rarr;</span><span class="diff-after">${text(change.after)}</span></div></div>`;
     const section=(title,body)=>`<section class="proposal-record"><h3>${esc(title)}</h3>${body}</section>`;
-    const summary=step=>step.op==='select_records'?`Select ${step.records.length} of ${step.matched} matching records`:step.op==='add_field'?`Add ${step.field.name} column`:step.op==='rename_choice_option'?`Rename ${step.change.field} option ${step.change.before} to ${step.change.after}`:step.op==='update_records'?`Update ${step.changes} cells across ${step.count} selected records`:step.op==='update_tasks'?`Update ${step.count} tasks`:step.op==='read_records'?`Answer from ${step.count} selected records`:step.op==='report'?'Calculate requested report':step.op==='dashboard'?`Apply ${step.count} dashboard operations`:`Create ${step.count} ${step.op==='add_todos'?'linked ':'standalone '}tasks`;
+    const summary=step=>step.op==='select_records'?`Select ${step.records.length} of ${step.matched} matching records`:step.op==='add_field'?`Add ${step.field.name} column`:step.op==='rename_choice_option'?`Rename ${step.change.field} option ${step.change.before} to ${step.change.after}`:step.op==='update_records'?`Update ${step.changes} cells across ${step.count} selected records`:step.op==='update_tasks'?`Update ${step.count} tasks`:step.op==='read_records'?`Answer from ${step.count} selected records`:step.op==='read_history'?`Read ${step.entries} history entries across ${step.count} selected records`:step.op==='report'?'Calculate requested report':step.op==='dashboard'?`Apply ${step.count} dashboard operations`:`Create ${step.count} ${step.op==='add_todos'?'linked ':'standalone '}tasks`;
     const selections=plan.review.map(step=>{
       let body;
       if(step.op==='select_records')body=`<p>${step.matched} matching; ${step.records.length} selected. ${esc(step.order)}</p><p>${esc(step.filter)}</p><p>Source: ${esc(step.source)}</p><ol>${step.records.map(r=>`<li>${esc(r.name)} (#${r.id})${r.value!==null&&r.value!==undefined?' / '+text(r.value):''}</li>`).join('')}</ol>`;

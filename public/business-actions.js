@@ -32,11 +32,13 @@
   function actionSchemas() {
     const match = object({field:literal('nextAction'), operator:{type:'string', enum:['equals','contains']}, value:string(12000)});
     const spec = object({
-      version:literal(1), name:string(120), timezone:string(100),
+      version:literal(2), name:string(120), timezone:string(100),
+      scope:{anyOf:[object({type:literal('all_records')}), object({type:literal('record_ids'),
+        recordIds:{type:'array', minItems:1, maxItems:2000, items:{type:'integer', minimum:1, maximum:Number.MAX_SAFE_INTEGER}}})]},
       trigger:object({type:literal('field_changes_to'), field:string(65), to:string(80)}),
       conditions:{type:'array', minItems:1, maxItems:1, items:object({type:literal('no_open_qualifying_task'), match})},
       action:object({type:literal('create_linked_task'), nextAction:string(12000), notes:{type:'string', maxLength:16000},
-        due:object({anchor:literal('event_date'), offsetDays:{type:'integer', minimum:0, maximum:3650}})})
+        due:{anyOf:[{type:'null'}, object({anchor:literal('event_date'), offsetDays:{type:'integer', minimum:0, maximum:3650}})]}})
     });
     return [
       object({action:literal('create_document'), recordId:{type:'integer', minimum:1}, documentType:literal('proposal'), format:literal('html')}),
@@ -130,8 +132,15 @@
     return match.operator === 'equals' ? value === wanted : value.includes(wanted);
   }
   function validateWorkflowSpec(input, schema, customFields = []) {
-    if (!exact(input, ['version','name','timezone','trigger','conditions','action']) || input.version !== 1 ||
-      !text(input.name, 120) || !validTimezone(input.timezone)) fail('A workflow needs a name, version 1 and a valid explicit timezone.');
+    if (!exact(input, ['version','name','timezone','trigger','conditions','action', ...(input?.version === 2 ? ['scope'] : [])]) ||
+      ![1, 2].includes(input.version) || !text(input.name, 120) || !validTimezone(input.timezone)) fail('A workflow needs a name, supported version and a valid explicit timezone.');
+    if (input.version === 2) {
+      const scope = input.scope;
+      if (!(exact(scope, ['type']) && scope.type === 'all_records') &&
+        !(exact(scope, ['type','recordIds']) && scope.type === 'record_ids' && Array.isArray(scope.recordIds) &&
+          scope.recordIds.length > 0 && scope.recordIds.length <= 2000 && scope.recordIds.every(recordId) &&
+          new Set(scope.recordIds).size === scope.recordIds.length)) fail('Choose all_records or a nonempty unique list of canonical record IDs.');
+    }
     const trigger = input.trigger, action = input.action;
     if (!exact(trigger, ['type','field','to']) || trigger.type !== 'field_changes_to' || !fieldId(trigger.field) || !text(trigger.to, 80)) fail('Use a typed field_changes_to trigger with an existing choice option.');
     if (schema !== undefined) {
@@ -146,10 +155,42 @@
       !text(match.value, 12000)) fail('Use a literal task-text comparison for the no-open-task condition.');
     if (!exact(action, ['type','nextAction','notes','due']) || action.type !== 'create_linked_task' ||
       !text(action.nextAction, 12000) || !text(action.notes, 16000, true) ||
-      !exact(action.due, ['anchor','offsetDays']) || action.due.anchor !== 'event_date' ||
-      !Number.isInteger(action.due.offsetDays) || action.due.offsetDays < 0 || action.due.offsetDays > 3650) fail('Create a linked task with an event-date offset of 0 to 3650 calendar days.');
+      !(input.version === 2 && action.due === null) &&
+      (!exact(action.due, ['anchor','offsetDays']) || action.due.anchor !== 'event_date' ||
+        !Number.isInteger(action.due.offsetDays) || action.due.offsetDays < 0 || action.due.offsetDays > 3650)) fail('Create a linked task with no due date or an event-date offset of 0 to 3650 calendar days.');
     if (!taskMatches(action, match)) fail('The created task must qualify for the no-open-task condition.');
     return clone(input);
+  }
+
+  function validateWorkflowCreation(input, schema, customFields = [], records) {
+    const spec = validateWorkflowSpec(input, schema, customFields);
+    if (spec.version !== 2) fail('New workflow drafts require version 2 and an explicit record scope.');
+    if (spec.scope.type === 'record_ids' && (!Array.isArray(records) ||
+      spec.scope.recordIds.some(id => !records.some(record => record.id === id)))) fail('Choose record IDs from the current workspace. Refresh and review the workflow.');
+    return spec;
+  }
+
+  function workflowMatchesRecord(spec, id) {
+    return spec.version === 1 || spec.scope.type === 'all_records' || spec.scope.recordIds.includes(id);
+  }
+
+  function workflowScopeText(spec, schema, records) {
+    if (spec.version === 1) return 'All records (legacy workflow)';
+    if (spec.scope.type === 'all_records') return 'All records';
+    const primary = schema === undefined || schema?.status === 'pending' ? null : Core.create(schema).role('primary');
+    const byId = Array.isArray(records) ? new Map(records.map(record => [record.id, record])) : null;
+    return 'Only records: ' + spec.scope.recordIds.map(id => {
+      if (!byId) return `Record #${id}`;
+      const record = byId.get(id);
+      if (!record) return `Unavailable record (#${id})`;
+      if (!primary) return `Record #${id}`;
+      const name = String(record[primary] ?? '').trim();
+      return `${name || 'Unnamed record'} (#${id})`;
+    }).join(', ');
+  }
+
+  function workflowDueText(spec) {
+    return spec.action.due === null ? 'No due date' : `Event date + ${spec.action.due.offsetDays} calendar days (${spec.timezone})`;
   }
 
   function workflowTriggerText(trigger, schema, customFields = []) {
@@ -158,14 +199,15 @@
     return `${label} changes to ${trigger.to}`;
   }
 
-  function workflowPreview(spec, schema, customFields = []) {
+  function workflowPreview(spec, schema, customFields = [], records) {
     spec = validateWorkflowSpec(spec, schema, customFields);
     const label = schema === undefined ? spec.trigger.field : Core.create(schema).fieldsFor(customFields)[spec.trigger.field];
     return {kind:'workflow', title:spec.name, activation:'draft',
+      scope:workflowScopeText(spec, schema, records),
       trigger:`${label} changes to ${spec.trigger.to}`,
       condition:`No linked To Do or In Progress task whose next action ${spec.conditions[0].match.operator === 'equals' ? 'equals' : 'contains'} "${spec.conditions[0].match.value}"`,
       task:{nextAction:spec.action.nextAction, notes:spec.action.notes, status:'To Do'},
-      due:`Event date + ${spec.action.due.offsetDays} calendar days (${spec.timezone})`};
+      due:workflowDueText(spec)};
   }
 
   function plan(action, context = {}) {
@@ -176,8 +218,8 @@
     }
     if (action?.action === 'create_workflow') {
       if (!exact(action, ['action','spec'])) fail('A workflow proposal contains only its typed specification.');
-      const spec = validateWorkflowSpec(action.spec, context.schema ?? null, context.customFields);
-      return {kind:'workflow', operation:'create', spec, count:1, preview:workflowPreview(spec, context.schema ?? null, context.customFields)};
+      const spec = validateWorkflowCreation(action.spec, context.schema ?? null, context.customFields, context.records);
+      return {kind:'workflow', operation:'create', spec, count:1, preview:workflowPreview(spec, context.schema ?? null, context.customFields, context.records)};
     }
     if (action?.action === 'set_workflow_activation' || action?.action === 'workflow_history') {
       const history = action.action === 'workflow_history';
@@ -193,17 +235,19 @@
       if (action.active) validateWorkflowSpec(workflow.spec, context.schema ?? null, context.customFields);
       return {kind:'workflow', operation:'activation', workflowId:workflow.id, baseRevision:workflow.revision,
         active:action.active, count:1, preview:{kind:'workflow_activation', title:workflow.spec.name, active:action.active,
-          trigger:workflowTriggerText(workflow.spec.trigger, context.schema, context.customFields)}};
+          trigger:workflowTriggerText(workflow.spec.trigger, context.schema, context.customFields),
+          scope:workflowScopeText(workflow.spec, context.schema, context.records), due:workflowDueText(workflow.spec)}};
     }
     fail('Unsupported business action.');
   }
 
   const instructions = [
     'For an actual downloadable proposal, return create_document with the resolved canonical record ID, documentType proposal and format html. Do not return none or claim a file was sent. The application generates the artifact from its trusted fact bundle; never put invented pricing, currency, payment, delivery or validity terms into an action.',
-    'For automation, return create_workflow with a typed choice-field transition, one no_open_qualifying_task condition, and create_linked_task with an explicit event_date calendar-day offset and timezone. Use actual current field IDs/options. Open tasks mean To Do or In Progress, excluding Done; this is a fixed application rule, not a question for the user. For a new draft with no explicit timezone use the validated pipeline.timezone when available and disclose it in the review; otherwise ask. Use supplied task wording, or propose a concise task phrase faithful to the requested work when no exact title was specified. Missing trigger identity, business condition or delay still needs clarification. Do not substitute a report or claim the workflow is active.',
+    'For automation, return create_workflow with version 2, explicit scope, a typed choice-field transition, one no_open_qualifying_task condition, and create_linked_task. For named or selected records, resolve their canonical IDs from pipeline.records and use scope {type:"record_ids",recordIds:[IDs]}; the workflow name is NOT a predicate. Use scope {type:"all_records"} only for all-record intent. Never silently broaden a specific or unresolved record reference; clarify ambiguous identity or scope. Use actual current field IDs/options. Set action.due to null when no due date or delay was requested, including an ordinary request to create a task when a stage changes; never invent offsetDays 0. Only an explicit deadline/delay uses {anchor:"event_date",offsetDays:N}. Open tasks mean To Do or In Progress, excluding Done; this is a fixed application rule, not a question for the user. For a new draft with no explicit timezone use the validated pipeline.timezone when available and disclose it in the review; otherwise ask. Use supplied task wording, or propose a concise task phrase faithful to the requested work when no exact title was specified. Missing trigger identity or business condition still needs clarification. Do not substitute a report or claim the workflow is active.',
     'Workflow proposals create drafts only. set_workflow_activation is a separate reviewable action; workflow_history reads saved executions. Business actions do not email, publish, execute code, or deliver anything externally.'
   ].join('\n');
 
   return {actionSchemas, instructions, plan, validateDocumentAction, validateFactBundle, documentPreview, documentArtifact,
-    documentDownload, validateWorkflowSpec, workflowPreview, workflowTriggerText, taskMatches, validTimezone, escapeHtml, exact, text, recordId, workflowId};
+    documentDownload, validateWorkflowSpec, validateWorkflowCreation, workflowPreview, workflowTriggerText, workflowScopeText,
+    workflowDueText, workflowMatchesRecord, taskMatches, validTimezone, escapeHtml, exact, text, recordId, workflowId};
 });

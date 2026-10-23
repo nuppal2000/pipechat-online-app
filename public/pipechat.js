@@ -563,6 +563,7 @@
       const p=S.pending.proposal;$('trustTitle').textContent=p.title||'Review linked records';$('trustStatus').textContent='Nothing saved yet. Confirm or cancel all entity changes together.';
       const type=id=>p.next.entityTypes.find(t=>t.id===id),name=id=>{const e=p.next.entities.find(e=>e.id===id);if(e){const t=type(e.typeId),f=t.fields.find(f=>f.required&&f.type==='text')||t.fields[0];return e.values[f.id]||id;}return rowName(S.records.find(r=>id.endsWith(':'+r.id))||{});};
       panel.innerHTML=p.review.map(change=>{
+        if(change.op==='remove_field')return `<section class="proposal-record"><h3>Remove ${esc(change.before.field.name)} from ${esc(change.before.typeName)}</h3><p>This field has no saved nonblank values. All entities, other fields, relationships and shared views stay unchanged.</p><p>This removal has no undo.</p></section>`;
         if(change.op==='put_type')return `<section class="proposal-record"><h3>${esc(change.type.name)}</h3><p>Entity type</p>${change.type.fields.map(f=>`<p>${esc(f.name)}: ${esc(f.type)}${f.options.length?' ('+f.options.map(esc).join(', ')+')':''}</p>`).join('')}</section>`;
         if(change.op==='put_relationship_type')return `<section class="proposal-record"><h3>${esc(change.type.name)}</h3><p>${esc(type(change.type.fromType)?.name||'Pipeline')} to ${esc(type(change.type.toType)?.name||'Pipeline')}</p></section>`;
         if(change.op==='link')return `<p>Link ${esc(name(change.relationship.fromId))} to ${esc(name(change.relationship.toId))}</p>`;
@@ -771,7 +772,7 @@
     if(!['workspace_plan','add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
     let proposal;
     if(action.action==='workspace_plan'){
-      try{proposal=window.PipeChatPlan.prepare({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards},action,{today:localDate(),nonce:crypto.randomUUID().replaceAll('-',''),visibleIds:visible().map(r=>r.id),focus:S.focus,dashboard:dashboardBase()});}
+      try{proposal=window.PipeChatPlan.prepare({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards},action,{today:localDate(),nonce:crypto.randomUUID().replaceAll('-',''),visibleIds:visible().map(r=>r.id),focus:S.focus,dashboard:dashboardBase(),timezone:Intl.DateTimeFormat().resolvedOptions().timeZone});}
       catch(error){S.pending=null;S.sourceAction=C.clone(action);S.clarification={originalCommand:S.clarification?.originalCommand||originalCommand,question:error.message,previousAction:C.clone(action)};say('Quick clarification. '+error.message);renderTrust();focusTrust();return;}
       proposal.revision=S.revision;proposal.generation=S.generation;proposal.viewState=JSON.stringify({view:tableView(),focus:S.focus,report:S.report,dashboard:S.dashboard});
       if(!proposal.mutates){clearDraft();publishPlanResults(proposal);return;}

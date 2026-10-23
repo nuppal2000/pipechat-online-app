@@ -8,7 +8,7 @@
   const esc = Actions.escapeHtml;
   const copy = value => JSON.parse(JSON.stringify(value));
   const reason = value => ({ task_created: 'Task created', inactive: 'Workflow not active', before_activation: 'Before activation',
-    trigger_not_matched: 'Trigger not matched', record_missing: 'Record unavailable', record_no_longer_matches: 'Record changed',
+    trigger_not_matched: 'Trigger not matched', record_out_of_scope: 'Record outside workflow scope', record_missing: 'Record unavailable', record_no_longer_matches: 'Record changed',
     open_task_exists: 'Qualifying open task exists', schema_changed: 'Trigger field changed', task_id_conflict: 'Task ID conflict',
     board_capacity: 'Task board is full', due_date_out_of_range: 'Due date out of range' })[value] || String(value || '');
   const date = value => value ? new Date(value).toLocaleString() : '';
@@ -17,7 +17,7 @@
     const p = proposal.preview, operation = proposal.operation;
     const label = operation === 'create' ? 'Save draft' : operation === 'activation' ? proposal.action.active ? 'Activate workflow' : 'Pause workflow' : 'Confirm retry';
     return `<style>${styles}</style><section class="workflow-review"><h3>${esc(p.title)}</h3>
-      <dl><dt>Trigger</dt><dd>${esc(p.trigger)}</dd><dt>Condition</dt><dd>${esc(p.condition)}</dd>
+      <dl><dt>Scope</dt><dd>${esc(p.scope)}</dd><dt>Trigger</dt><dd>${esc(p.trigger)}</dd><dt>Condition</dt><dd>${esc(p.condition)}</dd>
       <dt>Task</dt><dd>${esc(p.task.nextAction)}</dd>${p.task.notes ? `<dt>Notes</dt><dd>${esc(p.task.notes)}</dd>` : ''}
       <dt>Due</dt><dd>${esc(p.due)}</dd><dt>Status</dt><dd>${esc(operation === 'create' ? 'Draft' : operation === 'activation' ? `${p.previousStatus} to ${proposal.action.active ? 'active' : 'paused'}` : p.status)}</dd></dl>
       ${operation === 'retry' ? `<p>Record #${esc(p.event.recordId)} / ${esc(p.event.from ?? 'Not set')} to ${esc(p.event.to)}</p>
@@ -60,7 +60,7 @@
         ${stale ? `<p class="wf-stale">The workspace has changed. <button type="button" class="secondary" data-wf-workspace ${locked() ? 'disabled' : ''}>Refresh workspace</button></p>` : ''}
         ${snapshot?.workflows.length ? snapshot.workflows.map(w => `<article class="wf-row"><div class="wf-summary"><h3>${esc(w.spec.name)}</h3>
           <p>${esc(Actions.workflowTriggerText(w.spec.trigger, S.tableSchema, S.customFields))}</p><p>${esc(w.spec.action.nextAction)}</p>
-          <p>Event date + ${esc(w.spec.action.due.offsetDays)} days / ${esc(w.spec.timezone)}</p></div>
+          <p>${esc(Actions.workflowScopeText(w.spec, S.tableSchema, S.records))}</p><p>${esc(Actions.workflowDueText(w.spec))}</p></div>
           <div class="wf-controls"><span class="wf-status wf-${esc(w.status)}">${esc(w.status)}</span>
           <label class="wf-toggle"><input type="checkbox" role="switch" data-wf-activation="${esc(w.id)}" aria-label="Enable ${esc(w.spec.name)}" ${w.status === 'active' ? 'checked' : ''} ${locked() || stale ? 'disabled' : ''}>Enable workflow</label>
           <button type="button" class="icon-btn" data-wf-history="${esc(w.id)}" title="View saved history" aria-label="History for ${esc(w.spec.name)}" ${loading ? 'disabled' : ''}>${icon('Eye')}</button></div>${historyMarkup(w)}</article>`).join('') : !loading && !error ? '<p>No saved workflows.</p>' : ''}`;

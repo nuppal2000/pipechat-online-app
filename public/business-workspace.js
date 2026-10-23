@@ -13,6 +13,8 @@
   const forbidden = ['__proto__', 'prototype', 'constructor'];
   const cardinalities = ['one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'];
   const fieldTypes = ['text', 'number', 'boolean', 'date', 'choice'];
+  const mergePolicies = ['explicit', 'keep_survivor_fill_blanks'];
+  const blank = value => value === undefined || value === null || typeof value === 'string' && !value.trim();
   function fail(message) { const error = new Error(message); error.code = 'BUSINESS_INVALID'; throw error; }
   function clone(value, depth = 0) {
     if (depth > 20) fail('Business data is nested too deeply.');
@@ -128,10 +130,17 @@
     return clone(state);
   }
   function transition(before, next) {
+    let removed = false;
+    const projected = clone(before);
     for (const type of before.entityTypes) {
       const after = next.entityTypes.find(item => item.id === type.id);
-      if (!after || type.fields.some(field => !after.fields.some(f => f.id === field.id && f.type === field.type))) fail('Removing or retyping existing schema is not supported.');
+      if (!after || type.fields.some(field => after.fields.some(f => f.id === field.id && f.type !== field.type))) fail('Removing entity types or retyping existing schema is not supported.');
+      for (const field of type.fields.filter(field => !after.fields.some(item => item.id === field.id))) {
+        removeField(projected, { typeId: type.id, fieldId: field.id }); removed = true;
+      }
     }
+    // A field removal has a narrow write set, also checked on raw CAS submissions.
+    if (removed && !equal(projected, next)) fail('Field removal must preserve all unrelated schema, entities, values, relationships and views.');
     for (const relation of before.relationshipTypes) {
       const after = next.relationshipTypes.find(item => item.id === relation.id);
       if (!after || ['fromType', 'toType', 'cardinality'].some(key => after[key] !== relation[key])) fail('Existing relationship contracts are immutable.');
@@ -144,6 +153,32 @@
       const after = next.relationships.find(item => item.id === link.id);
       if (after && ['typeId', 'fromId', 'toId'].some(key => after[key] !== link[key])) fail('Unlink and create a new link to change endpoints.');
     }
+  }
+  function equal(left, right) {
+    if (left === right) return true;
+    if (!left || !right || typeof left !== 'object' || typeof right !== 'object' || Array.isArray(left) !== Array.isArray(right)) return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) && equal(left[key], right[key]));
+  }
+  function fieldRemovalPreview(state, { typeId, fieldId }) {
+    if (typeId === 'primary') fail('Primary-table fields cannot be removed through the entity workspace.');
+    const type = state.entityTypes.find(type => type.id === typeId), field = type?.fields.find(field => field.id === fieldId);
+    if (!field) fail('Choose an existing entity type and field ID.');
+    const identity = type.fields.find(field => field.required && field.type === 'text') || type.fields.find(field => field.type === 'text') || type.fields[0];
+    const entities = state.entities.filter(entity => entity.typeId === typeId);
+    const populated = entities.filter(entity => !blank(entity.values[fieldId])).map(entity => entity.id), dependencies = [];
+    if (field.id === identity.id) dependencies.push({ kind: 'identity_field', message: 'The identifying field cannot be removed.' });
+    if (field.required) dependencies.push({ kind: 'required_field', message: 'A required field cannot be removed.' });
+    if (populated.length) dependencies.push({ kind: 'stored_values', message: populated.length + ' entities still have values in this field.', entityIds: populated });
+    return clone({ typeId, typeName: type.name, field, removable: !dependencies.length, dependencies,
+      affectedEntityIds: entities.filter(entity => Object.hasOwn(entity.values, fieldId)).map(entity => entity.id) });
+  }
+  function removeField(state, command) {
+    const preview = fieldRemovalPreview(state, command);
+    if (!preview.removable) fail('Cannot remove ' + preview.field.name + ': ' + preview.dependencies.map(dependency => dependency.message).join(' '));
+    const type = state.entityTypes.find(type => type.id === command.typeId);
+    type.fields = type.fields.filter(field => field.id !== command.fieldId);
+    for (const entity of state.entities) if (entity.typeId === command.typeId) delete entity.values[command.fieldId];
   }
   function compileSchemaProposal(proposal) {
     object(proposal, ['version', 'entityTypes', 'relationshipTypes']);
@@ -159,7 +194,8 @@
     return clone([...proposal.entityTypes.map(type => ({ op: 'put_type', type })),
       ...proposal.relationshipTypes.map(type => ({ op: 'put_relationship_type', type }))]);
   }
-  function mergePlan(state, survivorId, sourceIds) {
+  function mergePlan(state, survivorId, sourceIds, policy = 'explicit') {
+    if (!mergePolicies.includes(policy)) fail('Choose a supported merge policy.');
     array(sourceIds, 100); unique(sourceIds);
     if (!sourceIds.length || sourceIds.includes(survivorId)) fail('Choose distinct merge sources and one survivor.');
     const survivor = state.entities.find(entity => entity.id === survivorId);
@@ -168,8 +204,12 @@
     if (sources.some(entity => entity.typeId !== survivor.typeId)) fail('Merged entities must have the same type.');
     const removed = new Set(sourceIds), fields = state.entityTypes.find(type => type.id === survivor.typeId).fields;
     const candidates = fields.map(field => ({ id: field.id, name: field.name,
-      values: [...new Set([survivor, ...sources].map(entity => entity.values[field.id]).filter(value =>
-        value !== undefined && value !== null && !(typeof value === 'string' && !value.trim())))] }));
+      values: [...new Set([survivor, ...sources].map(entity => entity.values[field.id]).filter(value => !blank(value)))] }));
+    const fieldResolutions = {};
+    for (const field of candidates) {
+      if (policy === 'keep_survivor_fill_blanks' && !blank(survivor.values[field.id])) fieldResolutions[field.id] = survivor.values[field.id];
+      else if (field.values.length === 1) fieldResolutions[field.id] = field.values[0];
+    }
     const mapped = state.relationships.map(link => ({ ...link,
       fromId: removed.has(link.fromId) ? survivorId : link.fromId,
       toId: removed.has(link.toId) ? survivorId : link.toId,
@@ -181,22 +221,25 @@
       const key = JSON.stringify([link.typeId, link.fromId, link.toId]);
       if (!pairs.has(key)) { pairs.add(key); relationships.push(link); }
     }
-    return { survivor, removed, candidates, relationships };
+    return { survivor, removed, candidates, relationships, fieldResolutions };
   }
   // IDs are allocated by the caller before review, keeping staging deterministic
   // and existing link identities immutable. Source-only grants never transfer.
   // merge_entities: {survivorId,sourceIds,fieldResolutions:{fieldId:existingValue},
   // replacementLinkIds:{oldLinkId:freshLinkId}}. Preview lists every oldLinkId
   // needing replacement; only fields with multiple nonblank values need a choice.
-  function mergePreview(state, { survivorId, sourceIds }) {
-    const plan = mergePlan(state, survivorId, sourceIds);
+  function mergePreview(state, { survivorId, sourceIds, policy = 'explicit' }) {
+    const plan = mergePlan(state, survivorId, sourceIds, policy);
     return clone({ typeId: plan.survivor.typeId, fields: plan.candidates,
+      policy, fieldResolutions: plan.fieldResolutions,
+      unresolvedFieldIds: plan.candidates.filter(field => field.values.length > 1 && !Object.hasOwn(plan.fieldResolutions, field.id)).map(field => field.id),
       redirectedLinkIds: plan.relationships.filter(link => link.redirected).map(link => link.id),
       affectedViewIds: state.views.filter(view => view.entityIds.some(id => plan.removed.has(id))).map(view => view.id) });
   }
   function mergeEntities(state, command) {
-    object(command, ['op', 'survivorId', 'sourceIds', 'fieldResolutions', 'replacementLinkIds']);
-    const plan = mergePlan(state, command.survivorId, command.sourceIds);
+    object(command, ['op', 'survivorId', 'sourceIds', 'fieldResolutions', 'replacementLinkIds', ...(Object.hasOwn(command, 'policy') ? ['policy'] : [])]);
+    const policy = command.policy === undefined ? 'explicit' : command.policy;
+    const plan = mergePlan(state, command.survivorId, command.sourceIds, policy);
     const resolutions = clone(command.fieldResolutions), replacements = clone(command.replacementLinkIds);
     if (!resolutions || typeof resolutions !== 'object' || Array.isArray(resolutions) ||
       Object.keys(resolutions).some(id => !plan.candidates.some(field => field.id === id))) fail('Invalid merge field resolutions.');
@@ -208,8 +251,9 @@
     for (const field of plan.candidates) {
       const explicit = Object.hasOwn(resolutions, field.id);
       if (explicit && !field.values.includes(resolutions[field.id])) fail('Choose an existing nonblank value for ' + field.name + '.');
-      if (field.values.length > 1 && !explicit) fail('Choose a value for conflicting field: ' + field.name);
-      if (field.values.length) plan.survivor.values[field.id] = explicit ? resolutions[field.id] : field.values[0];
+      if (explicit && policy === 'keep_survivor_fill_blanks' && !blank(plan.survivor.values[field.id]) && resolutions[field.id] !== plan.survivor.values[field.id]) fail('The merge policy keeps the survivor value for ' + field.name + '.');
+      if (field.values.length > 1 && !explicit && !Object.hasOwn(plan.fieldResolutions, field.id)) fail('Choose a value for conflicting field: ' + field.name);
+      if (field.values.length) plan.survivor.values[field.id] = explicit ? resolutions[field.id] : plan.fieldResolutions[field.id];
     }
     state.entities = state.entities.filter(entity => !plan.removed.has(entity.id));
     state.relationships = plan.relationships.map(({ redirected, ...link }) => ({ ...link, id: redirected ? replacements[link.id] : link.id }));
@@ -219,6 +263,7 @@
   }
   function stage(state, commands, context) {
     array(commands, 200);
+    if (commands.some(command => command?.op === 'remove_field') && commands.length !== 1) fail('Review field removal separately from other changes.');
     const next = clone(state);
     const upsert = (key, value) => {
       const index = next[key].findIndex(item => item.id === value.id);
@@ -226,9 +271,12 @@
     };
     for (const command of commands) {
       switch (command?.op) {
+        case 'remove_field': object(command, ['op', 'typeId', 'fieldId']); removeField(next, command); break;
         case 'merge_entities': mergeEntities(next, command); break;
         case 'put_type': case 'put_relationship_type':
-          object(command, ['op', 'type']); upsert(command.op === 'put_type' ? 'entityTypes' : 'relationshipTypes', command.type); break;
+          object(command, ['op', 'type']);
+          if (command.op === 'put_type' && next.entityTypes.find(type => type.id === command.type.id)?.fields.some(field => !command.type.fields.some(item => item.id === field.id))) fail('Use remove_field to explicitly remove an entity field.');
+          upsert(command.op === 'put_type' ? 'entityTypes' : 'relationshipTypes', command.type); break;
         case 'create_entity':
           object(command, ['op', 'entity']);
           if (next.entities.some(entity => entity.id === command.entity.id)) fail('Entity already exists.');
@@ -275,5 +323,5 @@
     return { ...result, workspaceId: snapshot.workspaceId, expectedVersion: snapshot.version,
       expectedPrimaryUpdatedAt: snapshot.primary.updatedAt };
   }
-  return { empty, validate, transition, legacyId, primaryRecordId, compileSchemaProposal, mergePreview, stage, prepare, cardinalities, fieldTypes };
+  return { empty, validate, transition, legacyId, primaryRecordId, compileSchemaProposal, mergePreview, fieldRemovalPreview, stage, prepare, cardinalities, fieldTypes, mergePolicies };
 });

@@ -245,11 +245,25 @@
         const section = node('div', null, 'pc-business-field-definition'), grid = node('div', null, 'pc-business-field-grid');
         grid.append(field('Field name', row.name), field('Field type', row.type), field('Required', row.required));
         if (!def) grid.append(button('Remove field', () => { rows.splice(rows.indexOf(row), 1); section.remove(); }, 'Trash2', true));
+        else grid.append(button('Remove ' + def.name + ' field', () => removeFieldForm(existing.id, def.id), 'Trash2', true));
         const choices = field('Choices (one per line)', row.options); choices.hidden = row.type.value !== 'choice'; row.type.onchange = () => { choices.hidden = row.type.value !== 'choice'; };
         section.append(grid, choices); container.append(section); rows.push(row);
       }
       fields.append(field('Type name', name), container, button('Add field', () => add(), 'Plus'));
       if (existing) existing.fields.forEach(add); else add();
+    }
+    function removeFieldForm(typeId, fieldId) {
+      if (!owner()) return;
+      const preview = Core.fieldRemovalPreview(snapshot.state, { typeId, fieldId });
+      if (!preview.removable) {
+        const content = openDialog('Cannot remove ' + preview.field.name), reasons = node('ul');
+        for (const dependency of preview.dependencies) reasons.append(node('li', dependency.message));
+        content.append(reasons, button('Cancel', closeDialog)); return;
+      }
+      const fields = form('Remove ' + preview.field.name, 'Remove field', () => commit([{ op: 'remove_field', typeId, fieldId }]));
+      fields.append(node('p', preview.typeName + ' / ' + preview.field.name),
+        node('p', 'This field has no saved nonblank values. All entities, other fields, relationships and shared views will stay unchanged.'),
+        node('p', 'This removal has no undo.'));
     }
     function entityForm(existing) {
       if (!writable()) return;
@@ -286,11 +300,12 @@
       if (!eligible.length) return;
       const type = select(eligible.map(t => [t.id, t.name]), eligible.some(t => t.id === selectedType) ? selectedType : eligible[0].id);
       const survivor = select([]), sources = node('div', null, 'pc-business-checklist'), preview = node('div');
+      const policy = select([['explicit', 'Choose conflicting values'], ['keep_survivor_fill_blanks', 'Keep survivor values and fill blanks']], 'explicit');
       let selected = new Set(), choices = [], plan = null;
       const fields = form('Merge entities', 'Merge selected entities', async () => {
         if (!plan || !selected.size) throw new Error('Select at least one source entity.');
         const fieldResolutions = Object.fromEntries(choices.filter(choice => choice.control.value !== '').map(choice => [choice.id, choice.values[Number(choice.control.value)]]));
-        const command = { op: 'merge_entities', survivorId: survivor.value, sourceIds: [...selected], fieldResolutions,
+        const command = { op: 'merge_entities', survivorId: survivor.value, sourceIds: [...selected], policy: policy.value, fieldResolutions,
           replacementLinkIds: Object.fromEntries(plan.redirectedLinkIds.map(id => [id, newId('lnk')])) };
         const current = snapshot, generation = epoch, prepared = Core.prepare(current, [command]);
         const target = current.state.entities.find(entity => entity.id === survivor.value);
@@ -303,10 +318,10 @@
         preview.replaceChildren(); choices = []; plan = null;
         if (!selected.size) return;
         try {
-          plan = Core.mergePreview(snapshot.state, { survivorId: survivor.value, sourceIds: [...selected] });
+          plan = Core.mergePreview(snapshot.state, { survivorId: survivor.value, sourceIds: [...selected], policy: policy.value });
           preview.append(node('h4', 'Merged values'));
           for (const candidate of plan.fields) {
-            if (candidate.values.length > 1) {
+            if (plan.unresolvedFieldIds.includes(candidate.id)) {
               const long = candidate.values.some(value => String(value).length > 160);
               const control = select([['', 'Choose a value'], ...candidate.values.map((value, index) => [String(index), (long ? (index + 1) + '. ' : '') + String(value).slice(0, 160)])], '');
               control.required = true; choices.push({ ...candidate, control }); preview.append(field(candidate.name, control));
@@ -316,7 +331,7 @@
                 details.append(node('summary', candidate.name + ' / Full values'), values); preview.append(details);
               }
             } else {
-              const value = node('p', candidate.values.length ? String(candidate.values[0]) : 'Not set', 'pc-business-merge-value');
+              const value = node('p', Object.hasOwn(plan.fieldResolutions, candidate.id) ? String(plan.fieldResolutions[candidate.id]) : 'Not set', 'pc-business-merge-value');
               preview.append(node('h4', candidate.name), value);
             }
           }
@@ -341,7 +356,8 @@
         showSources();
       }
       type.onchange = showSurvivors; survivor.onchange = showSources;
-      fields.append(field('Entity type', type), field('Surviving entity', survivor), node('h4', 'Source entities'), sources, preview); showSurvivors();
+      policy.onchange = showPreview;
+      fields.append(field('Entity type', type), field('Surviving entity', survivor), field('Merge policy', policy), node('h4', 'Source entities'), sources, preview); showSurvivors();
     }
     function inspect(id) {
       if (!snapshot || busy) return;
