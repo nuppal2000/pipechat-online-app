@@ -24,3 +24,13 @@ test('scope, task collision, and numeric-field failures use independent closed c
     ['A step refers to an unavailable field. Create the field first.','field_unavailable']
   ])assert.equal(Diagnostic.describe(new Error(message),{action:'workspace_plan'}).reason,reason);
 });
+
+test('goal diagnostics prefer fixed typed reasons and bounded counts without copying arbitrary metadata',()=>{
+  const error={message:'PRIVATE',reasonCode:'goal_coverage_invalid',goalCoverage:{unknownReferences:999,uncoveredSelections:2,uncoveredOperations:-1,ids:['PRIVATE'],text:'SECRET'}};
+  assert.deepEqual(Diagnostic.describe(error,{action:'workspace_plan'}),{action:'workspace_plan',operation:null,reason:'goal_coverage_invalid',
+    goalCoverage:{unknownReferences:30,uncoveredSelections:2,uncoveredOperations:0}});
+  error.reasonCode='PRIVATE_CODE';
+  assert.deepEqual(Diagnostic.describe(error,{action:'workspace_plan'}),{action:'workspace_plan',operation:null,reason:'unclassified'});
+  assert.doesNotMatch(JSON.stringify(Review.validationDiagnostic({stage:'evidence',error,action:{action:'workspace_plan'}})),/PRIVATE|SECRET|ids/);
+  assert.equal(Diagnostic.describe({reasonCode:'selection_dependency',message:'PRIVATE',compilerStep:'read_history'},{action:'workspace_plan'}).operation,'read_history');
+});
