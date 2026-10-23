@@ -154,7 +154,7 @@ test('model schema advertises only explicit selectors while saved literal querie
   const single=schemas.find(schema=>schema.properties.action.enum[0]==='query_business');
   const batch=schemas.find(schema=>schema.properties.action.enum[0]==='query_business_batch');
   assert(!Object.hasOwn(single.properties,'query'));assert.deepEqual(batch.properties.queries.items.properties.selector,single.properties.selector);
-  assert.deepEqual(single.properties.selector.anyOf.map(schema=>schema.properties.kind.enum[0]),['all','ids','field_equals','text_search']);
+  assert.deepEqual(single.properties.selector.anyOf.map(schema=>schema.properties.kind.enum[0]),['all','ids','field_equals','text_search','field_removal_check']);
   function strict(node){if(node?.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual(node.required,Object.keys(node.properties));}if(node&&typeof node==='object')Object.values(node).forEach(strict);}
   strict(single);strict(batch);
   assert.equal(Compiler.query(input,{action:'query_business',typeId:'et_saved',query:'morgan@example.com'}).count,2);

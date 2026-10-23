@@ -1,6 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const B=require('../public/business-workspace'),Compiler=require('../lib/business-compiler');
+const Review=require('../lib/action-review');
 const wid='11111111-1111-4111-a111-111111111111';
 const eid=n=>`ent_${String(n).padStart(8,'0')}-1111-4111-a111-111111111111`;
 const field=(id,name,type='text',required=false)=>({id,name,type,required,options:[]});
@@ -37,9 +38,9 @@ test('populated fields, including zero and false, are dependencies and cannot be
     const input=fixture();input.state.entityTypes[0].fields[2].type=type;input.state.entities[2].values.temporary=null;input.state.entities[0].values.temporary=value;
     B.validate(input.state,{workspaceId:wid,legacyRecordIds:[1]});const before=structuredClone(input);
     const preview=B.fieldRemovalPreview(input.state,command);assert.equal(preview.removable,false);assert.deepEqual(preview.dependencies[0].entityIds,[eid(1)]);
-    assert.throws(()=>B.prepare(input,[command]),/still have values/);assert.throws(()=>Compiler.prepare(input,plan([command]),'blocked'),/still have values/);assert.deepEqual(input,before);
+    assert.throws(()=>B.prepare(input,[command]),/contains saved values/);assert.throws(()=>Compiler.prepare(input,plan([command]),'blocked'),/contains saved values/);assert.deepEqual(input,before);
     const bypass=structuredClone(input.state);bypass.entityTypes[0].fields.pop();bypass.entities.filter(e=>e.typeId==='contacts').forEach(e=>delete e.values.temporary);
-    assert.throws(()=>B.transition(input.state,bypass),/still have values/);
+    assert.throws(()=>B.transition(input.state,bypass),/contains saved values/);
   }
 });
 
@@ -73,4 +74,93 @@ test('schema and planner expose an explicit entity remove_field operation withou
   assert.deepEqual(operation.required,['op','typeId','fieldId']);assert.equal(operation.additionalProperties,false);
   assert.match(Compiler.instructions,/Never substitute primary-table delete_field/);
   assert.doesNotMatch(Compiler.instructions,/QAE Temporary|Morgan/);
+});
+
+const dependencyRead=field=>({action:'query_business',typeId:'contacts',selector:{kind:'field_removal_check',field},linkedTo:null,relationshipTypeId:null});
+
+test('a populated Phone field has canonical read-only blocker evidence, not a removal proposal or generic failure',()=>{
+  const input=fixture();input.state.entityTypes[0].fields.push(field('phone','Phone'));
+  input.state.entities[0].values.phone='555-0107';input.state.entities[1].values.identity='Maya';
+  const action=dependencyRead('phone'),before=structuredClone(input),payload={pipeline:{business:input}};
+  const response={crmAction:action,assistantMessage:'The field was removed.'},computed=Review.evidence(payload,response);
+  assert.equal(computed.mutates,false);assert.equal(computed.lifecycle.operation,'read');assert.equal(computed.lifecycle.writesApplied,0);
+  assert.equal(computed.fieldRemoval.removable,false);assert.equal(computed.fieldRemoval.fieldName,'Phone');
+  assert.equal(computed.fieldRemoval.typeName,'Contact');assert.equal(computed.count,1);assert.equal(computed.omittedCount,0);
+  assert.deepEqual(computed.records,[{id:eid(1),typeId:'contacts',name:'QAE Morgan Lane',values:{phone:'555-0107'}}]);
+  for(const key of ['next','commands','changes','expectedVersion'])assert(!Object.hasOwn(computed,key));
+  const answer=Review.renderAnswer(payload,response,computed);
+  assert.match(answer,/"Phone" on "Contact"/);assert.match(answer,/Removal is blocked/);
+  assert.match(answer,/contains saved values in 1 entity/);assert.match(answer,/QAE Morgan Lane.*555-0107/);
+  assert.match(answer,/No field or saved value was removed/);assert.doesNotMatch(answer,/Maya|morgan@example.com|The field was removed\./);
+  const review={issues:[],clarificationQuestion:null,requirements:[{description:'Explain the populated-field blocker without changing anything',
+    evidenceKind:'computed_read',stepIds:['root'],requiredOutputs:['fields'],satisfied:true}]};
+  assert.equal(Review.validateReview(review,response,{pipeline:payload.pipeline}).ok,true);
+  assert.throws(()=>Compiler.prepare(input,plan([{...command,fieldId:'phone'}]),'blocked'),/contains saved values/);
+  assert.deepEqual(input,before);assert.deepEqual(action,dependencyRead('phone'));
+  computed.records[0].values.phone='Changed';computed.fieldRemoval.dependencies[0].entityIds.pop();assert.deepEqual(input,before);
+});
+
+test('dependency reads reuse typed blank and protected-field guards, including zero and false',()=>{
+  for(const [type,value] of [['number',0],['boolean',false],['text','Saved']]){
+    const input=fixture();input.state.entityTypes[0].fields[2].type=type;
+    input.state.entities[0].values.temporary=value;input.state.entities[2].values.temporary=null;
+    const result=Compiler.query(input,dependencyRead('temporary'));
+    assert.equal(result.fieldRemoval.removable,false);assert.equal(result.count,1);
+    assert.equal(result.records[0].values.temporary,value);
+  }
+  const input=fixture();input.state.entities=[];input.state.relationships=[];input.state.views=[];
+  const result=Compiler.query(input,dependencyRead('identity'));
+  assert.equal(result.fieldRemoval.removable,false);assert.equal(result.count,0);
+  assert.deepEqual(result.fieldRemoval.dependencies.map(item=>item.kind),['identity_field','required_field']);
+  assert.match(Compiler.describe(input,result),/identifying field cannot be removed/);
+});
+
+test('an unused-field check never removes it or substitutes for the requested confirmation proposal',()=>{
+  const input=fixture(),before=structuredClone(input),result=Compiler.query(input,dependencyRead('temporary'));
+  assert.equal(result.fieldRemoval.removable,true);assert.equal(result.count,0);assert.deepEqual(result.records,[]);
+  assert.deepEqual(result.fieldRemoval.dependencies,[]);
+  assert.match(Compiler.describe(input,result),/read-only check is not a removal proposal/);
+  assert.match(Compiler.describe(input,result),/prepare and confirm removal/);assert.deepEqual(input,before);
+  assert.equal(Compiler.prepare(input,plan([command]),'confirmed-later').mutates,true);
+  assert.match(Compiler.instructions,/When removable is true, a check alone does NOT satisfy a request to remove/);
+});
+
+test('dependency inspection cannot be narrowed to a relationship, a partial share, an unknown field or primary data',()=>{
+  const input=fixture(),action=dependencyRead('temporary'),before=structuredClone(input);
+  for(const bad of [{...action,typeId:null},{...action,typeId:'missing'},{...action,typeId:'primary'},
+    {...action,selector:{kind:'field_removal_check',field:'QAE Temporary'}},
+    {...action,selector:{kind:'field_removal_check',field:'temporary',op:'remove_field'}},
+    {...action,linkedTo:{source:'entity',key:eid(1)}},{...action,relationshipTypeId:'linked'}]){
+    assert.throws(()=>Compiler.query(input,bad));
+  }
+  assert.throws(()=>Compiler.query({...input,role:'viewer',scope:'shared'},action),/complete authorized workspace/);
+  assert.equal(Compiler.query({...input,role:'viewer'},action).mutates,false,'Full-workspace readers can inspect without gaining mutation authority');
+  assert.throws(()=>B.prepare({...input,role:'viewer'},[command]),/read-only/);assert.deepEqual(input,before);
+});
+
+test('large dependency reads retain full blocker counts with bounded records and canonical text',()=>{
+  const input=fixture();input.state.entities=Array.from({length:5000},(_,i)=>({id:eid(i+1),typeId:'contacts',values:{identity:'Contact '+i,temporary:'Saved'}}));
+  const preview=B.fieldRemovalPreview(input.state,command),stored=preview.dependencies[0];
+  assert.equal(stored.count,5000);assert.equal(stored.entityIds.length,200);assert.equal(stored.omittedCount,4800);
+  const result=Compiler.query(input,dependencyRead('temporary'));
+  assert.equal(result.count,5000);assert.equal(result.records.length,200);assert.equal(result.omittedCount,4800);
+  assert(!Object.hasOwn(result.fieldRemoval,'affectedEntityIds'));
+  assert.match(Compiler.describe(input,result),/5000 records contain saved values; showing 200, 4800 omitted/);
+  input.state.entities.forEach(entity=>entity.values.temporary='x'.repeat(12000));
+  const long=Compiler.describe(input,Compiler.query(input,dependencyRead('temporary')));
+  assert(long.length<=30000);assert.match(long,/Answer details truncated/);assert.match(long,/No changes were made/);
+});
+
+test('dependency checks compose as independently reviewed batch reads and advertise a strict selector',()=>{
+  const input=fixture(),{action,...check}=dependencyRead('mail');
+  const batch={action:'query_business_batch',queries:[{id:'blockers',...check},{id:'contacts',...check,selector:{kind:'all'}}]};
+  const payload={pipeline:{business:input}},response={crmAction:batch},computed=Review.evidence(payload,response);
+  assert.equal(computed.results[0].fieldRemoval.removable,false);assert.equal(computed.results[1].count,3);
+  assert.match(Review.renderAnswer(payload,response,computed),/Read 1 \(blockers\)/);
+  assert.match(Review.renderAnswer(payload,response,computed),/Read 2 \(contacts\)/);
+  const requirements=['blockers','contacts'].map(id=>({description:id,evidenceKind:'computed_read',stepIds:[id],requiredOutputs:['fields'],satisfied:true}));
+  assert.equal(Review.validateReview({requirements,issues:[],clarificationQuestion:null},response,{pipeline:payload.pipeline}).ok,true);
+  const selector=Compiler.schemas().find(branch=>branch.properties.action.enum[0]==='query_business').properties.selector.anyOf.find(branch=>branch.properties.kind.enum[0]==='field_removal_check');
+  assert.deepEqual(selector.required,['kind','field']);assert.equal(selector.additionalProperties,false);assert.deepEqual(selector.properties.field,{type:'string'});
+  assert.match(Review.instructions,/computed.fieldRemoval.removable false/);assert.match(Review.compilerInstructions,/repair with this read/);
 });

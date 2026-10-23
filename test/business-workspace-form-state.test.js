@@ -305,7 +305,7 @@ test('entity field removal UI explains dependencies and cancellation never saves
     const h = harness(contactManagementSnapshot()), type = h.control('Entity type');type.value = 'contact';await type.fire('change');
     await h.button('Edit entity type').fire('click');await h.button('Remove ' + label + ' field').fire('click');
     if (label !== 'QAE Temporary') {
-      assert.equal(h.element.querySelector('form'), null);assert.match(h.element.textContent, /still have values|identifying field/);
+      assert.equal(h.element.querySelector('form'), null);assert.match(h.element.textContent, /contains saved values|identifying field/);
     }
     await h.button('Cancel').fire('click');assert.equal(h.commits.length, 0);h.ui.destroy();
   }

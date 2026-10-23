@@ -14,6 +14,10 @@ Apply reviewed migrations before the matching application release. New workflow 
 
 Local verification: 1,176 non-browser tests passed serially with workspace-local temporary storage and localhost access. Four browser-runner files were excluded; connected-AI browser acceptance is still pending. Migrations 021 and 022 applied successfully to the existing Supabase project on October 23. No existing record or legacy workflow was automatically rewritten by either migration.
 
+PR64 (`3be5ff6`) is deployed. Live acceptance has verified named/email Contact reads, a genuine no-match read, merge continuation and saved identity/link preservation, unused-field removal and reload, and workflow record isolation with no invented due date. The scoped workflow created one Acorn task, skipped Birch, and created no new task after being paused. Generated test tasks were removed; the original four cards remain unchanged.
+
+The first live pass exposed three remaining evidence-contract gaps: semantic saved-note questions, an actionable explanation for blocked field removal, and independent axes for side-by-side count/value charts. A largest-record variant also failed output mapping despite the exact request passing earlier. The follow-up candidate supplies typed source-read evidence, read-only field-removal dependency checks, metric-family validation and explicit multi-graph layout evidence. No additional migration is needed. Exact and variant connected-AI acceptance must be rerun after deployment; the earlier passing variants are not a substitute for these checks.
+
 ## Latest Follow-Up Checkpoint
 
 PR61 (`f1bff2be93a8637d8a91a4c0ade71760bd5972d0`) is live. Its 19 uploaded files matched the tested bundle; 1,025 non-browser tests passed. All three public health probes returned 200 and all three anonymous private-data probes returned 401.

@@ -4,10 +4,24 @@
   const obj=properties=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
   const id={type:'string',pattern:'^[a-z][a-z0-9_-]{0,47}$'},ids={type:'array',minItems:1,maxItems:12,items:id};
   const identifier=v=>typeof v==='string'&&/^[a-z][a-z0-9_-]{0,47}$/.test(v);
+  const chartMeasureRule='One graph axis may contain only one metric family: counts (count/count_distinct), percentages, or field values (sum/average/min/max/median with compatible field units). Numeric storage does not make record counts and field values compatible. To display independent metric families side by side, add separate graph elements with distinct IDs and preserve each requested grouping, scope and filter. Do not put those families in multiple series of one graph. KPI readouts have no shared axis.';
   function shape(v,keys){if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).length!==keys.length||keys.some(k=>!Object.hasOwn(v,k)))bad('Please use complete, supported dashboard properties.');}
   function list(values){if(!Array.isArray(values)||!values.length||values.length>12||values.some(v=>!identifier(v))||new Set(values).size!==values.length)bad('Choose distinct dashboard element IDs.');return values;}
+  function validateChartMeasures(spec){
+    if(spec?.chart==='kpi')return spec;
+    if(!Array.isArray(spec?.measures)||!spec.measures.length)bad('Choose supported measures for this graph.');
+    const families=new Set(spec.measures.map(measure=>{
+      if(!R.metrics.includes(measure?.metric))bad('Choose a supported graph metric.');
+      return ['count','count_distinct'].includes(measure.metric)?'counts':measure.metric==='percentage'?'percentages':'field_values';
+    }));
+    if(families.size>1)bad('These measures have independent units even when stored as numbers. Use separate dashboard_plan add operations with distinct graph IDs, one metric family per graph, keeping the requested scope, groups and filters. Do not substitute KPI cards for requested graphs.');
+    return spec;
+  }
   function schemas(core,custom=[]){
     const spec=R.responseSchema(core,custom).anyOf[1],refine=R.refinementSchema(core,custom),p=refine.properties;
+    spec.description=chartMeasureRule;
+    spec.properties.measures.description=chartMeasureRule;
+    const changes={...p.changes,minItems:0,description:chartMeasureRule};
     const measure={type:'integer',minimum:0,maximum:5};
     const reference={anyOf:[obj({elementId:id,measure,stat:{type:'string',enum:['records','aggregate','maximum','minimum_nonzero']}}),obj({elementId:id,measure,stat:{type:'string',enum:['group']},group:{type:'string',maxLength:300},series:{type:['string','null'],maxLength:300}})]};
     const distribution=obj({kind:{type:'string',enum:['group_percentages'],description:'Compute a percentage for every plotted group/series using one shared denominator. Required for grouped shares; groups alone only lists values and counts.'},elementId:id,measure,denominator:{type:'string',enum:['matching_records','measure_total'],description:'matching_records: each plotted cell\'s selected record count / the full cached matchingCount before top-N and blank-date exclusions. measure_total: each plotted value / the cached selected measure total; count or sum only, with no omitted groups or records. No per-group denominators, renormalization, assumed counts, or cross-graph populations.'}});
@@ -16,7 +30,7 @@
     return [obj({action:{type:'string',enum:['dashboard_plan']},operations:{type:'array',minItems:1,maxItems:24,items:{anyOf:[
       obj({op:{type:'string',enum:['clear']}}),
       obj({op:{type:'string',enum:['add']},id,spec}),
-      obj({op:{type:'string',enum:['update']},ids,mode:p.mode,where:p.where,replaceFields:p.replaceFields,changes:{...p.changes,minItems:0}}),
+      obj({op:{type:'string',enum:['update']},ids,mode:p.mode,where:p.where,replaceFields:p.replaceFields,changes}),
       obj({op:{type:'string',enum:['remove']},ids}),
       obj({op:{type:'string',enum:['set_shared_filter']},id,targets:ids,where:spec.properties.where}),
       obj({op:{type:'string',enum:['remove_shared_filter']},id})
@@ -146,9 +160,10 @@
       if(op.op==='clear'){shape(op,['op']);next.elements=[];next.sharedFilters=[];next.activeId=null;}
       else if(op.op==='add'){
         shape(op,['op','id','spec']);if(!identifier(op.id)||next.elements.some(e=>e.id===op.id))bad('Each new graph needs a new unique ID.');
-        R.execute(records,op.spec,core,custom,options);next.elements.push({id:op.id,spec:clone(op.spec),visibleIds:op.spec.scope==='visible'?[...(options.visibleIds||[])]:[]});next.activeId=op.id;
+        validateChartMeasures(op.spec);R.execute(records,op.spec,core,custom,options);next.elements.push({id:op.id,spec:clone(op.spec),visibleIds:op.spec.scope==='visible'?[...(options.visibleIds||[])]:[]});next.activeId=op.id;
       }else if(op.op==='update'){
-        shape(op,['op','ids','mode','where','replaceFields','changes']);for(const id of list(op.ids)){const e=next.elements.find(e=>e.id===id);if(!e)bad('Choose an existing graph to update.');e.spec=R.refine(e.spec,{action:'refine_report',mode:op.mode,where:op.where,replaceFields:op.replaceFields,changes:op.changes},core,custom,{...options,records,visibleIds:e.visibleIds});}
+        // Preserve readable older boards; enforce the axis contract when authoring chart properties.
+        shape(op,['op','ids','mode','where','replaceFields','changes']);for(const id of list(op.ids)){const e=next.elements.find(e=>e.id===id);if(!e)bad('Choose an existing graph to update.');e.spec=R.refine(e.spec,{action:'refine_report',mode:op.mode,where:op.where,replaceFields:op.replaceFields,changes:op.changes},core,custom,{...options,records,visibleIds:e.visibleIds});if(op.changes.some(change=>['chart','measures'].includes(change.field)))validateChartMeasures(e.spec);}
       }else if(op.op==='remove'){
         shape(op,['op','ids']);if(list(op.ids).some(id=>!next.elements.some(e=>e.id===id)))bad('Choose existing graphs to remove.');next.elements=next.elements.filter(e=>!op.ids.includes(e.id));next.sharedFilters=next.sharedFilters.map(f=>({...f,targets:f.targets.filter(id=>!op.ids.includes(id))})).filter(f=>f.targets.length);if(op.ids.includes(next.activeId))next.activeId=next.elements[0]?.id||null;
       }else if(op.op==='set_shared_filter'){
@@ -164,5 +179,5 @@
     const answer=analyze(questions,views);
     return {board:next,views,answer};
   }
-  return {empty,validate,schemas,evaluate,apply,analyze,context,format};
+  return {empty,validate,validateChartMeasures,schemas,evaluate,apply,analyze,context,format};
 });
