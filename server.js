@@ -756,7 +756,7 @@ async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simp
       try{response=await fetch('https://api.openai.com/v1/responses',{
         method:'POST',signal:controller.signal,
         headers:{'Content-Type':'application/json',Authorization:`Bearer ${OPENAI_API_KEY}`},
-        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled)}}})
+        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline}).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline})}}})
       });data=await response.json();}
       catch(error){await recordModelAttempt(payload,model,modelStarted,null,false);throw error;}
       controller.signal.throwIfAborted();
