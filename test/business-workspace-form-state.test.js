@@ -256,3 +256,57 @@ test('clear ignores a late commit acknowledgement and does not notify the parent
   assert.equal(h.button('New entity').disabled, false);
   assert.doesNotMatch(h.element.textContent, /QA stale saved/);
 });
+
+function contactManagementSnapshot() {
+  const seed = snapshot({ name: 'QAE Morgan Lane', consent: false, email: 'morgan@example.com' });
+  seed.state.entityTypes[0].fields.push(...['email', 'phone', 'temporary'].map(id => ({ id, name: id === 'temporary' ? 'QAE Temporary' : id, type: 'text', required: false, options: [] })));
+  seed.state.entities.push({ id: 'ent_00000000-0000-4000-8000-000000000003', typeId: 'contact', values: { name: 'QAE Morgan Duplicate', phone: '555-0107', consent: true } });
+  return seed;
+}
+
+test('merge UI previews keep-survivor policy, fills Phone and commits only after explicit confirmation', async () => {
+  const seed = contactManagementSnapshot(), h = harness(seed);
+  await h.button('Merge entities').fire('click');
+  const source = h.element.querySelectorAll('input').find(input => input.type === 'checkbox');
+  source.checked = true; await source.fire('change');
+  assert(h.element.querySelectorAll('label').some(label => label.textContent === 'Name'));
+  const policy = h.control('Merge policy'); policy.value = 'keep_survivor_fill_blanks'; await policy.fire('change');
+  assert(h.element.textContent.includes('555-0107'));assert.equal(h.commits.length, 0);
+  assert.equal(h.element.querySelectorAll('label').some(label => label.textContent === 'Name'), false);
+  await h.submit();assert.equal(h.commits.length, 1);
+  const survivor = h.commits[0].next.entities[0];
+  assert.equal(survivor.id, entityId);assert.deepEqual(survivor.values, { name: 'QAE Morgan Lane', consent: false, email: 'morgan@example.com', phone: '555-0107' });
+  assert.equal(h.commits[0].next.entities.length, 1);h.ui.destroy();
+});
+
+test('merge UI cancellation and stale confirmation never apply the policy', async () => {
+  for (const stale of [false, true]) {
+    const confirmation = deferred(), h = harness(contactManagementSnapshot(), {}, () => confirmation.promise);
+    await h.button('Merge entities').fire('click');
+    const source = h.element.querySelectorAll('input').find(input => input.type === 'checkbox');source.checked = true;await source.fire('change');
+    const policy = h.control('Merge policy');policy.value = 'keep_survivor_fill_blanks';await policy.fire('change');
+    const saving = h.submit();if (stale) h.ui.clear();confirmation.resolve(stale);await saving;
+    assert.equal(h.commits.length, 0);h.ui.destroy();
+  }
+});
+
+test('entity type UI exposes unused-field removal preview and keeps all other Contact data', async () => {
+  const seed = contactManagementSnapshot(), before = structuredClone(seed), h = harness(seed);
+  const type = h.control('Entity type');type.value = 'contact';await type.fire('change');
+  await h.button('Edit entity type').fire('click');await h.button('Remove QAE Temporary field').fire('click');
+  assert(h.element.textContent.includes('no saved nonblank values'));assert.equal(h.commits.length, 0);
+  await h.submit();assert.equal(h.commits.length, 1);
+  const expected = structuredClone(seed.state);expected.entityTypes[0].fields.pop();
+  assert.deepEqual(h.commits[0].next, expected);assert.deepEqual(seed, before);h.ui.destroy();
+});
+
+test('entity field removal UI explains dependencies and cancellation never saves', async () => {
+  for (const label of ['email', 'Name', 'QAE Temporary']) {
+    const h = harness(contactManagementSnapshot()), type = h.control('Entity type');type.value = 'contact';await type.fire('change');
+    await h.button('Edit entity type').fire('click');await h.button('Remove ' + label + ' field').fire('click');
+    if (label !== 'QAE Temporary') {
+      assert.equal(h.element.querySelector('form'), null);assert.match(h.element.textContent, /still have values|identifying field/);
+    }
+    await h.button('Cancel').fire('click');assert.equal(h.commits.length, 0);h.ui.destroy();
+  }
+});

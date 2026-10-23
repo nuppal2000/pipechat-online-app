@@ -85,7 +85,11 @@ test('review output can reference only actual compiled steps, never invented roo
   const action=F.plan([F.select('actual_selection'),read('actual_selection',[['count']])]);
   const choices=Review.schemaFor(action).properties.requirements.items.properties.stepIds.items.enum;
   assert.deepEqual(choices,['actual_selection','answer']);
-  assert.deepEqual(Review.schemaFor({action:'dashboard_plan'}).properties.requirements.items.properties.stepIds.items.enum,['root']);
+  const dashboard={action:'dashboard_plan',operations:[{op:'add',id:'owner_totals',spec:spec()}],questions:[]};
+  const pipeline={...F.workspace(),currentDate:options.today};
+  assert.match(Review.evidence({pipeline},{crmAction:dashboard}).answer,/295,000/);
+  assert.deepEqual(Review.schemaFor(dashboard,{pipeline}).properties.requirements.items.properties.stepIds.items.enum,['root','graph:owner_totals']);
+  assert.deepEqual(Review.schemaFor({action:'dashboard_plan'}).properties.requirements.items.properties.stepIds.items.enum,[]);
   assert.equal(Review.schema.properties.requirements.items.properties.stepIds.items.enum,undefined);
 });
 

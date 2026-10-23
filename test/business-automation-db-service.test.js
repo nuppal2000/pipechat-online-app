@@ -7,7 +7,7 @@ const Workflow = require('../lib/business-workflows');
 const { createBusinessAutomationService } = require('../lib/business-automation-service');
 
 function fixture() {
-  const spec = { version: 1, name: 'Won', timezone: 'UTC', trigger: { type: 'field_changes_to', field: 'stage', to: 'Won' },
+  const spec = { version: 2, scope: { type: 'all_records' }, name: 'Won', timezone: 'UTC', trigger: { type: 'field_changes_to', field: 'stage', to: 'Won' },
     conditions: [{ type: 'no_open_qualifying_task', match: { field: 'nextAction', operator: 'equals', value: 'Call' } }],
     action: { type: 'create_linked_task', nextAction: 'Call', notes: '', due: { anchor: 'event_date', offsetDays: 1 } } };
   const input = { actionId: randomUUID(), requestId: randomUUID(), workflowId: 'workflow_one',

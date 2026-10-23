@@ -11,7 +11,7 @@ http.Server.prototype.listen = function (...args) {
 };
 global.fetch = async () => { throw new Error('External and AI calls are forbidden in workflow tests'); };
 const clone = value => structuredClone(value), stores = new Map();
-const spec = { version: 1, name: 'Follow up', timezone: 'America/New_York',
+const spec = { version: 2, scope: { type: 'all_records' }, name: 'Follow up', timezone: 'America/New_York',
   trigger: { type: 'field_changes_to', field: 'stage', to: 'Won' },
   conditions: [{ type: 'no_open_qualifying_task', match: { field: 'nextAction', operator: 'contains', value: 'Follow up' } }],
   action: { type: 'create_linked_task', nextAction: 'Follow up', notes: '', due: { anchor: 'event_date', offsetDays: 2 } } };
@@ -55,9 +55,9 @@ require.cache[require.resolve('../../lib/supabase-backend')] = { exports: {
       } else {
         const action = operation === 'create' ? { action: 'create_workflow', spec: input.spec } :
           { action: 'set_workflow_activation', workflowId: input.workflowId, active: input.active };
-        const proposal = Workflows.plan(action, { workflows: before.workflows, schema: before.tableSchema });
+        const proposal = Workflows.plan(action, { workflows: before.workflows, schema: before.tableSchema, records: before.deals });
         if (operation === 'activation' && proposal.baseRevision !== input.revision) throw new BackendError('Revision changed', 409);
-        ({ workflows, workflow } = Workflows.apply(proposal, { workflows: before.workflows, schema: before.tableSchema, id: input.workflowId, now }));
+        ({ workflows, workflow } = Workflows.apply(proposal, { workflows: before.workflows, schema: before.tableSchema, records: before.deals, id: input.workflowId, now }));
       }
       state.snapshot = { ...before, workflows, todoCards, updatedAt: now };
       const result = { snapshot: clone(state.snapshot), workflow, workflows, updatedAt: now, execution, replayed: false,

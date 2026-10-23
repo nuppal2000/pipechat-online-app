@@ -7,7 +7,7 @@ const F=require('./fixtures/workspace-plans.cjs');
 const version='2026-10-10T12:00:00.000Z',wid='11111111-1111-4111-a111-111111111111';
 const plain=value=>JSON.parse(JSON.stringify(value));
 const source=fs.readFileSync(require.resolve('../public/pipechat'),'utf8').replace(/\r\n/g,'\n');
-const workflow=()=>({action:'create_workflow',spec:{version:1,name:'Follow-up workflow',timezone:'UTC',
+const workflow=()=>({action:'create_workflow',spec:{version:2,scope:{type:'all_records'},name:'Follow-up workflow',timezone:'UTC',
   trigger:{type:'field_changes_to',field:'f_stage',to:'Negotiation'},conditions:[{type:'no_open_qualifying_task',match:{field:'nextAction',operator:'contains',value:'follow-up'}}],
   action:{type:'create_linked_task',nextAction:'Send follow-up',notes:'',due:{anchor:'event_date',offsetDays:2}}}});
 const business=()=>({action:'business_plan',version:1,title:'Contact and links',operations:[

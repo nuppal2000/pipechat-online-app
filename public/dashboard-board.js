@@ -47,9 +47,25 @@
   function format(value,type='number'){return value===null?'Not set':new Intl.NumberFormat('en-US',{maximumFractionDigits:2,...(type==='currency'?{style:'currency',currency:'USD'}:{})}).format(value)+(type==='percent'?'%':'');}
   function context(board,views){
     if(!board)return null;
-    return {board:clone(board),displayed:views.map(v=>{const {recordIds,table,...s}=v.snapshot;return {...s,series:[...new Set(table.map(r=>r.series))],extrema:extrema(table),table:table.length<=120?table:undefined,tableOmitted:table.length>120};}),analysisRule:'Select structured questions against these element IDs. The app computes from its cached displayed results; do not calculate or rebuild a graph to answer. For each group\'s percentage/share/distribution use group_percentages {elementId,measure,denominator}, not groups. matching_records divides each cell\'s selected record count by matchingCount before top-N/date exclusions; measure_total divides plotted count/sum values by the complete cached measure total and requires no omitted groups or records. One denominator covers all groups and split series; shares are never renormalized. tableOmitted only limits this context, not the cached analysis.'};
+    return {board:clone(board),displayed:views.map(v=>{const {recordIds,table,...s}=v.snapshot;return {...s,series:[...new Set(table.map(r=>r.series))],extrema:extrema(v),table:table.length<=120?table:undefined,tableOmitted:table.length>120};}),analysisRule:'Select structured questions against these element IDs. The app computes from its cached displayed results; do not calculate or rebuild a graph to answer. For each group\'s percentage/share/distribution use group_percentages {elementId,measure,denominator}, not groups. matching_records divides each cell\'s selected record count by matchingCount before top-N/date exclusions; measure_total divides plotted count/sum values by the complete cached measure total and requires no omitted groups or records. One denominator covers all groups and split series; shares are never renormalized. tableOmitted only limits this context, not the cached analysis.'};
   }
-  function extrema(table){return [...new Set(table.map(row=>row.series))].map(series=>{const rows=table.filter(r=>r.series===series&&Number.isFinite(r.value)),positive=rows.filter(r=>r.value>0),max=rows.length?Math.max(...rows.map(r=>r.value)):null,min=positive.length?Math.min(...positive.map(r=>r.value)):null;return {series,maximum:max,largest:rows.filter(r=>r.value===max).map(r=>r.group),minimumNonzero:min,smallestNonzero:positive.filter(r=>r.value===min).map(r=>r.group)};});}
+  function extrema(view){
+    const s=view.snapshot;
+    return view.result.datasets.map((series,dataset)=>{
+      const rows=s.table.slice(dataset*s.shownGroups,(dataset+1)*s.shownGroups).filter(row=>Number.isFinite(row.value)),nonzero=rows.filter(row=>row.value!==0);
+      const max=rows.length?Math.max(...rows.map(row=>row.value)):null,min=nonzero.length?Math.min(...nonzero.map(row=>row.value)):null;
+      return {series:series.label,dataset,measure:dataset%s.summaries.length,maximum:max,largest:rows.filter(row=>row.value===max).map(row=>row.group),minimumNonzero:min,smallestNonzero:nonzero.filter(row=>row.value===min).map(row=>row.group)};
+    });
+  }
+  function measureCells(view,index){
+    const s=view?.snapshot,datasets=view?.result?.datasets;
+    if(!s||!Number.isInteger(index)||index<0||index>=s.summaries.length)bad('Choose a displayed graph and measure.');
+    if(!Array.isArray(datasets)||s.table.length!==datasets.length*s.shownGroups)bad('The cached group results are incomplete. Choose a current displayed graph.');
+    // Labels are presentation, not identity: different measures may share a label.
+    const series=datasets.filter((_,i)=>i%s.summaries.length===index);
+    const rows=datasets.flatMap((_,i)=>i%s.summaries.length===index?s.table.slice(i*s.shownGroups,(i+1)*s.shownGroups):[]);
+    return {series,rows};
+  }
   function readReference(ref,views){
     shape(ref,ref?.stat==='group'?['elementId','measure','stat','group','series']:['elementId','measure','stat']);const v=views.find(v=>v.id===ref.elementId),s=v?.snapshot;
     if(!s||!Number.isInteger(ref.measure)||ref.measure<0||ref.measure>=s.summaries.length||!['records','aggregate','maximum','minimum_nonzero','group'].includes(ref.stat))bad('Which displayed graph and measure should I analyze?');
@@ -57,14 +73,14 @@
     if(ref.stat==='records')return {value:s.recordCount,type:'number',unit:'records',detail:summary,ids:s.recordIds};
     if(ref.stat==='aggregate')return {value:m.value,type:m.type,unit:m.metric+':'+m.field,detail:`${m.label}: ${summary}`,ids:s.recordIds};
     // Dataset indices are explicit. A split report uses the same ordering as the rendered series.
-    const series=v.result.datasets.filter((_,i)=>i%s.summaries.length===ref.measure);if(!series.length)bad('Choose a displayed series.');
+    const {series,rows:cells}=measureCells(v,ref.measure);if(!series.length)bad('Choose a displayed series.');
     if(ref.stat==='group'){
       if(typeof ref.group!=='string'||ref.group.length>300||ref.series!==null&&(typeof ref.series!=='string'||ref.series.length>300))bad('Choose a displayed group and series.');
-      const matches=s.table.filter(row=>row.group===ref.group&&series.some(d=>d.label===row.series)&&(ref.series===null||row.series===ref.series));
+      const matches=cells.filter(row=>row.group===ref.group&&(ref.series===null||row.series===ref.series));
       if(matches.length!==1)bad('That group or series is missing or ambiguous in the displayed graph. Which plotted group should I use?');
       const row=matches[0];return {value:row.value,type:row.type,unit:m.metric+':'+m.field,detail:`${row.group} / ${row.series}, ${row.count} records in this group (${summary})`,ids:s.recordIds};
     }
-    const rows=s.table.filter(row=>series.some(d=>d.label===row.series)&&Number.isFinite(row.value)&&(ref.stat!=='minimum_nonzero'||row.value!==0));
+    const rows=cells.filter(row=>Number.isFinite(row.value)&&(ref.stat!=='minimum_nonzero'||row.value!==0));
     const value=rows.length?(ref.stat==='maximum'?Math.max:Math.min)(...rows.map(r=>r.value)):null;
     return {value,type:m.type,unit:m.metric+':'+m.field,detail:`${rows.filter(r=>r.value===value).map(r=>r.group+(series.length>1?' / '+r.series:'')).join(', ')||'No qualifying group'} (${summary}; ${ref.stat==='maximum'?'largest':'smallest nonzero'} ${m.label})`,ids:s.recordIds};
   }
@@ -77,9 +93,8 @@
     if(!records&&!['count','sum'].includes(m.metric))bad('Group value percentages require an additive count or sum measure, not averages, extrema, distinct counts or percentages. Use matching_records for record shares.');
     if(!records&&(s.shownGroups!==s.totalGroups||s.recordCount!==s.matchingCount))bad('The complete measure total is not cached for this truncated or date-excluded graph. Use matching_records for record shares, or choose an existing complete count/sum graph for value shares. No graph was changed.');
     // The cache is dataset-major. Index it instead of matching display labels, which can collide.
-    const datasets=v.result.datasets,series=datasets.filter((_,i)=>i%s.summaries.length===q.measure);
-    if(!series.length&&s.recordCount!==0||s.table.length!==datasets.length*s.shownGroups)bad('The cached group results are incomplete. Choose a current displayed graph.');
-    const rows=datasets.flatMap((d,i)=>i%s.summaries.length===q.measure?s.table.slice(i*s.shownGroups,(i+1)*s.shownGroups):[]);
+    const {series,rows}=measureCells(v,q.measure);
+    if(!series.length&&s.recordCount!==0)bad('The cached group results are incomplete. Choose a current displayed graph.');
     const total=records?s.matchingCount:m.value,type=records?'number':m.type;
     const numerators=rows.map(row=>records?row.count:row.value);
     if((total!==null&&!Number.isFinite(total))||numerators.some(value=>value!==null&&!Number.isFinite(value)))bad('The cached distribution contains an invalid numeric value.');
@@ -105,7 +120,7 @@
         shape(q,['kind','elementIds']);for(const id of list(q.elementIds)){const s=views.find(v=>v.id===id)?.snapshot;if(!s)bad('A requested report is not currently displayed.');lines.push(`${s.title} [${id}]: ${s.recordCount} records represented${s.matchingCount!==s.recordCount?` (${s.matchingCount} matched before date/group exclusions)`:''}. ${s.summaries.map(m=>`${m.label}: ${format(m.value,m.type)}`).join('; ')}. Scope: ${s.scope}.`);}
       }else if(q.kind==='groups'){
         shape(q,['kind','elementId','measure']);const v=views.find(v=>v.id===q.elementId);if(!v||!Number.isInteger(q.measure)||q.measure<0||q.measure>=v.snapshot.summaries.length)bad('Choose a displayed graph and measure for the group report.');
-        const series=v.result.datasets.filter((_,i)=>i%v.snapshot.summaries.length===q.measure),rows=v.snapshot.table.filter(row=>series.some(d=>d.label===row.series));
+        const {series,rows}=measureCells(v,q.measure);
         lines.push(`${v.snapshot.title} [${v.id}]: ${v.snapshot.recordCount} records represented. Scope: ${v.snapshot.scope}.\n${rows.map(row=>`- ${row.group}${series.length>1?' / '+row.series:''}: ${format(row.value,row.type)} (${row.count} records).`).join('\n')||'No groups.'}`);
       }else if(q.kind==='group_percentages'){
         lines.push(groupPercentages(q,views));

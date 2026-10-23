@@ -160,7 +160,12 @@ test('model action union stays strict and within supported actions including bus
     }
     const operations=branches.find(branch=>branch.properties?.action.enum[0]==='business_plan').properties.operations;
     assert.equal(operations.maxItems,200);
-    assert.deepEqual(operations.items.anyOf.map(branch=>branch.properties.op.enum[0]),['put_type','put_relationship_type','upsert_entity','update_entity','delete_entity','merge_entities','link','unlink']);
+    assert.deepEqual(operations.items.anyOf.map(branch=>branch.properties.op.enum[0]),['put_type','put_relationship_type','upsert_entity','update_entity','delete_entity','remove_field','merge_entities','link','unlink']);
+    assert.deepEqual(operations.items.anyOf.find(branch=>branch.properties.op.enum[0]==='remove_field'),{
+      type:'object',additionalProperties:false,
+      properties:{op:{type:'string',enum:['remove_field']},typeId:{type:'string'},fieldId:{type:'string'}},
+      required:['op','typeId','fieldId']
+    });
     assert.deepEqual(operations.items.anyOf[0].properties.type.properties.fields.items.properties.type.enum,Business.fieldTypes);
     assert.deepEqual(operations.items.anyOf[1].properties.type.properties.cardinality.enum,Business.cardinalities);
     assert.equal(JSON.stringify(legacy),before,'Compiling model actions must not mutate the request schema');

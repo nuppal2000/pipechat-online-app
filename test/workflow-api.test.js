@@ -28,14 +28,20 @@ test('workflow HTTP routes: offline authenticated draft, activation, history and
   const initial = await call('/api/workflows');
   assert.equal(initial.status, 200); assert.match(initial.headers.get('cache-control'), /no-store/);
   const original = initial.data, spec = structuredClone(original.workflows[0].spec);
-  spec.name = 'A new draft';
+  spec.name = 'A new draft'; spec.scope = {type:'record_ids', recordIds:[1]}; spec.action.due = null;
+  for (const scope of [{type:'record_ids',recordIds:[99]}, {type:'record_ids',recordIds:[]}, null]) {
+    assert.equal((await call('/api/workflows/prepare', {action:{action:'create_workflow',spec:{...spec,scope}}, expectedUpdatedAt:original.updatedAt})).status, 400);
+  }
   const prepared = await call('/api/workflows/prepare', { action: { action: 'create_workflow', spec }, expectedUpdatedAt: original.updatedAt });
   assert.equal(prepared.status, 200); assert.equal(prepared.data.operation, 'create');
+  assert.equal(prepared.data.preview.scope, 'Only records: A (#1)'); assert.equal(prepared.data.preview.due, 'No due date');
   assert.deepEqual((await call('/api/workflows')).data, original, 'preparation does not write');
   assert.equal((await call('/api/workflows/confirm', { proposal: prepared.data, confirm: false })).status, 400);
   assert.equal((await call('/api/workflows/confirm', { proposal: prepared.data, confirm: true }, 'b')).status, 409);
   const tampered = structuredClone(prepared.data); tampered.action.spec.name = 'Changed after review';
   assert.equal((await call('/api/workflows/confirm', { proposal: tampered, confirm: true })).status, 409);
+  const broadened = structuredClone(prepared.data); broadened.action.spec.scope = {type:'all_records'};
+  assert.equal((await call('/api/workflows/confirm', {proposal:broadened,confirm:true})).status, 409);
   const saved = await call('/api/workflows/confirm', { proposal: prepared.data, confirm: true });
   assert.equal(saved.status, 200); assert.equal(saved.data.workflow.status, 'draft');
   assert.equal(saved.data.receipt.actionId, prepared.data.actionId);
