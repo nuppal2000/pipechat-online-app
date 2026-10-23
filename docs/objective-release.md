@@ -1,5 +1,19 @@
 # Objective Release Guide
 
+## October 23 Cumulative Report
+
+Scope is the six retained findings F01, F03, F05, F06, F10 and F19, not the later test registers. Baseline is PR63 (`e807609`). Live reproduction used only the approved objective QA account and disposable records/entities; the faulty test workflow was paused after reproducing its incorrect cross-record trigger. Local regression and connected-AI acceptance are separate checks; this candidate is not yet certified by live acceptance.
+
+- Migration 021 adds explicit record scope and optional task due dates to new workflow drafts. Existing v1 definitions and execution tombstones remain unchanged. Existing broad rules are labeled legacy; they are not silently narrowed.
+- Migration 022 permits isolated removal of unused optional entity fields, with dependency checks, existing ownership/CAS checks and audit behavior retained. Do not replay earlier migrations or apply the unrelated unpublished migration 020.
+- Entity reads use typed identities and field predicates rather than treating whole questions as substring searches. Merge policy is a compiled operation, not a repeated per-cell question.
+- Current-table grounding still excludes historical cell values. A private server-only history source powers bounded `read_history` steps; only selected notes/events enter the canonical response and reviewer context. It does not send every record's full history to the model.
+- Dashboard completeness identifies each widget independently and validates its actual metrics/groups. Separate metric families remain separate widgets. Numerical results still come from the report engine, not model prose.
+
+Apply reviewed migrations before the matching application release. New workflow creation by older clients can be rejected until they reload the updated app. Keep model, quota, signup and access settings unchanged. Prefer forward fixes; do not delete workflow event tombstones or replay setup as rollback.
+
+Local verification: 1,176 non-browser tests passed serially with workspace-local temporary storage and localhost access. Four browser-runner files were excluded; connected-AI browser acceptance is still pending. Migrations 021 and 022 applied successfully to the existing Supabase project on October 23. No existing record or legacy workflow was automatically rewritten by either migration.
+
 ## Latest Follow-Up Checkpoint
 
 PR61 (`f1bff2be93a8637d8a91a4c0ade71760bd5972d0`) is live. Its 19 uploaded files matched the tested bundle; 1,025 non-browser tests passed. All three public health probes returned 200 and all three anonymous private-data probes returned 401.
