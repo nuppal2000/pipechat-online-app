@@ -46,12 +46,18 @@ for(const [command,questions] of [
   assert.equal(count.recordCount,45);assert.equal(average.recordCount,45);
   assert.deepEqual(Object.fromEntries(average.table.map(row=>[row.group,row.value])),{'Closed Lost':33000,'Closed Won':23000,'Not set':41500,Qualified:9000});
   assert.equal(average.summaries[0].value,23000,'Overall average is weighted by records');
+  const context={pipeline,computed};
   const review={requirements:[requirement('Stage counts',['count','groups'],['graph:stage_counts']),requirement('Average by stage',['average','groups'],['graph:stage_average']),
-    requirement('Separate graphs retaining existing cards',[],['root'],'compiled_action')],issues:[],clarificationQuestion:null};
-  const allowed=Review.schemaFor(action,{pipeline}).properties.requirements.items.properties.stepIds.items.enum;
-  assert.deepEqual([...allowed].sort(),['root','graph:existing_kpi','graph:stage_counts','graph:stage_average'].sort());
+    requirement('Separate graphs',['separate_graphs'],['graph:stage_counts','graph:stage_average']),
+    requirement('Retain existing card',['unchanged_graphs'],['unchanged:graph:existing_kpi'])],issues:[],clarificationQuestion:null};
+  const allowed=Review.schemaFor(action,context).properties.requirements.items.properties.stepIds.items.enum;
+  assert.deepEqual([...allowed].sort(),['root','graph:existing_kpi','graph:stage_counts','graph:stage_average','unchanged:graph:existing_kpi'].sort());
   assert(review.requirements.every(item=>item.stepIds.every(id=>allowed.includes(id))));
-  assert.deepEqual(Review.validateReview(review,result,{pipeline}),{ok:true,requested:3,compiled:3,mappingIssues:[]});
+  assert.deepEqual(Review.validateReview(review,result,context),{ok:true,requested:4,compiled:4,mappingIssues:[]});
+  for(const stepIds of [['root'],['graph:existing_kpi'],[]]){
+    const invalid=structuredClone(review);invalid.requirements[3].stepIds=stepIds;
+    assert.equal(Review.validateReview(invalid,result,context).ok,false);
+  }
   assert.equal(Read.supports(action,['graph:stage_counts'],['count','groups'],{pipeline}),true);
   assert.equal(Read.supports(action,['graph:stage_counts'],['average'],{pipeline}),false);
   assert.equal(Read.supports(action,['graph:stage_average'],['average','groups'],{pipeline}),true);
@@ -168,11 +174,13 @@ test('review schema uses the supplied persisted board for updates and analysis, 
   const w=workspace(),board=apply(w,dashboard()).board,pipeline={...w,currentDate:today,dashboard:{board}};
   const action={action:'dashboard_plan',operations:[{op:'update',ids:['stage_average'],mode:'add_filter',where:[],replaceFields:[],
     changes:[{field:'measures',value:spec('sum').measures}]}],questions:[]};
-  const result={crmAction:action};assert.equal(Review.evidence({pipeline},result).displayed[1].summaries[0].metric,'sum');
-  const allowed=Review.schemaFor(action,{pipeline}).properties.requirements.items.properties.stepIds.items.enum;
-  assert.deepEqual(allowed,['root','graph:stage_counts','graph:stage_average']);
-  const review={requirements:[requirement('Updated total',['sum','groups'],['graph:stage_average'])],issues:[],clarificationQuestion:null};
-  assert.equal(Review.validateReview(review,result,{pipeline}).ok,true);
+  const result={crmAction:action},computed=Review.evidence({pipeline},result),context={pipeline,computed};
+  assert.equal(computed.displayed[1].summaries[0].metric,'sum');
+  const allowed=Review.schemaFor(action,context).properties.requirements.items.properties.stepIds.items.enum;
+  assert.deepEqual(allowed,['root','graph:stage_counts','graph:stage_average','unchanged:graph:stage_counts']);
+  const review={requirements:[requirement('Updated total',['sum','groups'],['graph:stage_average']),
+    requirement('Retain counts',['unchanged_graphs'],['unchanged:graph:stage_counts'])],issues:[],clarificationQuestion:null};
+  assert.equal(Review.validateReview(review,result,context).ok,true);
   assert.deepEqual(Review.schemaFor(action).properties.requirements.items.properties.stepIds.items.enum,[]);
   assert.equal(Review.validateReview(review,result).ok,false);
   const analysis={action:'analyze_dashboard',questions:[{kind:'groups',elementId:'stage_counts',measure:0}]};
@@ -180,9 +188,9 @@ test('review schema uses the supplied persisted board for updates and analysis, 
   assert.deepEqual(Review.schemaFor(analysis,{pipeline}).properties.requirements.items.properties.stepIds.items.enum,['root','graph:stage_counts']);
   assert.equal(Review.validateReview(review,{crmAction:analysis},{pipeline}).ok,false);
   const remove={action:'dashboard_plan',operations:[{op:'remove',ids:['stage_average']}],questions:[]};
-  Review.evidence({pipeline},{crmAction:remove});
-  assert.deepEqual(Review.schemaFor(remove,{pipeline}).properties.requirements.items.properties.stepIds.items.enum,['root','graph:stage_counts']);
-  assert.equal(Review.validateReview(review,{crmAction:remove},{pipeline}).ok,false);
+  const removed={pipeline,computed:Review.evidence({pipeline},{crmAction:remove})};
+  assert.deepEqual(Review.schemaFor(remove,removed).properties.requirements.items.properties.stepIds.items.enum,['root','graph:stage_counts','unchanged:graph:stage_counts']);
+  assert.equal(Review.validateReview(review,{crmAction:remove},removed).ok,false);
   const malformed={action:'dashboard_plan',operations:[{op:'update',ids:['missing'],mode:'add_filter',where:[],replaceFields:[],changes:[]}],questions:[]};
   assert.throws(()=>Review.evidence({pipeline},{crmAction:malformed}),/existing graph/);
   assert.deepEqual(Review.schemaFor(malformed,{pipeline}).properties.requirements.items.properties.stepIds.items.enum,[]);

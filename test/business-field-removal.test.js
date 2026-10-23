@@ -93,7 +93,7 @@ test('a populated Phone field has canonical read-only blocker evidence, not a re
   assert.match(answer,/contains saved values in 1 entity/);assert.match(answer,/QAE Morgan Lane.*555-0107/);
   assert.match(answer,/No field or saved value was removed/);assert.doesNotMatch(answer,/Maya|morgan@example.com|The field was removed\./);
   const review={issues:[],clarificationQuestion:null,requirements:[{description:'Explain the populated-field blocker without changing anything',
-    evidenceKind:'computed_read',stepIds:['root'],requiredOutputs:['fields'],satisfied:true}]};
+    evidenceKind:'computed_read',stepIds:['root'],requiredOutputs:['dependencies'],satisfied:true}]};
   assert.equal(Review.validateReview(review,response,{pipeline:payload.pipeline}).ok,true);
   assert.throws(()=>Compiler.prepare(input,plan([{...command,fieldId:'phone'}]),'blocked'),/contains saved values/);
   assert.deepEqual(input,before);assert.deepEqual(action,dependencyRead('phone'));
@@ -158,9 +158,33 @@ test('dependency checks compose as independently reviewed batch reads and advert
   assert.equal(computed.results[0].fieldRemoval.removable,false);assert.equal(computed.results[1].count,3);
   assert.match(Review.renderAnswer(payload,response,computed),/Read 1 \(blockers\)/);
   assert.match(Review.renderAnswer(payload,response,computed),/Read 2 \(contacts\)/);
-  const requirements=['blockers','contacts'].map(id=>({description:id,evidenceKind:'computed_read',stepIds:[id],requiredOutputs:['fields'],satisfied:true}));
+  const requirements=['blockers','contacts'].map(id=>({description:id,evidenceKind:'computed_read',stepIds:[id],requiredOutputs:[id==='blockers'?'dependencies':'fields'],satisfied:true}));
   assert.equal(Review.validateReview({requirements,issues:[],clarificationQuestion:null},response,{pipeline:payload.pipeline}).ok,true);
   const selector=Compiler.schemas().find(branch=>branch.properties.action.enum[0]==='query_business').properties.selector.anyOf.find(branch=>branch.properties.kind.enum[0]==='field_removal_check');
   assert.deepEqual(selector.required,['kind','field']);assert.equal(selector.additionalProperties,false);assert.deepEqual(selector.properties.field,{type:'string'});
   assert.match(Review.instructions,/computed.fieldRemoval.removable false/);assert.match(Review.compilerInstructions,/repair with this read/);
+});
+
+test('required Full Name metadata is independently reviewable even with no populated records',()=>{
+  for(const empty of [false,true]){
+    const input=fixture();input.state.entityTypes[0].fields[0].name='Full Name';
+    if(empty){input.state.entities=[];input.state.relationships=[];input.state.views=[];}
+    const payload={pipeline:{business:input}},response={crmAction:dependencyRead('identity')},before=structuredClone(input);
+    const computed=Review.evidence(payload,response),metadata=computed.fieldRemoval.field;
+    assert.deepEqual(metadata,{id:'identity',name:'Full Name',type:'text',required:true,options:[],identifying:true});
+    assert.deepEqual(computed.readEvidence,[{stepId:'root',source:'entity_field_dependencies',
+      subject:{kind:'entity_field',typeId:'contacts',fieldId:'identity'},outputs:['dependencies','count','names','fields'],recordScope:'records_with_saved_values'}]);
+    const review={issues:[],clarificationQuestion:null,requirements:[
+      {description:'Whether the field can be removed and its blockers',evidenceKind:'computed_read',stepIds:['root'],requiredOutputs:['dependencies'],satisfied:true},
+      {description:'No changes',evidenceKind:'computed_read',stepIds:['root'],requiredOutputs:[],satisfied:true}
+    ]};
+    assert.equal(Review.validateReview(review,response,{pipeline:payload.pipeline}).ok,true);
+    const answer=Review.renderAnswer(payload,response,computed);
+    assert.match(answer,/required: yes; identifying: yes/);assert.match(answer,/identifying field cannot be removed/);
+    assert.match(answer,/required field cannot be removed/);assert.match(answer,/No changes were made/);
+    assert.equal(computed.lifecycle.writesApplied,0);assert.deepEqual(input,before);
+    const {action,...member}=response.crmAction,batch={action:'query_business_batch',queries:[{id:'field_check',...member}]};
+    assert.equal(Compiler.query(input,batch).readEvidence[0].stepId,'field_check');
+    assert.doesNotMatch(Compiler.instructions,/Full Name|QAE|Morgan/);
+  }
 });

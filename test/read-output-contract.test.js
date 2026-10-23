@@ -21,8 +21,8 @@ const update=(ids,changes)=>({op:'update',ids,mode:'add_filter',where:[],replace
 const root=(action,required,p)=>supports(action,['root'],required,{pipeline:p});
 
 test('exports a bounded array schema and treats only explicit empty requirements as noncomputed',()=>{
-  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes','separate_graphs']);
-  assert.equal(schema.type,'array');assert.equal(schema.maxItems,14);
+  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes','separate_graphs','dependencies','unchanged_graphs']);
+  assert.equal(schema.type,'array');assert.equal(schema.maxItems,16);
   assert.equal(supports(null,[],[]),true);assert.equal(supports({action:'undo_action'},['root'],[]),true);
   for(const required of [undefined,null,'count',{},['unknown'],['count','count'],Array(12).fill('count'),new Array(1)]){
     assert.equal(supports(read('answer','count'),['root'],required),false);
@@ -283,4 +283,34 @@ test('F06 history completeness agrees with actual saved inspector notes and date
   step.kind='activity';
   assert.equal(Review.validateReview(review,result,{pipeline}).ok,false,'Activity cannot borrow the saved note');
   assert.deepEqual(pipeline,before);
+});
+
+test('only a validated field dependency read supplies metadata outputs, scoped to its own evidence ID',()=>{
+  const Workspace=require('../public/business-workspace'),Compiler=require('../lib/business-compiler');
+  const state=Workspace.empty();state.entityTypes=[{id:'contacts',name:'Contact',fields:[
+    {id:'identity',name:'Full Name',type:'text',required:true,options:[]},
+    {id:'optional',name:'Optional',type:'text',required:false,options:[]}]}];
+  const p={business:{scope:'workspace',role:'owner',state,primary:{records:[],tableSchema:null,customFields:[]}}};
+  const query={typeId:'contacts',selector:{kind:'field_removal_check',field:'identity'},linkedTo:null,relationshipTypeId:null};
+  const action={action:'query_business',...query},before=structuredClone({p,action}),computed=Compiler.query(p.business,action);
+  assert.equal(computed.count,0);assert.equal(computed.fieldRemoval.removable,false);
+  assert.equal(root(action,['dependencies'],p),true,'Metadata blockers exist without populated entity records');
+  assert.equal(root(action,['dependencies','count','names','fields'],p),true);
+  for(const kind of schema.items.enum.filter(kind=>!computed.readEvidence[0].outputs.includes(kind)))assert.equal(root(action,[kind],p),false,kind);
+  assert.equal(root({...action,selector:{kind:'field_removal_check',field:'optional'}},['dependencies'],p),true,'A clear dependency check remains metadata, never mutation evidence');
+  const plain={action:'query_business',...query,selector:{kind:'all'}};
+  assert.equal(root(plain,['dependencies'],p),false);
+  for(const bad of [{...action,selector:{...query.selector,field:'Full Name'}},{...action,selector:{...query.selector,field:'missing'}},
+    {...action,selector:{...query.selector,outputs:['dependencies']}},{...action,typeId:'primary'},
+    {...action,linkedTo:{source:'entity',key:'hidden'}},{...action,relationshipTypeId:'link'},
+    {...action,readEvidence:computed.readEvidence}])assert.equal(root(bad,['dependencies'],p),false);
+  assert.equal(root(action,['dependencies']),false);
+  assert.equal(root(action,['dependencies'],{business:{...p.business,scope:'shared'}}),false);
+  const batch={action:'query_business_batch',queries:[{id:'metadata',...query},{id:'records',...query,selector:{kind:'all'}}]};
+  assert.equal(supports(batch,['metadata'],['dependencies'],{pipeline:p}),true);
+  for(const ids of [['root'],['records'],['identity'],['required_field'],['missing']])assert.equal(supports(batch,ids,['dependencies'],{pipeline:p}),false);
+  for(const other of [{action:'business_plan'}, {action:'query_todos'}, {action:'workflow_history'},plan(read('answer','fields'))]){
+    assert.equal(supports(other,other.action==='workspace_plan'?['answer']:['root'],['dependencies'],{pipeline:p}),false);
+  }
+  assert.deepEqual({p,action},before);
 });

@@ -176,3 +176,40 @@ test('single reads bound returned records like batches while retaining full coun
   const {id,...batched}=Compiler.query(input,{action:'query_business_batch',queries:[{id:'contacts',...member}]}).results[0];
   assert.equal(id,'contacts');assert.deepEqual(batched,Compiler.query(input,single));
 });
+
+test('post-merge email lookup composes current fields with the genuinely linked primary company, not an empty Company type',()=>{
+  const input=fixture(),lane=input.state.entities[0].id,source=input.state.entities[1].id,primaryId=input.primary.records[0].entityId;
+  input.primary.records[0].values.account='QA Acorn Supplies';
+  const type=structuredClone(input.state.entityTypes[0]);type.fields.push(field('f_phone','Phone'));
+  input.state=Compiler.prepare(input,plan([
+    {op:'put_type',type},
+    {op:'put_type',type:{id:'company',name:'Company',fields:[field('f_identity','Company name','text',true)]}},
+    {op:'put_relationship_type',type:{id:'works_at',name:'QAE Works at',fromType:'et_saved',toType:'primary',cardinality:'many_to_many'}},
+    {op:'update_entity',id:source,values:[{field:'f_identity',value:'QAE Morgan Duplicate'},{field:'f_phone',value:'555-0107'}]},
+    {op:'merge_entities',survivorId:lane,sourceIds:[source],policy:'keep_survivor_fill_blanks',fieldResolutions:[]},
+    {op:'link',typeId:'works_at',from:{source:'entity',key:lane},to:{source:'primary',key:primaryId}}
+  ]),'compound').next;
+  const lookup=byField('f_mail','morgan@example.com'),action={action:'query_business_batch',queries:[
+    {id:'contact',typeId:'et_saved',selector:lookup,linkedTo:null,relationshipTypeId:null},
+    {id:'company',typeId:'primary',selector:{kind:'all'},linkedTo:{source:'entity',typeId:'et_saved',selector:lookup},relationshipTypeId:'works_at'}
+  ]};
+  const payload={pipeline:{business:input}},response={crmAction:action},before=structuredClone(input),computed=Review.evidence(payload,response);
+  const [contact,company]=computed.results;
+  assert.equal(contact.count,1);assert.equal(contact.records[0].id,lane);assert.equal(contact.records[0].name,'QAE Morgan Lane');
+  assert.equal(contact.records[0].values.f_phone,'555-0107');assert.equal(contact.records[0].values.f_mail,'morgan@example.com');
+  assert.equal(company.count,1);assert.equal(company.records[0].id,primaryId);assert.equal(company.records[0].name,'QA Acorn Supplies');
+  assert.deepEqual(company.relationshipContext.anchor,{id:lane,typeId:'et_saved',name:'QAE Morgan Lane'});
+  assert.deepEqual(company.relationshipContext.selectedBy,action.queries[1].linkedTo);
+  assert.equal(company.relationshipContext.resultTypes[0].source,'primary_records');
+  assert(company.relationshipContext.resultTypes[0].fields.some(field=>field.id==='account'&&field.type==='text'));
+  const requirements=[['Current Contact name','contact','names'],['Current Phone','contact','fields'],['Linked company','company','names']]
+    .map(([description,id,output])=>({description,evidenceKind:'computed_read',stepIds:[id],requiredOutputs:[output],satisfied:true}));
+  assert.equal(Review.validateReview({requirements,issues:[],clarificationQuestion:null},response,{pipeline:payload.pipeline}).ok,true);
+  const answer=Review.renderAnswer(payload,response,computed);assert.match(answer,/Phone: 555-0107/);assert.match(answer,/QA Acorn Supplies/);
+  assert.equal(computed.lifecycle.writesApplied,0);assert.deepEqual(input,before);
+  input.state.relationships=input.state.relationships.filter(link=>link.typeId!=='works_at');
+  const empty=Compiler.query(input,action);assert.equal(empty.results[0].count,1);assert.equal(empty.results[1].count,0);
+  assert.equal(empty.results[1].relationshipContext.anchor.id,lane,'Zero links must not erase the resolved email anchor');
+  input.state.entities.push({...structuredClone(input.state.entities[0]),id:source});
+  assert.throws(()=>Compiler.query(input,action),/More than one linked record/,'An ambiguous email must not choose a company silently');
+});
