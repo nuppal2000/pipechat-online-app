@@ -21,8 +21,8 @@ const update=(ids,changes)=>({op:'update',ids,mode:'add_filter',where:[],replace
 const root=(action,required,p)=>supports(action,['root'],required,{pipeline:p});
 
 test('exports a bounded array schema and treats only explicit empty requirements as noncomputed',()=>{
-  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes']);
-  assert.equal(schema.type,'array');assert.equal(schema.maxItems,13);
+  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes','separate_graphs']);
+  assert.equal(schema.type,'array');assert.equal(schema.maxItems,14);
   assert.equal(supports(null,[],[]),true);assert.equal(supports({action:'undo_action'},['root'],[]),true);
   for(const required of [undefined,null,'count',{},['unknown'],['count','count'],Array(12).fill('count'),new Array(1)]){
     assert.equal(supports(read('answer','count'),['root'],required),false);
