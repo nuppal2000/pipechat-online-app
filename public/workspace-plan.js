@@ -5,9 +5,9 @@
   'use strict';
   const clone=value=>JSON.parse(JSON.stringify(value));
   const supportedOps=new Set(['select_records','add_field','rename_choice_option','update_records','add_todos','add_unlinked_task','update_tasks','read_records','read_history','report','dashboard']);
-  const reasonCodes=new Set(['plan_validation','date_invalid','date_offset_invalid','current_date_unavailable','field_unavailable','selection_dependency','focus_unavailable','record_selection_stale','numeric_field_required','unsupported_operation',
+  const reasonCodes=new Set(['plan_validation','goal_shape_invalid','step_reference_invalid','goal_coverage_invalid','date_invalid','date_offset_invalid','current_date_unavailable','field_unavailable','selection_dependency','focus_unavailable','record_selection_stale','numeric_field_required','unsupported_operation',
     'task_validation','task_reference_ambiguous','task_reference_missing','task_focus_unavailable','task_selection_stale','task_selection_empty','task_write_conflict','task_no_changes']);
-  const fail=(message,reasonCode='plan_validation')=>{const error=new Error(message);error.clarification=true;error.reasonCode=reasonCode;throw error;};
+  const fail=(message,reasonCode='plan_validation',goalCoverage)=>{const error=new Error(message);error.clarification=true;error.reasonCode=reasonCode;if(goalCoverage)error.goalCoverage=goalCoverage;throw error;};
   const object=properties=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
   const str={type:'string'},scalar={type:['string','number']};
   function responseSchema(core=Core.create(null),custom=[],focus=null){
@@ -26,7 +26,7 @@
     const step=(op,properties)=>object({op:{type:'string',enum:[op]},id:str,label:str,...properties});
     return object({action:{type:'string',enum:['workspace_plan']},version:{type:'integer',enum:[1]},title:str,
       unmappedFacts:{type:'array',maxItems:40,items:object({text:str,source:str,reason:str})},
-      goals:{type:'array',minItems:1,maxItems:20,items:object({description:str,stepIds:{type:'array',minItems:1,items:str}})},
+      goals:{type:'array',minItems:1,maxItems:20,description:'Requested business outcomes mapped to exact step IDs. Every non-selection operation must be explicitly covered. Preceding select_records dependencies are covered transitively; unused selections still need explicit coverage. Never invent an ID or treat a field, task, read or dashboard operation as an implicit dependency.',items:object({description:str,stepIds:{type:'array',minItems:1,items:str}})},
       steps:{type:'array',minItems:1,maxItems:30,items:{anyOf:[
         step('select_records',{source:str,where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
         step('add_field',{name:str,type:{type:'string',enum:['text','choice','date']},options:{type:'array',items:str}}),
@@ -73,14 +73,30 @@
       if(typeof step.label!=='string'||!step.label.trim()||step.label.length>500)fail('Each step needs a clear description.');
       ids.add(step.id);
     }
-    if(!Array.isArray(action.goals)||!action.goals.length||action.goals.length>20)fail('Please list every requested outcome in the plan.');
+    if(!Array.isArray(action.goals)||!action.goals.length||action.goals.length>20)fail('Please list every requested outcome in the plan.','goal_shape_invalid');
     const covered=new Set();
     for(const goal of action.goals){
-      if(typeof goal?.description!=='string'||!goal.description.trim()||goal.description.length>1000||!Array.isArray(goal.stepIds)||!goal.stepIds.length)fail('Every requested outcome needs a description and at least one compiled step ID.');
-      if(goal.stepIds.some(id=>!ids.has(id)))fail(`Every requested outcome must refer to valid plan steps. Unrecognized references: ${goal.stepIds.filter(id=>!ids.has(id)).join(', ')}. Available steps: ${[...ids].join(', ')}.`);
+      if(typeof goal?.description!=='string'||!goal.description.trim()||goal.description.length>1000||!Array.isArray(goal.stepIds)||!goal.stepIds.length)fail('Every requested outcome needs a description and at least one compiled step ID.','goal_shape_invalid');
+      const unknown=goal.stepIds.filter(id=>!ids.has(id));
+      if(unknown.length)fail(`Every requested outcome must refer to valid plan steps. Unrecognized references: ${unknown.join(', ')}. Available steps: ${[...ids].join(', ')}.`,
+        'step_reference_invalid',{unknownReferences:unknown.length,uncoveredSelections:0,uncoveredOperations:0});
       goal.stepIds.forEach(id=>covered.add(id));
     }
-    if([...ids].some(id=>!covered.has(id)))fail('Some plan steps are not included in the requested-outcomes review.');
+    const byId=new Map(action.steps.map((step,index)=>[step.id,{step,index}])),pending=[...covered];
+    const selectionConsumers=new Set(['update_records','add_todos','read_records','read_history','report']);
+    // Goals cover outcomes, not retrieval mechanics. Only backward pure selections
+    // are dependencies; no read, schema, task, data or dashboard effect is implied.
+    while(pending.length){
+      const {step,index}=byId.get(pending.pop());
+      const reference=step.op==='select_records'?!['all','visible','focus'].includes(step.source)?step.source:null:
+        selectionConsumers.has(step.op)?step.selection:null;
+      const dependency=byId.get(reference);
+      if(!dependency||dependency.index>=index||dependency.step.op!=='select_records'||covered.has(reference))continue;
+      covered.add(reference);pending.push(reference);
+    }
+    const uncovered=action.steps.filter(step=>!covered.has(step.id));
+    if(uncovered.length)fail('Some plan steps are not included in the requested-outcomes review. Uncovered steps: '+uncovered.map(step=>step.id).join(', ')+'. Explicitly cover every operation; only preceding select_records dependencies may be implicit.',
+      'goal_coverage_invalid',{unknownReferences:0,uncoveredSelections:uncovered.filter(step=>step.op==='select_records').length,uncoveredOperations:uncovered.filter(step=>step.op!=='select_records').length});
     const unmappedFacts=action.unmappedFacts??[];
     if(!Array.isArray(unmappedFacts)||unmappedFacts.length>40||unmappedFacts.some(f=>!f||['text','source','reason'].some(key=>typeof f[key]!=='string'||!f[key].trim()||f[key].length>4000)))fail('Every unmapped fact needs its original source and a clear reason.');
     const before=snapshot(workspace),next=clone(workspace),selections=new Map(),fields=new Map(),review=[],calculations=new Set(),addedFields=[],schemaChanges=[],addedCards=[],answers=[],effects=[],queryResults=[];

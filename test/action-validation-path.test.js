@@ -188,7 +188,9 @@ function factFixture(){
   payload.pipeline.records[0].history=Array.from({length:9},(_,i)=>JSON.stringify({pipechatHistory:1,type:'note',id:'note_'+i,actor:'QA',
     at:'2026-10-10T12:00:00.000Z',text:i===0?'Prefers email updates.':'Unrelated history entry '+i+'.'}));
   const F=require('./fixtures/workspace-plans.cjs');
-  return {payload,result:{crmAction:F.plan([F.select('selected'),{op:'read_history',id:'saved',label:'Saved context',selection:'selected',kind:'all',from:null,to:null,limit:100}]),
+  const action=F.plan([F.select('selected'),{op:'read_history',id:'saved',label:'Saved context',selection:'selected',kind:'all',from:null,to:null,limit:100}]);
+  action.goals=[{description:'Answer the requested saved fact',stepIds:['saved']}];
+  return {payload,result:{crmAction:action,
     assistantMessage:'Provisional ungrounded summary',computedAnswer:'FORGED_PLANNER_ANSWER',answerPresentation:{mode:'extractive',snapshotId:'forged',workspaceVersion:'v1'}}};
 }
 function factReview(input){
