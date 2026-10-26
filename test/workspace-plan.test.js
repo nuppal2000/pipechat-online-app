@@ -6,7 +6,7 @@ test('top ranked open non-High cohort, conditional tasks, business date and full
   assert.deepEqual(w,before);assert.deepEqual(p.review[0].records.map(r=>r.name),['Boundary','Summit Insurance Partners']);
   assert.equal(p.review[0].matched,4);assert.equal(p.patches.length,2);assert.equal(p.addedCards.length,1);assert.equal(p.addedCards[0].recordId,1);assert.equal(p.addedCards[0].dueDate,'2026-09-29');assert.match(p.calculations[0],/2026-09-28, 2026-09-29/);
   assert.equal(p.next.records[1].f_priority,'');assert.equal(p.next.records[5].f_priority,'Low');assert.equal(p.next.records[0].f_notes,'Keep notes');
-  const html=P.render(p,s=>String(s).replaceAll('<','&lt;'),false);for(const text of ['Boundary','Summit Insurance Partners','High-value follow-up','Confirm entire plan','Date calculations','4 matching; 2 selected'])assert(html.includes(text));
+  const html=P.render(p,s=>String(s).replaceAll('<','&lt;'),false);for(const text of ['Boundary','Summit Insurance Partners','High-value follow-up','Confirm entire plan','<h3>Calculations</h3>','4 matching; 2 selected'])assert(html.includes(text));
 });
 test('original expected two deals both get linked cards when higher deals are already High',()=>{
   const w=F.workspace();w.records[3].f_priority='High';const p=run(F.top(),w);
@@ -37,4 +37,27 @@ test('date arithmetic skips weekends across month/year boundaries and leap day w
 test('review facts cannot be contradicted by guessed dates, counts or names in model prose',()=>{
   const action=F.top();action.title='3 records due 2026-09-30';action.goals[0].description='3 records due 2026-09-30';action.steps[3].label='3 tasks due 2026-09-30';
   const html=P.render(run(action),String,false);assert(!html.includes('2026-09-30'));assert(html.includes('2026-09-29'));assert(html.includes('2 changed records, 1 new tasks'));assert(html.includes('Create 1 linked tasks'));
+});
+
+test('choice option renames preserve legacy, OR and denominator KPI identities through the shared mapper',()=>{
+  const Customize=require('../public/workspace-customization'),Schema=require('../public/table-schema'),w=F.workspace();
+  const c=(field,operator,value)=>({field,operator,value}),kpi=(id,extra)=>({id:'kpi_user_'+id,title:id,metric:'count',field:null,conditions:[],...extra});
+  w.tableSchema.kpis=[
+    kpi('legacy',{conditions:[c('f_priority','equals',' low '),c('f_owner','equals','Alex')]}),
+    kpi('union',{where:[[c('f_priority','equals','LOW'),c('f_owner','equals','Alex')],[c('f_priority','equals','High')]]}),
+    kpi('percentage',{metric:'percentage',where:[[c('f_priority','equals','Low')]],denominatorWhere:[[c('f_priority','not_equals','low')],[c('f_priority','equals','Low')]]}),
+    kpi('literal_prefix',{where:[[c('f_priority','starts_with','Low')],[c('f_deal','equals','Low')]]})
+  ];
+  const before=structuredClone(w),action=F.plan([{op:'rename_choice_option',id:'rename',label:'Rename Low',field:'f_priority',from:'Low',to:'Routine'}]),p=run(action,w);
+  const changed=Schema.validate(JSON.parse(JSON.stringify(p.next.tableSchema)));
+  assert.deepEqual(w,before);assert.equal(changed.kpis[0].conditions[0].value,'Routine');
+  assert.equal(changed.kpis[1].where[0][0].value,'Routine');assert.equal(changed.kpis[1].where[1][0].value,'High');
+  assert.equal(changed.kpis[2].where[0][0].value,'Routine');
+  assert.deepEqual(changed.kpis[2].denominatorWhere.map(group=>group[0].value),['Routine','Routine']);
+  assert.deepEqual(changed.kpis[3],before.tableSchema.kpis[3]);
+  for(let i=0;i<3;i++)assert.deepEqual(Customize.calculate(changed.kpis[i],p.next.records,changed,[],options.today),Customize.calculate(before.tableSchema.kpis[i],before.records,before.tableSchema,[],options.today));
+  assert.equal(Customize.calculate(changed.kpis[2],p.next.records,changed,[],options.today).value,50);
+  const invalid=structuredClone(action);invalid.steps.push(F.select('selected'),F.update('bad','selected','f_priority','Unknown'));
+  invalid.goals=invalid.steps.map(step=>({description:step.label,stepIds:[step.id]}));
+  assert.throws(()=>run(invalid,w));assert.deepEqual(w,before);
 });

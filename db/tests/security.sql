@@ -54,6 +54,10 @@ begin
       'public.pipechat_read_conversation_turn(uuid,uuid)',
       'public.pipechat_recover_conversation_turns(integer)'];
   end if;
+  if to_regclass('pipechat.conversation_turns_context') is not null or
+    to_regprocedure('public.pipechat_read_conversation_outcomes(uuid)') is not null then
+    expected := expected || array['public.pipechat_read_conversation_outcomes(uuid)'];
+  end if;
   if to_regclass('pipechat.business_automations') is not null then
     expected := expected || array['public.pipechat_create_workflow(text,uuid,text,text,jsonb)',
       'public.pipechat_set_workflow_activation(text,uuid,text,text,bigint,boolean)',
