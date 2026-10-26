@@ -1289,7 +1289,7 @@
     if(mode==='setup'&&source&&generation===S.generation&&S.sheetDraft)await analyzeSheetTypes();
     if(mode!=='setup'&&source&&generation===S.generation&&S.pending?.kind==='csv-import')await analyzeCsvImport(S.pending);
   }
-  function clearSheetPreview(){S.sheetDraft=null;S.sheetTypeReview=[];S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;}
+  function clearSheetPreview(){S.sheetDraft=null;S.sheetTypeReview=[];S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.setupPersona=null;}
   function currentSheetDraft(draft){return draft&&S.sheetDraft===draft&&draft.generation===S.generation&&draft.revision===S.revision&&S.tableSchema?.status==='pending'&&draft.options.useCase===S.setupUseCase&&draft.options.description===(S.setupUseCase==='Other'?$('workflowDescription').value:'');}
   function previewSheetTypes(draft,result){
     if(!currentSheetDraft(draft))throw new Error('The workspace changed. Choose the spreadsheet again.');
@@ -1306,6 +1306,7 @@
       if(draft.generation!==S.generation)return;S.usage=response.usage||S.usage;
       if(!currentSheetDraft(draft))return;
       previewSheetTypes(draft,window.PipeChatSheetTypes.build(draft.source.matrix,draft.options,response.spreadsheetTypes));
+      S.setupPersona=response.agentProfile||null;
     }catch(error){if(currentSheetDraft(draft)){if(error.usage)S.usage=error.usage;draft.error=error.message;$('setupStatus').textContent='AI type analysis unavailable. No data was saved.';}}
     finally{if(draft.generation===S.generation){S.busy=false;renderSetup();updateUsage();}}
   }
@@ -1740,7 +1741,7 @@
     if(S.schemaPreview){
       const sheet=S.schemaPreview.source==='spreadsheet',records=S.setupRecords||[],fields=S.schemaPreview.fields;
       const preview=sheet?`<div class="sheet-preview" tabindex="0"><table><thead><tr>${fields.map(f=>`<th>${esc(f.name)}<small class="sheet-field-type">${esc(f.type==='choice'?'Dropdown':f.type)}</small></th>`).join('')}</tr></thead><tbody>${records.slice(0,20).map(row=>`<tr>${fields.map(f=>`<td>${esc(row[f.id]??'')}</td>`).join('')}</tr>`).join('')}</tbody></table></div><details><summary>Column type review</summary>${(S.sheetTypeReview||[]).map(f=>`<p><strong>${esc(f.name||'Column '+(f.index+1))}</strong>: ${esc(f.type==='choice'?'Dropdown':f.type)}. ${esc(f.reason)}${f.options.length?' Options: '+esc(f.options.join(', ')):''}</p>`).join('')}</details>`:`<div class="schema-fields">${fields.map(f=>`<div><strong>${esc(f.name)}</strong><span>${esc(f.type)}${f.options.length?' / '+esc(f.options.join(', ')):''}</span></div>`).join('')}</div>`;
-      $('schemaPreview').innerHTML=`<h2>${esc(S.schemaPreview.title)}</h2><p>${records.length} records${records.length>20?' / first 20 shown':''}</p>${preview}${sheet?'':`<p class="subtle">Don't worry about the details, you can modify the table after confirmation. You can remove columns you don't like and add fields you need.</p>`}<div class="setup-actions"><button id="confirmSchemaBtn" class="primary" ${S.saving?'disabled':''}>${S.saving?'Saving...':sheet?'Create populated table':'Create empty table'}</button><button id="discardSchemaBtn" class="secondary" ${S.saving?'disabled':''}>Discard preview</button></div>`;
+      $('schemaPreview').innerHTML=`<h2>${esc(S.schemaPreview.title)}</h2>${S.setupPersona?`<p class="subtle">${esc(S.setupPersona.setupMessage)}</p>`:''}<p>${records.length} records${records.length>20?' / first 20 shown':''}</p>${preview}${sheet?'':`<p class="subtle">Don't worry about the details, you can modify the table after confirmation. You can remove columns you don't like and add fields you need.</p>`}<div class="setup-actions"><button id="confirmSchemaBtn" class="primary" ${S.saving?'disabled':''}>${S.saving?'Saving...':sheet?'Create populated table':'Create empty table'}</button><button id="discardSchemaBtn" class="secondary" ${S.saving?'disabled':''}>Discard preview</button></div>`;
     }
     if($('confirmSchemaBtn'))$('confirmSchemaBtn').onclick=confirmSchema;
     if($('discardSchemaBtn'))$('discardSchemaBtn').onclick=()=>{if(S.busy||S.saving)return;clearSheetPreview();renderSetup();};
@@ -1758,6 +1759,7 @@
       if(generation!==S.generation)return;S.usage=response.usage||S.usage;
       if(revision!==S.revision)throw new Error('The workspace changed. Reload before building again.');
       S.schemaPreview=window.PipeChatSchema.validate(response.tableSchema);
+      S.setupPersona=response.agentProfile||null;
       S.schemaPreviewRevision=revision;
       if(S.schemaPreview?.status!=='ready')throw new Error('AI returned an invalid table definition.');
       $('setupStatus').textContent='Review the fields. No table or records have been saved.';
@@ -1770,7 +1772,7 @@
     if(S.schemaPreviewRevision!==S.revision){$('setupStatus').textContent='The workspace changed. Prepare a new preview.';return;}
     const records=schema.source==='spreadsheet'?S.setupRecords:[];
     if(await persist(records,records.length?'Spreadsheet table created':'Empty table created',{undo:false,customFields:[],tableSchema:schema,exactRecords:schema.source==='spreadsheet'})){
-      clearSheetPreview();S.report=C.reconcileReport(defaultReport());S.scope='all';say('Your table is ready. What would you like to work on?');render();
+      clearSheetPreview();S.report=C.reconcileReport(defaultReport());S.scope='all';say(`${schema.title} is ready. What would you like to work on?`);render();
     }
   }
   function renderContextualReport(rows){
