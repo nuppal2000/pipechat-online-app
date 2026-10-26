@@ -75,6 +75,21 @@ test('typed proposal reviewer receives representation disclosure and the same fu
   assert.deepEqual(payload,before);assert.equal(h.calls.length,2);
 });
 
+test('general advice uses conversational evidence, while missing saved reads cannot gain quotation authority',async()=>{
+  const payload=fixture();payload.userCommand='What should I ask a client in an initial search briefing? Advice only; do not change anything.';
+  const response={assistantMessage:'Discuss the role outcomes, search scope, decision process and interview timeline.',crmAction:null,memoryNote:null};
+  const h=harness(()=>response,(_input,body)=>{
+    assert.deepEqual(body.text.format.schema.properties.answerIntent,{type:'string',enum:['canonical']});
+    assert.deepEqual(body.text.format.schema.properties.answerSelection,{type:'null'});
+    assert.match(body.instructions,/General advice, hypothetical examples and conversational coaching/);
+    return {...review([requirement('Provide initial briefing advice','conversation')]),answerIntent:'canonical',answerSelection:null};
+  });
+  const result=await h.plan(payload);
+  assert.equal(result.crmAction,null);assert.equal(result.assistantMessage,response.assistantMessage);assert.equal(result.coverage.compiled,1);
+  const missing={...review([requirement('What did the saved client say?','computed_read')]),answerIntent:'canonical',answerSelection:null};
+  assert.equal(Review.validateReview(missing,response).ok,false);
+});
+
 test('new primary records preserve supplied facts without forcing a read or speculative schema changes',async()=>{
   const payload=fixture();payload.userCommand='Record my call today with Avery at Cedar Supply: quoted $18K for Service B, follow up in two weeks. Preview only.';
   const result={assistantMessage:'Proposed new record; optional fields remain blank. Service details are retained in Notes.',memoryNote:null,
