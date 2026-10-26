@@ -2,6 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const pipelineCore=require('../public/pipeline-core.js'),tableSchemaCore=require('../public/table-schema.js'),customization=require('../public/workspace-customization.js');
 const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
 const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),todoActions:require('../public/todo-actions.js'),reportEngine:require('../public/report-engine.js'),dashboardBoard:require('../public/dashboard-board.js'),workspacePlan:require('../public/workspace-plan.js'),businessActions:require('../public/business-actions.js'),businessCompiler:require('../lib/business-compiler.js')};
+context.viewActions=require('../public/view-actions.js');
 vm.runInNewContext(source.slice(source.indexOf('const actionSchema ='),source.indexOf('function sendJson('))+'\nthis.getSchema=responseSchema;',context);
 
 function assertStrictSchema(node){
@@ -170,4 +171,140 @@ test('model action union stays strict and within supported actions including bus
     assert.deepEqual(operations.items.anyOf[1].properties.type.properties.cardinality.enum,Business.cardinalities);
     assert.equal(JSON.stringify(legacy),before,'Compiling model actions must not mutate the request schema');
   }
+});
+
+function modelAction(name,table,custom=[]){
+  const request=context.getSchema(custom,table),before=JSON.stringify(request);
+  const model=require('../lib/action-review').modelSchema(request);
+  assert.equal(JSON.stringify(request),before);
+  const matches=model.properties.crmAction.anyOf.filter(branch=>branch.properties?.action.enum.includes(name));
+  assert.equal(matches.length,1,name+' must have one live model discriminator');
+  return matches[0];
+}
+const contractTables=[null,tableSchemaCore.legacySchema(),require('./fixtures/record-additions.cjs').schema];
+
+for(const name of ['save_view','open_view','export_records'])test(name+' retains the strict app-owned selection contract in the live model schema',()=>{
+  for(const table of contractTables){
+    const action=modelAction(name,table,[{id:'cf_contract',name:'Contract',type:'text'}]);
+    const expected=context.viewActions.actionSchemas().find(branch=>branch.properties.action.enum[0]===name);
+    assert.deepEqual(action,expected);assertStrictSchema(action);
+    const selections=action.properties.selection.anyOf;
+    assert.deepEqual(selections.map(branch=>branch.properties.source.enum[0]),name==='open_view'?['saved_view','saved_view']:['visible','all','saved_view','saved_view']);
+    for(const selection of selections){
+      assert(!selection.properties.recordIds);assert(!selection.properties.where);assert(!selection.properties.count);
+      if(selection.properties.source.enum[0]==='saved_view')assert.equal(['viewId','viewName'].filter(key=>selection.properties[key]).length,1);
+    }
+    if(name==='save_view'){assert.equal(action.properties.name.minLength,1);assert.equal(action.properties.name.maxLength,120);}
+    if(name==='export_records'){
+      assert.deepEqual(action.properties.format.enum,['csv']);
+      const columns=action.properties.columns.anyOf;
+      assert.deepEqual(columns.map(branch=>branch.properties.source.enum[0]),['all','selected']);
+      assert.equal(columns[1].properties.columnIds.minItems,1);assert.equal(columns[1].properties.columnIds.maxItems,200);
+    }
+    for(const key of ['csv','body','records','values','workspaceId','newViewId','status','receipt'])assert(!action.properties[key],key+' must not be model-supplied');
+  }
+});
+
+test('live workspace plans bind saved-cell transforms to distinct bounded operand and field types',()=>{
+  const custom=[{id:'cf_saved_date',name:'Saved date',type:'date'}];
+  for(const table of contractTables){
+    const plan=modelAction('workspace_plan',table,custom);
+    const edit=plan.properties.steps.items.anyOf.find(step=>step.properties.op.enum[0]==='update_records');
+    const assignments=edit.properties.assignments,branches=assignments.items.anyOf;
+    assert.equal(assignments.minItems,1);assert.equal(assignments.maxItems,40);assertStrictSchema(assignments);
+    assert.deepEqual(branches.map(branch=>branch.properties.operation.enum),[['set','append'],['adjust_percent'],['shift_date']]);
+    const percent=branches[1],shift=branches[2],definitions=pipelineCore.create(table).definitions(custom);
+    assert.deepEqual(percent.properties.field.enum,definitions.filter(field=>['number','currency'].includes(field.type)).map(field=>field.id));
+    assert.deepEqual(shift.properties.field.anyOf.filter(branch=>branch.enum).flatMap(branch=>branch.enum),definitions.filter(field=>field.type==='date').map(field=>field.id));
+    assert(shift.properties.field.anyOf.some(branch=>branch.pattern==='^@[a-z][a-z0-9_]{0,39}$'));
+    assert.deepEqual(percent.properties.value.required,['percent','blankPolicy']);
+    assert.deepEqual(percent.properties.value.properties.percent,{type:'number',minimum:-10000,maximum:10000});
+    assert.deepEqual(shift.properties.value.required,['dateMode','offset','blankPolicy']);
+    assert.deepEqual(shift.properties.value.properties.offset,{type:'integer',minimum:-366,maximum:366});
+    assert.deepEqual(shift.properties.value.properties.dateMode.enum,['calendar_days','business_days']);
+    for(const branch of [percent,shift]){
+      assert.equal(branch.properties.value.additionalProperties,false);
+      assert.deepEqual(branch.properties.value.properties.blankPolicy.enum,['error','skip']);
+      assert.match(branch.properties.value.properties.blankPolicy.description,/explicitly asks to skip/);
+      for(const key of ['formula','base','baseDate','replacement','result','date'])assert(!branch.properties.value.properties[key]);
+    }
+    const absolute=branches[0].properties.value.anyOf;
+    assert.deepEqual(absolute[0].type,['string','number']);
+    assert.deepEqual(absolute[1].properties.dateMode.enum,['literal','calendar_days','business_days']);
+    assert.match(assignments.items.description,/original saved value/);assert.match(assignments.items.description,/not today/);
+  }
+});
+
+test('transform field restrictions stay request-local and never expose numeric operations without numeric columns',()=>{
+  const original=require('./fixtures/record-additions.cjs').schema;
+  const table={...original,fields:original.fields.filter(field=>!['number','currency'].includes(field.type))};
+  const variants=value=>modelAction('workspace_plan',value).properties.steps.items.anyOf.find(step=>step.properties.op.enum[0]==='update_records').properties.assignments.items.anyOf;
+  assert.deepEqual(variants(table).map(branch=>branch.properties.operation.enum),[['set','append'],['shift_date']]);
+  assert(variants(original).some(branch=>branch.properties.operation.enum.includes('adjust_percent')));
+  assert(!variants(null).flatMap(branch=>branch.properties.field.enum||[]).includes('f_value'));
+});
+
+test('both model passes receive relative-versus-absolute and original-snapshot transform instructions',()=>{
+  const Review=require('../lib/action-review');
+  assert(source.split(/\r?\n/).some(line=>/body\.instructions\s*\+=/.test(line)&&line.includes('actionReview.compilerInstructions')));
+  assert.match(source,/instructions:actionReview\.instructions/);
+  for(const instructions of [Review.compilerInstructions,Review.instructions]){
+    assert(instructions.includes(Review.transformInstructions));
+    assert.match(instructions,/Never replace a requested saved-cell transform with set/);
+    assert.match(instructions,/original authorized snapshot/);
+    assert.match(instructions,/Reject\/repair that mismatch even if the resulting constants look correct/);
+    assert.match(instructions,/skip is allowed only when the user explicitly asks/);
+  }
+});
+
+test('live KPI schemas preserve legacy conditions and explicit twelve-group numerator and denominator scopes',()=>{
+  for(const table of contractTables){
+    const action=modelAction('add_kpi',table),variants=action.properties.kpi.anyOf;
+    for(const name of ['add_kpi','configure_kpi','delete_kpi'])assert(action.properties.action.enum.includes(name));
+    assert.equal(variants.length,4);assert.equal(variants[0].type,'null');assertStrictSchema(action.properties.kpi);
+    const [legacy,scoped,percentage]=variants.slice(1);
+    assert.deepEqual([...legacy.required],['title','metric','field','conditions']);
+    assert.deepEqual([...legacy.properties.metric.enum],['count','sum','average']);
+    assert.equal(legacy.properties.conditions.maxItems,10);
+    assert(!legacy.properties.where);assert(!legacy.properties.denominatorWhere);
+    assert.deepEqual([...scoped.properties.metric.enum],['count','sum','average']);
+    assert(!scoped.properties.denominatorWhere);
+    assert.deepEqual([...percentage.properties.metric.enum],['percentage']);assert.equal(percentage.properties.field.type,'null');
+    assert(percentage.required.includes('where'));assert(percentage.required.includes('denominatorWhere'));
+    for(const branch of [scoped,percentage]){
+      assert.equal(branch.properties.title.maxLength,120);
+      assert.equal(branch.properties.conditions.maxItems,0);assert(branch.required.includes('where'));
+      for(const key of ['where',...(branch===percentage?['denominatorWhere']:[])]){
+        const where=branch.properties[key];assert.equal(where.type,'array');assert.equal(where.maxItems,12);assert.equal(where.minItems??0,0);
+        assert.equal(where.items.type,'array');assert.equal(where.items.minItems,1);assert.equal(where.items.maxItems,20);
+        const condition=where.items.items;
+        assert.deepEqual([...condition.required],['field','operator','value']);assert.equal(condition.additionalProperties,false);
+        assert.deepEqual([...condition.properties.operator.enum],tableSchemaCore.kpiOperators);
+        assert(condition.properties.operator.enum.includes('starts_with'));
+        assert.equal(condition.properties.field.maxLength,65);
+        assert.deepEqual(JSON.parse(JSON.stringify(condition.properties.value.anyOf)),[{type:'null'},{type:'string',maxLength:12000},{type:'number',minimum:-1e12,maximum:1e12}]);
+      }
+      for(const key of ['value','numericCount','numeratorCount','denominatorCount','formula','records'])assert(!branch.properties[key]);
+    }
+  }
+});
+
+test('KPI compiler accepts schema-sized twelve-group unions and rejects thirteen groups or malformed scope branches atomically',()=>{
+  const schema=require('./fixtures/record-additions.cjs').schema;
+  const condition={field:'f_deal',operator:'equals',value:'North'};
+  const groups=Array.from({length:12},()=>[{...condition}]);
+  const input={title:'Contract population',metric:'percentage',field:null,conditions:[],where:groups,denominatorWhere:groups};
+  const before=structuredClone({schema,input});
+  const change=customization.addKpi(schema,[],'kpi_user_contract',input);
+  assert.equal(change.after.where.length,12);assert.equal(change.after.denominatorWhere.length,12);
+  const all=customization.addKpi(schema,[],'kpi_user_all',{...input,where:[],denominatorWhere:[]});
+  assert.deepEqual(all.after.where,[]);assert.deepEqual(all.after.denominatorWhere,[]);
+  for(const key of ['where','denominatorWhere']){
+    for(const invalid of [[...groups,[condition]],[[]],[Array.from({length:21},()=>condition)],[[{...condition,formula:'x'}]]]){
+      assert.throws(()=>customization.addKpi(schema,[],'kpi_user_bad',{...input,[key]:invalid}));
+    }
+  }
+  assert.throws(()=>customization.addKpi(schema,[],'kpi_user_bad',{...input,conditions:[condition]}));
+  assert.throws(()=>customization.addKpi(schema,[],'kpi_user_bad',{...input,metric:'count'}));
+  assert.deepEqual({schema,input},before);
 });
