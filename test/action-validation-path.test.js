@@ -55,7 +55,10 @@ function harness(planner,reviewer){
     }};
   const startup=source.lastIndexOf('start().catch(');assert(startup>0);
   vm.runInNewContext(source.slice(0,startup)+'\nglobalThis.planTest=planPipeChatAction;globalThis.turnTest=runConversationTurn;',context,{filename:serverPath});
-  return {calls,logs,turn:context.turnTest,plan:async payload=>{try{return await context.planTest(payload,{tier:'complex',model:'gpt-5.2',reason:'offline_test'});}finally{if(assertions.length)throw assertions[0];}}};
+  return {calls,logs,turn:async(req,...args)=>{
+    if(req.backend)Object.assign(req.backend,{readAgentProfile:async()=>null,saveAgentProfile:async assignment=>assignment});
+    return context.turnTest(req,...args);
+  },plan:async payload=>{try{return await context.planTest(payload,{tier:'complex',model:'gpt-5.2',reason:'offline_test'});}finally{if(assertions.length)throw assertions[0];}}};
 }
 
 test('typed proposal reviewer receives representation disclosure and the same full entity contract',async()=>{

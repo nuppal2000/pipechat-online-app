@@ -59,6 +59,9 @@ begin
       'public.pipechat_set_workflow_activation(text,uuid,text,text,bigint,boolean)',
       'public.pipechat_retry_workflow_event(text,uuid,text,text,text)', 'public.pipechat_read_workflows()'];
   end if;
+  if to_regclass('pipechat.workspace_agent_profiles') is not null then
+    expected := expected || array['public.pipechat_read_agent_profile()', 'public.pipechat_save_agent_profile(jsonb,text)'];
+  end if;
   foreach signature in array expected loop
     function_oid := to_regprocedure(signature);
     if function_oid is null then raise exception 'Missing expected public RPC: %', signature; end if;
