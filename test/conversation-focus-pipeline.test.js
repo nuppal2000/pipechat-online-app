@@ -43,7 +43,9 @@ const start=serverSource.indexOf('async function prepareConversation('),end=serv
 assert(start>=0&&end>start);
 const server=vm.createContext({aiGrounding:Grounding,conversationCore:{...ConversationCore,
   contextFor:(page,command,recalled)=>ConversationCore.contextFor(plain(page),command,plain(recalled))},
-  RequestError:BackendError,backendToken:()=>null});
+  RequestError:BackendError,backendToken:()=>null,
+  prepareAgentContext:async()=>{} // Tested through the full server in agent-persona-server.test.js.
+});
 vm.runInContext(serverSource.slice(start,end)+';globalThis.prepare=prepareConversation;',server);
 
 function deferred(){let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};}
