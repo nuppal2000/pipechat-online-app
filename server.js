@@ -11,6 +11,8 @@ const reportEngine = require('./public/report-engine.js');
 const dashboardBoard = require('./public/dashboard-board.js');
 const workspacePlan = require('./public/workspace-plan.js');
 const actionReview = require('./lib/action-review.js');
+const agentPersona = require('./lib/agent-persona.js');
+const {localStore:localAgentProfileStore} = require('./lib/agent-profile-store.js');
 const actionJournalContext = require('./lib/action-journal-context.js');
 const actionLifecycle = require('./lib/action-lifecycle.js');
 const businessActions = require('./public/business-actions.js');
@@ -653,7 +655,27 @@ async function writeCrmData(userId, deals, customFields, tableSchema=null, todoC
   await fs.mkdir(path.dirname(dataFile), { recursive: true });
   await fs.writeFile(tempFile, JSON.stringify(payload, null, 2));
   await fs.rename(tempFile, dataFile);
+  try{
+    if(tableSchema?.status==='ready')await localAgentProfiles(userId).saveAgentProfile(agentPersona.initial(tableSchema),payload.updatedAt);
+    else if(tableSchema?.status==='pending')await localAgentProfiles(userId).reset();
+  }catch{console.warn(JSON.stringify({event:'persona_metadata_unavailable'}));}
   return payload;
+}
+
+function localAgentProfiles(userId){
+  return localAgentProfileStore(userDataFile(userId,'pipechat-agent-profile.json'),fn=>userLock(`persona:${userId}`,fn),()=>readCrmData(userId));
+}
+
+async function prepareAgentContext(req,user,payload,current){
+  const store=req.backend || localAgentProfiles(user.id);
+  const context=payload.tableBuild || payload.spreadsheetBuild || current.tableSchema;
+  let saved=null;
+  try{saved=await store.readAgentProfile();}catch{console.warn(JSON.stringify({event:'persona_metadata_unavailable',requestId:payload._requestId}));}
+  // Never accept client-supplied assignments or prompt fragments.
+  delete payload._personaAssignment;
+  payload._agentContext=agentPersona.assemble(saved,context);
+  payload._saveAgentProfile=assignment=>saved && JSON.stringify(saved)===JSON.stringify(assignment)
+    ? Promise.resolve(saved) : store.saveAgentProfile(assignment,current.updatedAt);
 }
 
 async function readChatUsage(userId) {
@@ -756,7 +778,7 @@ async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simp
       try{response=await fetch('https://api.openai.com/v1/responses',{
         method:'POST',signal:controller.signal,
         headers:{'Content-Type':'application/json',Authorization:`Bearer ${OPENAI_API_KEY}`},
-        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions,input:JSON.stringify({...input,allowedStepIds:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed}).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed})}}})
+        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions+'\n'+agentPersona.baseInstructions,input:JSON.stringify({...input,agentContext:payload._agentContext?.data,allowedStepIds:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed}).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed})}}})
       });data=await response.json();}
       catch(error){await recordModelAttempt(payload,model,modelStarted,null,false);throw error;}
       controller.signal.throwIfAborted();
@@ -779,6 +801,17 @@ async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simp
 }
 
 async function planPipeChatAction(payload, selectedRoute = modelRouter.route(payload, AI_MODELS), startedAt = Date.now()) {
+  const result=await planPipeChatActionCore(payload,selectedRoute,startedAt);
+  if(result.agentProfile||!payload._agentContext)return result;
+  const assignment=payload._personaAssignment || payload._agentContext.assignment;
+  // Presentation metadata is separate from CRM state and never weakens a failed plan.
+  let saved=assignment,assignmentSaved=false;
+  try {saved=await payload._saveAgentProfile(assignment);assignmentSaved=true;}
+  catch { /* A persona save cannot authorize/retry an action or hide its result. Retry metadata next turn. */ }
+  return {...result,agentProfile:{...agentPersona.presentation(saved),saved:assignmentSaved}};
+}
+
+async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   const {userCommand, pipeline, conversationHistory = [], conversationMemory = '', recalledMessages = [], memoryUpdate = null, pendingClarification = null, pendingAction = null, currentReport = null, csvImport = null, tableBuild=null, spreadsheetBuild=null} = payload;
   if (!OPENAI_API_KEY) {
     throw new RequestError("OPENAI_API_KEY is not set", 503);
@@ -788,7 +821,7 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
   const csv = csvImport ? csvImportCore.validateDescription(csvImport) : null;
   const tableSchema=tableSchemaCore.validate(pipeline?.tableSchema),core=pipelineCore.create(tableSchema),customFields=core.validateCustomFields(pipeline?.customFields);
   const csvCore=csvImportCore.forTable(tableSchema,customFields);
-  const modelResponseSchema=spreadsheetBuild?spreadsheetTypes.responseSchema:tableBuild?tableSchemaCore.designSchema:csv?csvCore.schema:actionReview.modelSchema(responseSchema(customFields,tableSchema,pipeline?.conversationFocus));
+  const modelResponseSchema=agentPersona.responseSchema(spreadsheetBuild?spreadsheetTypes.responseSchema:tableBuild?tableSchemaCore.designSchema:csv?csvCore.schema:actionReview.modelSchema(responseSchema(customFields,tableSchema,pipeline?.conversationFocus)),payload._agentContext);
   const controller = cloudBackend ? new AbortController() : null;
   const requestOptions = {
     method: "POST",
@@ -886,6 +919,13 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
       }
     })
   };
+  if(payload._agentContext){
+    const body=JSON.parse(requestOptions.body);
+    body.instructions+='\n'+payload._agentContext.instructions;
+    const input=JSON.parse(body.input[0].content[0].text);
+    input.agentContext=payload._agentContext.data;
+    body.input[0].content[0].text=JSON.stringify(input);requestOptions.body=JSON.stringify(body);
+  }
   if(!csv&&!tableBuild&&!spreadsheetBuild){
     const body=JSON.parse(requestOptions.body);
     body.instructions+='\n'+actionReview.compilerInstructions;
@@ -923,6 +963,11 @@ async function planPipeChatAction(payload, selectedRoute = modelRouter.route(pay
     throw new RequestError('The AI provider could not complete the request. No CRM changes were made.',502);
   }
   await recordModelAttempt(payload,selectedRoute.model,modelStarted,data?.usage,true);
+  if(payload._agentContext){
+    payload._personaAssignment=agentPersona.resolved(payload._agentContext,result.personaSelection);
+    // Classification is metadata, not a CRM action or input to the action validator.
+    delete result.personaSelection;
+  }
   if (selectedRoute.tier === 'simple' && selectedRoute.model !== AI_MODELS.complex && modelRouter.needsEscalation(result)) {
     return planPipeChatAction(payload, {tier:'complex',model:AI_MODELS.complex,reason:'structured_plan_escalation'}, startedAt);
   }
@@ -999,6 +1044,7 @@ const conversationInstructions = [
 
 async function prepareConversation(req, user, payload) {
   const current = req.backend ? await req.backend.readCrm(backendToken(req)) : await readCrmData(user.id);
+  await prepareAgentContext(req,user,payload,current);
   // Setup and imports have their own bounded input contracts and no chat transcript.
   if (payload.tableBuild || payload.spreadsheetBuild || payload.csvImport) {
     try { aiGrounding.prepare(payload, current, user, null); }
@@ -1360,6 +1406,13 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(artifact.status,artifact.headers); return res.end(artifact.body);
     }
 
+    if(req.method==='GET'&&url.pathname==='/api/agent-profile'){
+      const user=await requireUser(req,res);if(!user)return;
+      const current=req.backend?await req.backend.readCrm():await readCrmData(user.id);
+      const saved=await (req.backend||localAgentProfiles(user.id)).readAgentProfile();
+      const assigned=!!saved&&(current.tableSchema?.status!=='ready'||agentPersona.matches(saved,current.tableSchema));
+      return sendJson(res,200,{profile:assigned?agentPersona.presentation(saved):null,assigned});
+    }
     if(req.method==='GET'&&url.pathname==='/api/actions'){
       const user=await requireUser(req,res);if(!user)return;
       if(!req.backend?.listActions)return sendJson(res,200,{actions:[],before:null});
