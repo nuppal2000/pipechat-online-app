@@ -6,10 +6,12 @@
   const clone=value=>JSON.parse(JSON.stringify(value));
   const supportedOps=new Set(['select_records','add_field','rename_choice_option','update_records','add_todos','add_unlinked_task','update_tasks','read_records','read_history','report','dashboard']);
   const reasonCodes=new Set(['plan_validation','goal_shape_invalid','step_reference_invalid','goal_coverage_invalid','date_invalid','date_offset_invalid','current_date_unavailable','field_unavailable','selection_dependency','focus_unavailable','record_selection_stale','numeric_field_required','unsupported_operation',
+    'transform_invalid','transform_type_invalid','transform_blank','transform_base_invalid','transform_result_invalid',
     'task_validation','task_reference_ambiguous','task_reference_missing','task_focus_unavailable','task_selection_stale','task_selection_empty','task_write_conflict','task_no_changes']);
   const fail=(message,reasonCode='plan_validation',goalCoverage)=>{const error=new Error(message);error.clarification=true;error.reasonCode=reasonCode;if(goalCoverage)error.goalCoverage=goalCoverage;throw error;};
   const object=properties=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
   const str={type:'string'},scalar={type:['string','number']};
+  const transformOps=new Set(['adjust_percent','shift_date']),maxPercent=10000,maxShiftDays=366;
   function responseSchema(core=Core.create(null),custom=[],focus=null){
     const definitions=core.definitions(custom),fieldIds=definitions.map(field=>field.id);
     const createdField={type:'string',pattern:'^@[a-z][a-z0-9_]{0,39}$'};
@@ -22,6 +24,17 @@
       ...(numericIds.length?[object({kind:{type:'string',enum:['sum','average','median','min','max']},field:{type:'string',enum:numericIds}})]:[])
     ]};
     const date=object({dateMode:{type:'string',enum:['literal','calendar_days','business_days']},date:{type:['string','null']},offset:{type:['integer','null']}});
+    const blankPolicy={type:'string',enum:['error','skip'],description:'Use error unless the user explicitly asks to skip blank saved cells. Never substitute zero, today or another value.'};
+    const percent=object({percent:{type:'number',minimum:-maxPercent,maximum:maxPercent},blankPolicy});
+    const shift=object({dateMode:{type:'string',enum:['calendar_days','business_days']},offset:{type:'integer',minimum:-maxShiftDays,maximum:maxShiftDays},blankPolicy});
+    const assignment=object({field:fieldRef,operation:{type:'string',enum:['set','append','adjust_percent','shift_date']},value:{anyOf:[scalar,date,percent,shift]}});
+    // Keep common field metadata for existing schema consumers; branches bind each operation to its operand type.
+    assignment.anyOf=[
+      object({field:fieldRef,operation:{type:'string',enum:['set','append']},value:{anyOf:[scalar,date]}}),
+      ...(numericIds.length?[object({field:{type:'string',enum:numericIds},operation:{type:'string',enum:['adjust_percent']},value:percent})]:[]),
+      object({field:{anyOf:[...definitions.filter(field=>field.type==='date').map(field=>({type:'string',enum:[field.id]})),createdField]},operation:{type:'string',enum:['shift_date']},value:shift})
+    ];
+    assignment.description='Transforms use each selected record\'s original saved value in this field, never a model-calculated replacement or an earlier step\'s result. adjust_percent adds the signed percent of that value; shift_date shifts the saved date, not today. Business days are Monday-Friday, without holiday exclusions.';
     const condition=object({field:fieldRef,operator:{type:'string',enum:Reports.operators},value:{type:['string','number','null']},values:{type:'array',items:{type:['string','number','null']}}});
     const step=(op,properties)=>object({op:{type:'string',enum:[op]},id:str,label:str,...properties});
     return object({action:{type:'string',enum:['workspace_plan']},version:{type:'integer',enum:[1]},title:str,
@@ -31,7 +44,7 @@
         step('select_records',{source:str,where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
         step('add_field',{name:str,type:{type:'string',enum:['text','choice','date']},options:{type:'array',items:str}}),
         step('rename_choice_option',{field:fieldRef,from:str,to:str}),
-        step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:object({field:fieldRef,operation:{type:'string',enum:['set','append']},value:{anyOf:[scalar,date]}})}}),
+        step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:assignment}}),
         step('add_todos',{selection:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('add_unlinked_task',{customTitle:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('update_tasks',{selection:TaskActions.actionSchemas(focus)[1].properties.updates.items.properties.selection,changes:{type:'array',minItems:1,maxItems:4,items:object({field:{type:'string',enum:['status','nextAction','notes','dueDate']},operation:{type:'string',enum:['set','append']},value:{anyOf:[str,date]}})}}),
@@ -61,6 +74,45 @@
     }
     const value=base.toISOString().slice(0,10);
     return {value,explanation:`${today} ${spec.offset<0?'-':'+'} ${Math.abs(spec.offset)} ${business?'business':'calendar'} days = ${value}${business?' (Monday-Friday; weekends skipped, holidays not excluded)':''}.${business&&dates.length<=10?' Counted: '+(dates.join(', ')||'today'):''}`};
+  }
+  function transformSpec(assignment,definition){
+    const {operation,value}=assignment,percent=operation==='adjust_percent';
+    const keys=percent?['percent','blankPolicy']:['dateMode','offset','blankPolicy'];
+    if(Object.keys(assignment).some(key=>!['field','operation','value'].includes(key))||!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!keys.includes(key)))fail('Use only the typed transform operand and a blank-cell policy; do not supply formulas, base values or replacement values.','transform_invalid');
+    const blankPolicy=Object.hasOwn(value,'blankPolicy')?value.blankPolicy:'error';
+    if(!['error','skip'].includes(blankPolicy))fail('Choose error or an explicitly requested skip policy for blank saved cells.','transform_invalid');
+    if(percent){
+      if(typeof value.percent!=='number'||!Number.isFinite(value.percent)||Math.abs(value.percent)>maxPercent)fail(`Choose a numeric percentage between -${maxPercent} and ${maxPercent}.`,'transform_invalid');
+      if(!['number','currency'].includes(definition.type))fail('Percentage adjustments require a number or currency field.','transform_type_invalid');
+      return {percent:value.percent,blankPolicy};
+    }
+    if(!['calendar_days','business_days'].includes(value.dateMode)||!Number.isInteger(value.offset)||Math.abs(value.offset)>maxShiftDays)fail(`Choose calendar or business days and an integer offset of up to ${maxShiftDays} days.`,'transform_invalid');
+    if(definition.type!=='date')fail('Saved-date shifts require a date field. Convert text dates to a date field first.','transform_type_invalid');
+    return {dateMode:value.dateMode,offset:value.offset,blankPolicy};
+  }
+  function transformValue(assignment,original,current,definition,core,customFields){
+    const {field,operation,value:spec}=assignment,before=original[field];
+    const blank=before==null||typeof before==='string'&&!before.trim();
+    if(blank){
+      if(spec.blankPolicy!=='skip')fail(`Record #${original.id} has a blank saved ${definition.name}. Should blank cells be skipped? No base value will be substituted.`,'transform_blank');
+      return {before:before??null,after:current??null,baseDate:null,skipped:true,explanation:'(blank saved value) -> '+(current==null||current===''?'(blank)':String(current))+'; skipped by explicit blank policy; no base value substituted.'};
+    }
+    let result,baseDate=null,explanation;
+    if(operation==='adjust_percent'){
+      if(typeof before!=='number'||!Number.isFinite(before)||Math.abs(before)>1e12)fail(`Record #${original.id} needs a valid saved number in ${definition.name}.`,'transform_base_invalid');
+      result=before+before*spec.percent/100;
+    }else{
+      const parsed=typeof before==='string'?core.date(before):null;
+      if(!parsed)fail(`Record #${original.id} needs a complete, valid saved date in ${definition.name}.`,'transform_base_invalid');
+      baseDate=parsed.toISOString().slice(0,10);
+      // dateValue receives the authorized saved date as its base, never the plan's current date.
+      result=dateValue({dateMode:spec.dateMode,date:null,offset:spec.offset},baseDate).value;
+    }
+    try{result=core.validateStoredValue(field,result,customFields);}
+    catch{fail(`The transformed ${definition.name} for record #${original.id} is outside this field's supported range.`,'transform_result_invalid');}
+    if(operation==='adjust_percent')explanation=`${before} ${spec.percent<0?'-':'+'} ${Math.abs(spec.percent)}% = ${result} (base: saved value ${before}${definition.type==='currency'?'; currency rounded to 2 decimals':''}).`;
+    else explanation=`${before} -> ${result}; base date (saved): ${baseDate}; ${spec.offset<0?'-':'+'} ${Math.abs(spec.offset)} ${spec.dateMode==='business_days'?'business':'calendar'} days${spec.dateMode==='business_days'?' (Monday-Friday; weekends skipped, holidays not excluded)':''}.`;
+    return {before,after:result,baseDate,skipped:false,explanation};
   }
   function snapshot(workspace){return JSON.stringify([workspace.records,workspace.customFields,workspace.tableSchema,workspace.todoCards]);}
   function prepare(workspace,action,{today,nonce,now=Date.now(),visibleIds=[],focus=null,dashboard=null,timezone='UTC'}={}){
@@ -100,6 +152,7 @@
     const unmappedFacts=action.unmappedFacts??[];
     if(!Array.isArray(unmappedFacts)||unmappedFacts.length>40||unmappedFacts.some(f=>!f||['text','source','reason'].some(key=>typeof f[key]!=='string'||!f[key].trim()||f[key].length>4000)))fail('Every unmapped fact needs its original source and a clear reason.');
     const before=snapshot(workspace),next=clone(workspace),selections=new Map(),fields=new Map(),review=[],calculations=new Set(),addedFields=[],schemaChanges=[],addedCards=[],answers=[],effects=[],queryResults=[];
+    const originalRows=new Map(workspace.records.map(row=>[row.id,row]));
     let core=Core.create(next.tableSchema),eligibility=clone(workspace.records);
     let board=clone(dashboard||Dashboard.empty());const taskUpdates=[];
     const resolve=reference=>{
@@ -155,7 +208,7 @@
           const replace=definition=>definition.id===field?{...definition,options:definition.options.map(v=>v===step.from?step.to:v)}:definition;
           if(next.tableSchema?.status==='ready')next.tableSchema.fields=next.tableSchema.fields.map(replace);
           next.customFields=next.customFields.map(replace);core=Core.create(next.tableSchema);
-          if(next.tableSchema?.kpis)next.tableSchema.kpis=next.tableSchema.kpis.map(kpi=>({...kpi,conditions:kpi.conditions.map(condition=>condition.field===field&&condition.value===step.from?{...condition,value:step.to}:condition)}));
+          if(next.tableSchema?.kpis)next.tableSchema.kpis=next.tableSchema.kpis.map(kpi=>core.renameKpiChoiceOption(kpi,field,step.from,step.to));
           next.customFields=core.validateCustomFields(next.customFields);
           next.records=next.records.map(row=>row[field]===step.from?{...row,[field]:step.to}:row);
           eligibility=eligibility.map(row=>row[field]===step.from?{...row,[field]:step.to}:row);
@@ -168,18 +221,32 @@
           const targetIds=selected(step.selection);
           if(!Array.isArray(step.assignments)||!step.assignments.length||step.assignments.length>40)fail('An update needs 1 to 40 field assignments.');
           const assignments=step.assignments.map(a=>{
-            const field=resolve(a.field),value=materialize(a.value),definition=core.definitions(next.customFields).find(f=>f.id===field);
+            if(!a||typeof a!=='object'||Array.isArray(a))fail('Each assignment needs a field, operation and typed value.');
+            const field=resolve(a.field),definition=core.definitions(next.customFields).find(f=>f.id===field);
+            if(transformOps.has(a.operation))return {field,operation:a.operation,value:transformSpec(a,definition),definition};
             if(!['set','append'].includes(a.operation)||a.operation==='append'&&definition.type!=='text')fail('Appending is only supported for text fields.');
+            const value=materialize(a.value);
             return {field,value:core.validateStoredValue(field,value,next.customFields),operation:a.operation};
           });
-          let changes=0;
+          let changes=0;const transforms=[];
           next.records=next.records.map(row=>{
             if(!targetIds.includes(row.id))return row;
             const copy={...row};
-            for(const a of assignments){const value=a.operation==='append'?[copy[a.field],a.value].filter(v=>v!==''&&v!=null).join('\n'):a.value;const checked=core.validateStoredValue(a.field,value,next.customFields);if(copy[a.field]!==checked)changes++;copy[a.field]=checked;}
+            for(const a of assignments){
+              if(transformOps.has(a.operation)){
+                const original=originalRows.get(row.id),result=transformValue(a,original,copy[a.field],a.definition,core,next.customFields);
+                const name=String(original[core.role('primary')]||'Unnamed record #'+row.id);
+                transforms.push({recordId:row.id,name,fieldId:a.field,fieldName:a.definition.name,operation:a.operation,operand:clone(a.value),...result});
+                calculations.add(`${name} (#${row.id}), ${a.definition.name}: ${result.explanation}`);
+                if(!result.skipped){if(copy[a.field]!==result.after)changes++;copy[a.field]=result.after;}
+              }else{
+                const value=a.operation==='append'?[copy[a.field],a.value].filter(v=>v!==''&&v!=null).join('\n'):a.value,checked=core.validateStoredValue(a.field,value,next.customFields);
+                if(copy[a.field]!==checked)changes++;copy[a.field]=checked;
+              }
+            }
             return copy;
           });
-          review.push({id:step.id,op:step.op,label:step.label,count:targetIds.length,changes});
+          review.push({id:step.id,op:step.op,label:step.label,count:targetIds.length,changes,...(transforms.length?{transforms}:{})});
         }else if(step.op==='add_todos'){
           const targetIds=selected(step.selection),dueDate=step.dueDate===null?'':materialize(step.dueDate);
           if(targetIds.length>200)fail('Create at most 200 tasks in one plan. Narrow the selection.');
@@ -281,7 +348,7 @@
     const edits=plan.taskPatches.map(p=>section(Todo.project(p.after,plan.next.records,plan.next.tableSchema,plan.next.customFields).title,['status','nextAction','notes','dueDate'].filter(field=>p.before[field]!==p.after[field]).map(field=>diff({field,before:p.before[field],after:p.after[field]})).join(''))).join('');
     const goals=[...new Set(plan.goals.map(g=>g.stepIds.map(id=>summary(plan.review.find(s=>s.id===id))).join('; ')))];
     const unmapped=(plan.unmappedFacts||[]).length?'<h3>Facts needing a destination</h3>'+plan.unmappedFacts.map(f=>section(f.text,`<p>${esc(f.reason)}</p><blockquote>${esc(f.source)}</blockquote>`)).join(''):'';
-    return `<h3>Complete workspace plan</h3><p>One confirmation: ${plan.addedFields.length} new columns, ${plan.patches.length} changed records, ${plan.addedCards.length} new tasks, ${plan.taskPatches.length} updated tasks.</p><h3>Requested outcomes</h3><ul>${goals.map(g=>`<li>${esc(g)}</li>`).join('')}</ul>${unmapped}<h3>Selection and steps</h3>${selections}${plan.calculations.length?'<h3>Date calculations</h3>'+plan.calculations.map(c=>`<p>${esc(c)}</p>`).join(''):''}<h3>Table changes</h3>${cells||'<p>No cell changes.</p>'}<h3>Task additions</h3>${cards||'<p>No new cards.</p>'}${edits?'<h3>Task edits</h3>'+edits:''}${plan.answers.length?'<h3>Calculated answers</h3>'+plan.answers.map(a=>`<p class="preserve-lines">${esc(a)}</p>`).join(''):''}<div class="proposal-actions"><button class="primary" data-confirm ${saving?'disabled':''}>Confirm entire plan</button><button class="secondary" data-cancel ${saving?'disabled':''}>Cancel entire plan</button></div>`;
+    return `<h3>Complete workspace plan</h3><p>One confirmation: ${plan.addedFields.length} new columns, ${plan.patches.length} changed records, ${plan.addedCards.length} new tasks, ${plan.taskPatches.length} updated tasks.</p><h3>Requested outcomes</h3><ul>${goals.map(g=>`<li>${esc(g)}</li>`).join('')}</ul>${unmapped}<h3>Selection and steps</h3>${selections}${plan.calculations.length?'<h3>Calculations</h3>'+plan.calculations.map(c=>`<p>${esc(c)}</p>`).join(''):''}<h3>Table changes</h3>${cells||'<p>No cell changes.</p>'}<h3>Task additions</h3>${cards||'<p>No new cards.</p>'}${edits?'<h3>Task edits</h3>'+edits:''}${plan.answers.length?'<h3>Calculated answers</h3>'+plan.answers.map(a=>`<p class="preserve-lines">${esc(a)}</p>`).join(''):''}<div class="proposal-actions"><button class="primary" data-confirm ${saving?'disabled':''}>Confirm entire plan</button><button class="secondary" data-cancel ${saving?'disabled':''}>Cancel entire plan</button></div>`;
   }
   return {responseSchema,prepare,dateValue,snapshot,render};
 });

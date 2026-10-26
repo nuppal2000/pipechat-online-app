@@ -1,7 +1,7 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(root, require('./business-workspace.js'));
-  else root.PipeChatBusinessWorkspaceUI = factory(root, root.PipeChatBusinessWorkspace);
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (root, Core) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(root, require('./business-workspace.js'), require('./view-actions.js'));
+  else root.PipeChatBusinessWorkspaceUI = factory(root, root.PipeChatBusinessWorkspace, root.PipeChatViewActions);
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (root, Core, ViewActions) {
   'use strict';
 
   /* Mount contract:
@@ -20,10 +20,28 @@
    * navigation. Parent must also match workspaceId to its own CRM workspace.
    * Shared viewers AND workspace editors inspect read-only primary values here;
    * neither can invoke the parent's legacy inspector through this callback.
-   * Returns {load,setSnapshot,clear,show,inspect,getSnapshot,destroy}; mount does not fetch.
+   * Optional primary-table integration (owner workspace only):
+   * getViewContext({workspaceId}) synchronously returns {workspaceId, records,
+   *   visibleIds, columns:[{id,name,...}], revision, primaryUpdatedAt}.
+   * revision is a string/number changing with account generation or table data;
+   * primaryUpdatedAt must equal snapshot.primary.updatedAt. Reject a foreign
+   * workspace, loading data, unsaved/failed edits or other blocked parent state.
+   * Never supply model-written records/columns, or parse labels into filters.
+   * onOpenView(tableView, {workspaceId,isCurrent}) may return a Promise. Check
+   * isCurrent() immediately before applying after any await; apply scope/search/
+   * filter/sort, select the table tab, sync the search input and render. Return
+   * {applied:true,visibleIds:actualVisibleRows.map(r=>r.id)} only after applying.
+   * prepareViewAction(action) returns an instance-local preview handle, not a
+   * serializable authorization. saveView/openView/exportCsv accept it or an action.
+   * handleViewAction(action) dispatches the same methods. Save/export confirm;
+   * results are saved/applied/download_started/cancelled/stale. Exceptions are
+   * actionable failures, never successes. Parent announces only result.message.
+   * No new method calls api.share/api.revoke. Downloads are local Blob URLs.
+   * Returns those methods plus {load,setSnapshot,clear,show,inspect,getSnapshot,destroy}; mount does not fetch.
    * clear() invalidates pending UI work and resets private state without fetching.
    */
   function mount({ element, api, workspaceId = null, icon, onChange = () => {}, onInspectPrimary,
+    getViewContext, onOpenView,
     confirm = message => root.confirm(message) } = {}) {
     if (!element?.ownerDocument || !Core || !api || typeof api.read !== 'function' || typeof api.commit !== 'function') {
       throw new TypeError('A mount element, business core and authenticated API callbacks are required.');
@@ -44,6 +62,17 @@
     const newId = prefix => prefix + '_' + root.crypto.randomUUID();
     const schemaId = prefix => prefix + '_' + root.crypto.randomUUID().replace(/-/g, '');
     const copy = value => JSON.parse(JSON.stringify(value));
+    const preparedViews = new WeakMap(), downloads = new Map();
+    const equal = (a, b) => a === b || Boolean(a && b && typeof a === 'object' && typeof b === 'object' &&
+      Array.isArray(a) === Array.isArray(b) && Object.keys(a).length === Object.keys(b).length &&
+      Object.keys(a).every(key => Object.hasOwn(b, key) && equal(a[key], b[key])));
+    const viewEnabled = () => Boolean(ViewActions && owner() && typeof getViewContext === 'function');
+    function viewError(message) { const e = new Error(message); e.reasonCode = 'view_action_stale'; throw e; }
+    function releaseDownload(url) {
+      if (!downloads.has(url)) return;
+      root.clearTimeout(downloads.get(url)); downloads.delete(url); root.URL.revokeObjectURL(url);
+    }
+    function releaseDownloads() { for (const url of [...downloads.keys()]) releaseDownload(url); }
     function button(label, action, glyph, compact = false) {
       const b = node('button'); b.type = 'button'; b.title = label; b.setAttribute('aria-label', label); b.disabled = busy;
       const markup = glyph && (icon ? icon(glyph) : root.PipeChatIcons?.[glyph]);
@@ -133,7 +162,7 @@
       try {
         const result = validateSnapshot(await action());
         if (destroyed || generation !== epoch) return;
-        snapshot = result; notice = message; busy = false; closeDialog(); draw(); changed();
+        snapshot = result; notice = message; busy = false; closeDialog(); draw(); changed(); return snapshot ? copy(snapshot) : null;
       } catch (e) {
         if (destroyed || generation !== epoch) return;
         if ([401, 403].includes(e.status)) { snapshot = null; busy = false; closeDialog(); error = 'Workspace access is unavailable.'; draw(); }
@@ -158,6 +187,7 @@
     }
     async function load(id = workspaceId) {
       if (destroyed) return;
+      releaseDownloads();
       const generation = ++epoch; workspaceId = id; snapshot = null; busy = true; error = ''; notice = ''; closeDialog(); draw();
       try {
         const result = validateSnapshot(await api.read(id));
@@ -169,13 +199,142 @@
     }
     function setSnapshot(value) {
       const validated = value === null ? null : validateSnapshot(value);
+      releaseDownloads();
       ++epoch; busy = false; closeDialog(); snapshot = validated; workspaceId = value?.workspaceId ?? null; error = ''; notice = ''; draw();
     }
     function clear() {
       if (destroyed) return;
+      releaseDownloads();
       ++epoch; busy = false; closeDialog(); snapshot = null; workspaceId = null;
       tab = 'Entities'; selectedType = 'all'; query = ''; limit = 100; error = ''; notice = '';
       shell.setAttribute('aria-busy', 'false'); draw();
+    }
+    function captureViewContext() {
+      if (destroyed || !viewEnabled()) throw new Error('Primary-table view actions require the owner workspace and a current table context callback.');
+      const value = getViewContext({workspaceId:snapshot.workspaceId});
+      if (!value || value.workspaceId !== snapshot.workspaceId || value.primaryUpdatedAt !== snapshot.primary.updatedAt ||
+        !(typeof value.revision === 'string' && value.revision.length > 0 || Number.isSafeInteger(value.revision))) {
+        viewError('Reload the matching business workspace and table before using saved views or export.');
+      }
+      const context = copy({workspaceId:value.workspaceId, records:value.records, visibleIds:value.visibleIds,
+        columns:value.columns, views:snapshot.state.views});
+      const all = ViewActions.resolveSelection({source:'all'}, context).recordIds;
+      const allowed = new Set(snapshot.primary.records.map(row => row.recordId));
+      if (all.length !== allowed.size || all.some(id => !allowed.has(id))) viewError('The table records do not match the authorized business snapshot. Reload before continuing.');
+      return {current:snapshot, generation:epoch, revision:value.revision, context};
+    }
+    function prepareViewAction(action, captured) {
+      if (busy) throw new Error('Wait for the current workspace action to finish.');
+      const source = captured || captureViewContext();
+      if (source.generation !== epoch || source.current !== snapshot || destroyed) viewError('The view request is no longer current.');
+      const plan = ViewActions.plan(action, source.context, {newViewId:action?.action === 'save_view' ? newId('view') : undefined});
+      const handle = copy(plan);
+      preparedViews.set(handle, {...source, action:ViewActions.validateAction(action), plan,
+        prepared:plan.operation === 'save' ? Core.prepare(snapshot, plan.commands) : null});
+      return handle;
+    }
+    function currentView(ticket) {
+      if (destroyed || ticket.generation !== epoch || ticket.current !== snapshot) viewError('The view request is no longer current.');
+      const fresh = captureViewContext();
+      if (fresh.revision !== ticket.revision || !equal(fresh.context.columns, ticket.context.columns)) viewError('The table or its columns changed. Review the action again.');
+      ViewActions.revalidateSelection(ticket.plan.selection, fresh.context);
+      return fresh.context;
+    }
+    function downloadCsv(artifact) {
+      if (typeof root.Blob !== 'function' || typeof root.URL?.createObjectURL !== 'function') throw new Error('CSV downloads are unavailable in this browser.');
+      const url = root.URL.createObjectURL(new root.Blob([artifact.body], {type:artifact.mimeType}));
+      downloads.set(url, null);
+      const link = node('a'); link.href = url; link.download = artifact.filename; link.hidden = true;
+      try {
+        shell.append(link); link.click();
+        downloads.set(url, root.setTimeout(() => releaseDownload(url), 60000));
+      } catch (e) { releaseDownload(url); throw e; }
+      finally { link.remove(); }
+    }
+    async function executeView(input, expected) {
+      if (busy) throw new Error('Wait for the current workspace action to finish.');
+      const handle = input && preparedViews.has(input) ? input : prepareViewAction(input);
+      const ticket = preparedViews.get(handle);
+      if (ticket.action.action !== expected) throw new Error('Choose the matching saved-view action.');
+      currentView(ticket);
+      if (expected === 'open_view' && typeof onOpenView !== 'function') throw new Error('The parent table open callback is unavailable.');
+      const generation = epoch;
+      busy = true; controls(true); error = ''; notice = '';
+      try {
+        if (expected !== 'open_view') {
+          const question = expected === 'save_view' ? 'Save "' + ticket.plan.view.name + '" with ' + ticket.plan.count + ' records in this order? ' + ViewActions.staticDisclosure :
+            'Download ' + ticket.plan.count + ' records and ' + ticket.plan.columnIds.length + ' columns as CSV? ' + ticket.plan.disclosure;
+          const accepted = await confirm(question);
+          if (destroyed || generation !== epoch) return {status:'stale'};
+          if (!accepted) return {status:'cancelled'};
+        }
+        const context = currentView(ticket);
+        if (expected === 'save_view') {
+          const message = 'Saved "' + ticket.plan.view.name + '": ' + ticket.plan.count + ' records. ' + ViewActions.staticDisclosure;
+          busy = false; controls(false);
+          const saved = await mutate(async () => {
+            const result = validateSnapshot(await api.commit(copy(ticket.prepared)));
+            if (result.workspaceId !== ticket.current.workspaceId || result.version !== ticket.current.version + 1 ||
+              result.role !== ticket.current.role || result.scope !== ticket.current.scope || !equal(result.state, ticket.prepared.next) ||
+              !equal(result.primary, ticket.current.primary) || !equal(result.access, ticket.current.access)) throw new Error('The saved-view commit was not verified. Reload before retrying.');
+            return result;
+          }, message);
+          if (!saved || destroyed || generation !== epoch) return {status:'stale'};
+          return {status:'saved', viewId:ticket.plan.view.id, count:ticket.plan.count, message};
+        }
+        let result;
+        if (expected === 'open_view') {
+          const receipt = await onOpenView(copy(ticket.plan.tableView), {workspaceId:context.workspaceId,
+            isCurrent:() => { try { currentView(ticket); return true; } catch { return false; } }});
+          if (destroyed || generation !== epoch) return {status:'stale'};
+          result = ViewActions.verifyOpen(ticket.plan, currentView(ticket), receipt);
+        } else {
+          const exported = ViewActions.csvArtifact(ticket.action, context);
+          downloadCsv(exported.artifact);
+          result = {status:'download_started', filename:exported.artifact.filename, count:exported.count,
+            columnIds:exported.columnIds, protectedCellCount:exported.protectedCellCount, disclosure:exported.disclosure,
+            message:'CSV download started: ' + exported.count + ' records. ' + exported.disclosure};
+        }
+        preparedViews.delete(handle); notice = result.message; closeDialog(); drawStatus(); return result;
+      } catch (e) {
+        if (destroyed || generation !== epoch) return {status:'stale'};
+        if ([401, 403].includes(e.status)) { snapshot = null; busy = false; closeDialog(); releaseDownloads(); error = 'Workspace access is unavailable.'; draw(); }
+        throw e;
+      } finally { if (!destroyed && generation === epoch) { busy = false; controls(false); drawStatus(); } }
+    }
+    const saveView = input => executeView(input, 'save_view');
+    const openView = input => executeView(input, 'open_view');
+    const exportCsv = input => executeView(input, 'export_records');
+    function handleViewAction(action) {
+      const methods = {save_view:saveView, open_view:openView, export_records:exportCsv};
+      if (!Object.hasOwn(methods, action?.action)) return Promise.reject(new Error('Unsupported saved-view action.'));
+      return methods[action.action](action);
+    }
+    async function viewEvent(task) {
+      const generation = epoch;
+      try { return await task(); } catch (e) { if (!destroyed && generation === epoch) { error = e.message || 'View action failed.'; drawStatus(); } }
+    }
+    function saveTableViewForm() {
+      const captured = captureViewContext(), name = input('text'); name.required = true; name.maxLength = 120;
+      const scope = select([['visible','Visible records'],['all','All records']]);
+      const fields = form('Save table view', 'Save view', () => saveView(prepareViewAction({action:'save_view', name:name.value,
+        selection:{source:scope.value}}, captured)));
+      fields.append(field('View name', name), field('Records', scope), node('p', ViewActions.staticDisclosure, 'pc-business-muted'));
+    }
+    function exportForm(selection = {source:'visible'}) {
+      const captured = captureViewContext(), columns = captured.context.columns;
+      const scope = select(selection.source === 'saved_view' ? [['saved_view',snapshot.state.views.find(v => v.id === selection.viewId)?.name || 'Saved view']] :
+        [['visible','Visible records'],['all','All records']], selection.source);
+      const mode = select([['all','All current columns'],['selected','Selected columns']]), choices = node('div', null, 'pc-business-checklist');
+      const checkboxes = columns.map(column => {
+        const checkbox = input('checkbox'); checkbox.checked = true;
+        choices.append(field(column.name || column.id, checkbox)); return {id:column.id, checkbox};
+      });
+      choices.hidden = true; mode.onchange = () => { choices.hidden = mode.value !== 'selected'; };
+      const fields = form('Export CSV', 'Download CSV', () => exportCsv(prepareViewAction({action:'export_records', format:'csv',
+        selection:scope.value === 'saved_view' ? selection : {source:scope.value},
+        columns:mode.value === 'all' ? {source:'all'} : {source:'selected', columnIds:checkboxes.filter(item => item.checkbox.checked).map(item => item.id)}}, captured)));
+      fields.append(field('Records', scope), field('Columns', mode), choices, node('p', ViewActions.csvDisclosure, 'pc-business-muted'));
     }
     function drawStatus() {
       const status = body.querySelector('[data-business-status]');
@@ -508,7 +667,10 @@
     function drawSharing() {
       const bar = node('div', null, 'pc-business-bar');
       if (api.share) bar.append(button('Grant access', shareForm, 'Share2'));
-      bar.append(button('New saved view', () => viewForm(), 'Plus')); body.append(bar, node('h3', 'Workspace members'));
+      bar.append(button('New saved view', () => viewForm(), 'Plus'));
+      if (viewEnabled()) bar.append(button('Save current table view', () => viewEvent(saveTableViewForm), 'Save'),
+        button('Export CSV', () => viewEvent(() => exportForm()), 'Download'));
+      body.append(bar, node('h3', 'Workspace members'));
       const members = table(['Account', 'Role', 'Actions']);
       for (const member of snapshot.access?.memberships || []) {
         const role = select([['viewer', 'Viewer'], ['editor', 'Editor']], member.role); role.setAttribute('aria-label', 'Role for ' + member.email);
@@ -532,15 +694,20 @@
       for (const view of snapshot.state.views) {
         const actions = node('div', null, 'pc-business-actions'); actions.append(button('Edit ' + view.name, () => viewForm(view), 'Settings', true),
           button('Delete ' + view.name, () => confirmed('Delete ' + view.name + ' and revoke its grants?', () => commit([{ op: 'delete_view', id: view.id }])), 'Trash2', true));
+        if (viewEnabled() && view.entityIds.every(id => Core.primaryRecordId(snapshot.workspaceId, id) !== null)) {
+          const selection = {source:'saved_view', viewId:view.id};
+          if (typeof onOpenView === 'function') actions.append(button('Open ' + view.name, () => viewEvent(() => openView({action:'open_view', selection})), 'FolderOpen', true));
+          actions.append(button('Export ' + view.name + ' as CSV', () => viewEvent(() => exportForm(selection)), 'Download', true));
+        }
         tableRow(views.rows, [view.name, view.entityIds.length, actions]);
       }
       body.append(views.wrapper);
     }
     draw();
-    return { load, setSnapshot, clear, inspect,
+    return { load, setSnapshot, clear, inspect, prepareViewAction:action => prepareViewAction(action), saveView, openView, exportCsv, handleViewAction,
       show(name) { if (!['Entities', 'Relationships', 'Sharing'].includes(name)) throw new Error('Unknown business view.'); tab = name; draw(); },
       getSnapshot() { return snapshot ? copy(snapshot) : null; },
-      destroy() { destroyed = true; ++epoch; snapshot = null; closeDialog(); shell.remove(); }
+      destroy() { releaseDownloads(); destroyed = true; ++epoch; snapshot = null; closeDialog(); shell.remove(); }
     };
   }
 

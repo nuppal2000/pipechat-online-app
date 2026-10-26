@@ -427,12 +427,18 @@
       const remaining=schemaApi.orderedFields([...nextSchema.fields,...nextFields],nextSchema.columnOrder).map(f=>f.id);
       nextSchema.columnOrder=selected?[selected.id,...remaining.filter(id=>id!==selected.id)]:remaining;
     }
-    if(nextSchema?.kpis)nextSchema.kpis=nextSchema.kpis.filter(k=>k.field!==field.id&&!k.conditions.some(c=>c.field===field.id));
+    if(nextSchema?.kpis)nextSchema.kpis=nextSchema.kpis.filter(k=>!schemaApi.kpiReferencesField(k,field.id));
     nextSchema=schemaApi.transition(schema,nextSchema,next);
     const nextCore=nextSchema?factory(nextSchema,schemaApi):factory(null,schemaApi);
     nextCore.validateCustomFields(nextFields);
     for(const row of next)nextSchema?nextCore.tableValues(row,nextFields):nextCore.customValues(row,nextFields);
     return {records:next,customFields:nextFields,tableSchema:nextSchema,field,replacement:selected,replacementIsNew:Boolean(replacement?.name)};
+  }
+  // The caller validates the actual option rename. Exact-value references follow
+  // its identity; literal prefixes and boolean group boundaries stay unchanged.
+  function renameKpiChoiceOption(kpi,field,from,to){
+    if(typeof field!=='string'||!/^[a-z][a-z0-9_]{0,64}$/.test(field)||[from,to].some(v=>typeof v!=='string'||!v.trim()||v!==v.trim()||v.length>80||/[\x00-\x1f\x7f]/.test(v)))throw new Error('Choose valid field and choice-option names.');
+    return schemaApi.mapKpiConditions(kpi,c=>c.field===field&&['equals','not_equals'].includes(c.operator)&&normalize(c.value)===normalize(from)?{...c,value:to}:c);
   }
   function reconcileReport(spec,customFields=[]){
     if(spec?.version===1)return spec;
@@ -472,5 +478,5 @@
     for(const s of selections)if(s.names)result[s.key==='owners'?'missingOwners':'missingAccounts']=[...s.names].filter(([key])=>!rows.some(row=>normalize(row[s.field])===key)).map(([,name])=>name);
     return result;
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,deletion,additions,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,deletion,additions,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,renameKpiChoiceOption,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
 });

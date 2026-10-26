@@ -2,7 +2,7 @@
   'use strict';
   const metrics=['count','sum','average','min','max','median','count_distinct','percentage'];
   const buckets=['none','day','week','month','quarter','year'];
-  const operators=['equals','not_equals','in','not_in','contains','not_contains','is_blank','is_not_blank','gt','gte','lt','lte','between','before_today','older_than_days'];
+  const operators=['equals','not_equals','in','not_in','contains','not_contains','starts_with','is_blank','is_not_blank','gt','gte','lt','lte','between','before_today','older_than_days'];
   const refinementFields=['title','chart','scope','groupBy','bucket','splitBy','measures','sort','limit'];
   const refinementModes=['add_filter','replace_filter','remove_filter'];
   const names={count:'Record count',sum:'Total',average:'Average',min:'Minimum',max:'Maximum',median:'Median',count_distinct:'Distinct count',percentage:'Percentage'};
@@ -115,6 +115,10 @@
           if(literals.some(v=>typeof v!=='string'||!choices.get(f.id).has(norm(v))))fail(`Which ${f.name} options did you mean? Use defined choices or values present in the table.`);
         }
         if(['contains','not_contains'].includes(op)&&(numeric||dated||typeof c.value!=='string'||!c.value.trim()))fail(`What text should ${f.name} contain? Text matching needs a text column.`);
+        if(op==='starts_with'){
+          if(f.type==='choice')fail(`Use equals or in with a values array for ${f.name}; choice filters need exact options, not prefixes.`);
+          if(f.type!=='text'||typeof c.value!=='string'||!norm(c.value))fail('Prefix matching needs a text column and nonblank text.');
+        }
         if(['gt','gte','lt','lte','between'].includes(op)&&!numeric&&!dated)fail(`Should ${f.name} be interpreted as a number or a date? Its current column type is text.`);
         if(['before_today','older_than_days'].includes(op)&&!dated)fail(`Which date column should define the age instead of ${f.name}?`);
         if(op==='older_than_days'&&(!Number.isInteger(c.value)||c.value<0||c.value>36500))fail('How many days old should a record be?');
@@ -126,7 +130,7 @@
         return row=>{
           const v=convert(row[f.id]);if(op==='is_blank')return blank(row[f.id]);if(op==='is_not_blank')return !blank(row[f.id]);
           if(v===null)return false;
-          switch(op){case 'equals':return v===value;case 'not_equals':return v!==value;case 'in':return list.includes(v);case 'not_in':return !list.includes(v);case 'contains':return v.includes(norm(c.value));case 'not_contains':return !v.includes(norm(c.value));case 'gt':return v>value;case 'gte':return v>=value;case 'lt':return v<value;case 'lte':return v<=value;case 'between':return v>=list[0]&&v<=list[1];case 'before_today':return v<today;case 'older_than_days':return v<today-c.value*86400000;default:return false;}
+          switch(op){case 'equals':return v===value;case 'not_equals':return v!==value;case 'in':return list.includes(v);case 'not_in':return !list.includes(v);case 'contains':return v.includes(norm(c.value));case 'not_contains':return !v.includes(norm(c.value));case 'starts_with':return v.startsWith(value);case 'gt':return v>value;case 'gte':return v>=value;case 'lt':return v<value;case 'lte':return v<=value;case 'between':return v>=list[0]&&v<=list[1];case 'before_today':return v<today;case 'older_than_days':return v<today-c.value*86400000;default:return false;}
         };
       });
     });

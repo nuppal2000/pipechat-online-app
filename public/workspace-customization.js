@@ -21,9 +21,10 @@
     return result;
   }
   function validateReferences(kpi,core,customFields=[]){
+    kpi=Schema.validateKpis([kpi])[0];
     const defs=core.definitions(customFields),get=id=>defs.find(f=>f.id===id);
-    if(kpi.metric==='count'&&kpi.field!==null||kpi.metric!=='count'&&!['number','currency'].includes(get(kpi.field)?.type))throw new Error('Totals and averages need a numeric column; counts have no numeric field.');
-    for(const c of kpi.conditions){
+    if(['count','percentage'].includes(kpi.metric)?kpi.field!==null:!['number','currency'].includes(get(kpi.field)?.type))throw new Error('Totals and averages need a numeric column; counts and percentages have no numeric field.');
+    for(const c of [...kpi.conditions,...(kpi.where||[]).flat(),...(kpi.denominatorWhere||[]).flat()]){
       const f=get(c.field);if(!f)throw new Error('A KPI references a missing column.');
       if(['is_blank','is_not_blank'].includes(c.operator)){if(c.value!==null)throw new Error('Blank checks need no value.');continue;}
       if(['before_today','older_than_days'].includes(c.operator)){
@@ -31,6 +32,8 @@
         if(c.operator==='before_today'&&c.value!==null||c.operator==='older_than_days'&&(!Number.isInteger(c.value)||c.value<0||c.value>36500))throw new Error('Choose a valid number of stale days.');
       }else if(['gt','gte','lt','lte'].includes(c.operator)){
         if(!['number','currency','date'].includes(f.type)||f.type==='date'&&!core.date(c.value)||f.type!=='date'&&(typeof c.value!=='number'||!Number.isFinite(c.value)))throw new Error('Choose a valid comparison value for this column.');
+      }else if(c.operator==='starts_with'){
+        if(!['text','choice'].includes(f.type)||typeof c.value!=='string'||!core.normalize(c.value))throw new Error('Prefix matching needs a text or choice column and nonblank text.');
       }else if(c.value===null)throw new Error('Specify a comparison value.');
     }
     return kpi;
@@ -42,23 +45,45 @@
     return result.filter(k=>!hidden.has(k.id));
   }
   function calculate(kpi,records,schema,customFields=[],today=new Date().toISOString().slice(0,10)){
-    const core=Core.create(schema);validateReferences(kpi,core,customFields);
+    const core=Core.create(schema);kpi=validateReferences(kpi,core,customFields);
+    if(!Array.isArray(records))throw new Error('Supply the complete KPI record population.');
     const defs=new Map(core.definitions(customFields).map(f=>[f.id,f]));
     const now=core.date(today);if(!now)throw new Error('Invalid current date.');
-    const rows=records.filter(row=>kpi.conditions.every(c=>{
+    const matchesCondition=(row,c)=>{
       const value=row[c.field],blank=value==null||String(value).trim()==='',f=defs.get(c.field);
       if(c.operator==='is_blank')return blank;if(c.operator==='is_not_blank')return !blank;
       const actual=core.normalize(value),expected=core.normalize(c.value);
       if(['equals','not_equals'].includes(c.operator)){const match=expected==='today'&&(f.type==='date'||core.role('followup')===f.id)?actual==='today'||value===today:actual===expected;return c.operator==='equals'?match:!match;}
       if(blank)return false;
+      if(c.operator==='starts_with')return actual.startsWith(expected);
       if(['before_today','older_than_days'].includes(c.operator)){const d=core.date(value);return Boolean(d&&d.getTime()<now.getTime()-(c.operator==='older_than_days'?c.value:0)*86400000);}
       const a=f.type==='date'?core.date(value)?.getTime():Number(value),b=f.type==='date'?core.date(c.value)?.getTime():c.value;
       return Number.isFinite(a)&&({gt:a>b,gte:a>=b,lt:a<b,lte:a<=b})[c.operator];
-    }));
+    };
+    const matches=(row,where)=>!where.length||where.some(group=>group.every(c=>matchesCondition(row,c)));
+    const where=kpi.where??(kpi.conditions.length?[kpi.conditions]:[]);
+    // The denominator defines the population; numerator filters refine it, never
+    // the reverse. Persist predicates only so edits to rows recalculate both counts.
+    const population=kpi.metric==='percentage'?records.filter(row=>matches(row,kpi.denominatorWhere)):records;
+    const rows=population.filter(row=>matches(row,where));
+    if(kpi.metric==='percentage')return {value:population.length?rows.length/population.length*100:null,type:'percentage',count:rows.length,numeratorCount:rows.length,denominatorCount:population.length};
     const type=defs.get(kpi.field)?.type;
-    const values=rows.map(r=>r[kpi.field]).filter(v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v)));
+    const values=rows.map(r=>r[kpi.field]).filter(v=>(typeof v==='number'||typeof v==='string'&&v.trim()!=='')&&Number.isFinite(Number(v)));
     const total=values.reduce((sum,v)=>sum+(type==='currency'?Math.round(Number(v)*100):Number(v)),0)/(type==='currency'?100:1);
-    return {value:kpi.metric==='count'?rows.length:values.length?total/(kpi.metric==='average'?values.length:1):null,type:kpi.metric==='count'?'number':type,count:rows.length};
+    return {value:kpi.metric==='count'?rows.length:values.length?total/(kpi.metric==='average'?values.length:1):null,type:kpi.metric==='count'?'number':type,count:rows.length,...(kpi.metric==='count'?{}:{numericCount:values.length})};
+  }
+  // Plain-text preview for confirmation/chat. Callers must escape it for HTML.
+  // Pass the same authorized population here and to calculate after save/reload.
+  function summarize(kpi,records,schema,customFields=[],today){
+    const core=Core.create(schema);kpi=validateReferences(kpi,core,customFields);
+    const result=calculate(kpi,records,schema,customFields,today),defs=new Map(core.definitions(customFields).map(f=>[f.id,f]));
+    const describe=where=>!where.length?'all records':where.map(group=>'('+group.map(c=>`${defs.get(c.field).name} ${c.operator.replaceAll('_',' ')}${c.value===null?'':' '+JSON.stringify(c.value)}`).join(' AND ')+')').join(' OR ');
+    const where=kpi.where??(kpi.conditions.length?[kpi.conditions]:[]);
+    const definition=kpi.metric==='percentage'?`Numerator: ${describe(where)} within denominator. Denominator: ${describe(kpi.denominatorWhere)}.`:`${kpi.metric}${kpi.field?' '+defs.get(kpi.field).name:''}; ${describe(where)}.`;
+    const number=value=>new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(value);
+    const displayValue=result.value===null?'Not set':result.type==='currency'?'$'+number(result.value):number(result.value)+(result.type==='percentage'?'%':'');
+    const counts=kpi.metric==='percentage'?`${result.numeratorCount} / ${result.denominatorCount} records${result.denominatorCount?'':' (zero denominator)'}`:`${result.count} matching records${result.numericCount===undefined?'':`; ${result.numericCount} numeric values`}`;
+    return {...result,displayValue,definition,summary:`${kpi.title}: ${displayValue}. ${counts}. ${definition}`};
   }
   function configure(schema,customFields,id,input){
     const existing=kpis(schema,customFields).find(k=>k.id===id);if(!existing)throw new Error('Which dashboard KPI should I change?');
@@ -112,10 +137,22 @@
     }
     // Remove only KPI overrides whose typed references cannot survive conversion.
     const dropped=[];
-    if(conversion&&nextSchema.kpis){const nextCore=Core.create(nextSchema);nextSchema.kpis=nextSchema.kpis.filter(k=>{try{validateReferences(k,nextCore,nextFields);return true;}catch{dropped.push(k.title);return false;}});}
+    if(conversion&&nextSchema.kpis){
+      const nextCore=Core.create(nextSchema);
+      nextSchema.kpis=nextSchema.kpis.flatMap(k=>{
+        try{
+          const converted=targetType==='date'?Schema.mapKpiConditions(k,c=>{
+            if(c.field!==id||!['equals','not_equals'].includes(c.operator)||c.value===null||core.normalize(c.value)===''||core.normalize(c.value)==='today')return c;
+            const date=conversionDate(c.value,core);if(!date)throw new Error('A KPI comparison cannot be converted to a date.');
+            return {...c,value:date.toISOString().slice(0,10)};
+          }):k;
+          return [validateReferences(converted,nextCore,nextFields)];
+        }catch{dropped.push(k.title);return [];}
+      });
+    }
     nextSchema=Schema.transition(schema,nextSchema,next);nextFields=Core.create(nextSchema).validateCustomFields(nextFields);
     kpis(nextSchema,nextFields);
     return {records:next,tableSchema:nextSchema,customFields:nextFields,before:old,after:field,issues,dropped};
   }
-  return {defaults,kpis,calculate,configure,addKpi,deleteKpi,editColumn,validateReferences};
+  return {defaults,kpis,calculate,summarize,configure,addKpi,deleteKpi,editColumn,validateReferences};
 });
