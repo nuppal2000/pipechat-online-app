@@ -106,11 +106,11 @@ test('KPI coverage and canonical rendering reject fabricated or stale summaries'
   assert.equal(Review.validateReview(review('compiled_action'),result).ok,false,'An uncompiled KPI action alone is not evidence');
 });
 
-test('malformed KPI definitions reject atomically and evidence IDs expose only root',()=>{
+test('malformed KPI definitions reject atomically and evidence IDs expose root plus proven constraints',()=>{
   const payload=fixture(),before=structuredClone(payload),bad={...average(),field:'f_deal'},result={crmAction:add(bad)};
   assert.throws(()=>Review.evidence(payload,result));assert.deepEqual(payload,before);
   const good={crmAction:add(average())},computed=Review.evidence(payload,good),schema=Review.schemaFor(good.crmAction,{pipeline:payload.pipeline,computed});
-  assert.deepEqual(schema.properties.requirements.items.properties.stepIds.items.enum,['root']);assert.match(schema.properties.requirements.items.properties.stepIds.description,/numericCount.*numeratorCount\/denominatorCount\/value/);
+  assert.deepEqual(schema.properties.requirements.items.properties.stepIds.items.enum,['root',...computed.constraintEvidence.map(item=>item.id)]);assert.match(schema.properties.requirements.items.properties.stepIds.description,/numericCount.*numeratorCount\/denominatorCount\/value/);
   assert.equal(coverage(payload,good,computed,'computed_read',['average','average']).ok,false);
   const wrong=review('computed_read',['average']);wrong.requirements[0].stepIds=['invented'];assert.equal(Review.validateReview(wrong,good,{pipeline:payload.pipeline,computed}).ok,false);
 });

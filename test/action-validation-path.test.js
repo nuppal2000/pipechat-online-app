@@ -233,6 +233,87 @@ test('review pass selects one exact source and server returns it with no extra m
   assert.doesNotMatch(response.computedAnswer,/Unrelated|FORGED|Provisional/);assert.deepEqual(h.logs,[]);
 });
 
+test('F06 server review maps a prefix KPI and two retained graphs without weakening unsupported-output rejection',async()=>{
+  const Dashboard=require('../public/dashboard-board'),Core=require('../public/pipeline-core'),payload=fixture();
+  const ids=['deal_value_by_stage','deal_value_by_owner'],p=payload.pipeline,row=p.records[0];
+  p.records=Array.from({length:49},(_,i)=>({...row,id:i+1,f_deal:i<4?'QA26 '+i:i===4?'Embedded QA26':'Other '+i,f_value:i<4?[10000,20000,0,4000][i]:90000}));
+  p.visibleIds=[49];
+  const spec=field=>({version:1,title:'Deal value by '+field,chart:'bar',scope:'all',groupBy:field,bucket:'none',splitBy:null,where:[],sort:'label_asc',limit:null,
+    measures:[{label:'Value',metric:'sum',field:'f_value',where:[]}]});
+  p.dashboard={board:Dashboard.apply(null,{action:'dashboard_plan',operations:ids.map((id,i)=>({op:'add',id,spec:spec(i?'f_owner':'f_stage')})),questions:[]},p.records,Core.create(p.tableSchema),[],{today:p.currentDate}).board};
+  payload.userCommand='Keep those two graphs and add a KPI called QA26 average showing the average deal value for accounts whose names start with QA26.';
+  const result={assistantMessage:'Untrusted average 99999.',crmAction:{action:'add_kpi',kpiId:null,kpi:{title:'QA26 average',metric:'average',field:'f_value',conditions:[],where:[[{field:'f_deal',operator:'starts_with',value:'QA26'}]]}}};
+  for(const invalid of [true,false]){
+    const h=harness(()=>result,(input,body)=>{
+      const props=body.text.format.schema.properties.requirements.items.properties;
+      assert(props.evidenceKind.enum.includes('constraint'));assert(props.requiredOutputs.items.enum.includes('kpi_definition'));
+      assert.equal(input.computed.summary.value,8500);assert.equal(input.computed.summary.count,4);assert.equal(input.computed.summary.numericCount,4);
+      const invariants=ids.map(id=>'unchanged:graph:'+id);
+      assert(invariants.every(id=>input.allowedStepIds.includes(id)&&props.stepIds.items.enum.includes(id)));
+      const req=(kind,stepIds,requiredOutputs)=>({...requirement('Requested outcome',kind,true,stepIds),requiredOutputs});
+      return {...review([req('compiled_action',['root'],['kpi_definition']),req('computed_read',['root'],['average']),
+        ...invariants.map(id=>req('constraint',invalid?['root']:[id],['unchanged_graphs']))]),answerIntent:'canonical',answerSelection:null};
+    });
+    const response=await h.plan(payload);
+    if(invalid){
+      assert.equal(response.outcome,'validation_failed');assert.equal(h.calls.length,4);
+      assert(h.logs.every(log=>log.counts.requested===4&&log.counts.compiled===2&&log.mappingReasons.unsupported_required_output===2));
+    }else{
+      assert.equal(response.crmAction.action,'add_kpi');assert.equal(response.coverage.compiled,4);assert.equal(h.calls.length,2);assert.deepEqual(h.logs,[]);
+      assert.match(response.computedAnswer,/\$8,500.*4 matching records; 4 numeric values/);assert.doesNotMatch(response.computedAnswer,/99999/);
+    }
+  }
+});
+
+test('delete-only KPI server review retains the other saved KPI and both graphs using exact proof IDs',async()=>{
+  const Customize=require('../public/workspace-customization'),Dashboard=require('../public/dashboard-board'),Core=require('../public/pipeline-core');
+  const payload=fixture(),p=payload.pipeline,averageId='kpi_user_qa26',percentageId='kpi_user_missing',graphIds=['deal_value_by_stage','deal_value_by_owner'];
+  p.tableSchema=Customize.addKpi(p.tableSchema,[],averageId,{title:'QA26 average',metric:'average',field:'f_value',conditions:[],where:[[{field:'f_deal',operator:'starts_with',value:'QA26'}]]}).tableSchema;
+  p.tableSchema=Customize.addKpi(p.tableSchema,[],percentageId,{title:'Missing follow-up percent',metric:'percentage',field:null,conditions:[],where:[[{field:'f_follow',operator:'is_blank',value:null}]],denominatorWhere:[]}).tableSchema;
+  const spec=groupBy=>({version:1,title:'Deal value',chart:'bar',scope:'all',groupBy,bucket:'none',splitBy:null,where:[],sort:'label_asc',limit:null,
+    measures:[{label:'Value',metric:'sum',field:'f_value',where:[]}]});
+  p.dashboard={board:Dashboard.apply(null,{action:'dashboard_plan',operations:graphIds.map((id,i)=>({op:'add',id,spec:spec(i?'f_owner':'f_stage')})),questions:[]},p.records,Core.create(p.tableSchema),[],{today:p.currentDate}).board};
+  const before=copy(p);
+  payload.userCommand='Delete only saved dashboard KPI named QA26 average. Keep Missing follow-up percent card and graphs.';
+  const result={assistantMessage:'Untrusted: deleted everything.',crmAction:{action:'delete_kpi',kpiId:averageId,kpi:null}};
+  for(const invalid of [true,false]){
+    const h=harness(()=>result,(input,body)=>{
+      const req=(kind,id,requiredOutputs)=>({...requirement('Requested outcome',kind,true,[id]),requiredOutputs});
+      const retained='unchanged:kpi:'+percentageId;
+      assert(input.allowedStepIds.includes(retained));assert(!input.allowedStepIds.includes('unchanged:kpi:'+averageId));
+      assert(body.text.format.schema.properties.requirements.items.properties.requiredOutputs.items.enum.includes('unchanged_kpis'));
+      return review([req('compiled_action','root',['kpi_definition']),req('constraint',invalid?'root':retained,['unchanged_kpis']),
+        ...graphIds.map(id=>req('constraint','unchanged:graph:'+id,['unchanged_graphs']))]);
+    });
+    const response=await h.plan(payload);
+    if(invalid){
+      assert.equal(response.outcome,'validation_failed');assert.equal(h.calls.length,4);
+      assert(h.logs.every(log=>log.counts.requested===4&&log.counts.compiled===3&&log.mappingReasons.unsupported_required_output===1));
+    }else{
+      assert.equal(response.crmAction.action,'delete_kpi');assert.equal(response.crmAction.kpiId,averageId);
+      assert.equal(response.coverage.compiled,4);assert.equal(h.calls.length,2);assert.deepEqual(h.logs,[]);
+      assert.match(response.computedAnswer,/Review removal of KPI "QA26 average".*No KPI has been deleted/);
+    }
+    assert.deepEqual(p,before);
+  }
+});
+
+test('resolved plural preview maps lifecycle and unchanged outsiders to explicit proof IDs on the server path',async()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),payload=fixture(),p=payload.pipeline;
+  p.records=[{...p.records[0],id:1,f_deal:'Juniper Alpha'},{...p.records[0],id:2,f_deal:'Juniper Beta'},{...p.records[0],id:3,f_deal:'Other'}];p.visibleIds=[3];
+  payload.userCommand='Both Juniper deals. Preview the follow-up date change; leave other deals unchanged.';
+  const action=F.plan([F.select('juniper',[[F.where('f_deal','in',null,['Juniper Alpha','Juniper Beta'])]]),F.update('dates','juniper','f_follow','2026-10-29')]);
+  const h=harness(()=>({crmAction:action,assistantMessage:'Review both changes.'}),(input,body)=>{
+    const req=(kind,id,output)=>({...requirement('Requested outcome',kind,true,[id]),requiredOutputs:output});
+    for(const id of ['dates','lifecycle:preview_only','unchanged:records:outside:juniper'])assert(input.allowedStepIds.includes(id));
+    assert.equal(input.computed.lifecycle.executed,false);assert.equal(input.computed.patches.length,2);
+    assert(body.text.format.schema.properties.requirements.items.properties.evidenceKind.enum.includes('constraint'));
+    return review([req('compiled_action','dates',[]),req('constraint','lifecycle:preview_only',['preview_only']),req('constraint','unchanged:records:outside:juniper',['unchanged_records'])]);
+  });
+  const response=await h.plan(payload);assert.equal(response.coverage.compiled,3);assert.equal(h.calls.length,2);assert.deepEqual(h.logs,[]);
+  assert(p.records.every(row=>row.f_follow!=='2026-10-29'));
+});
+
 test('server passes the same preservation evidence through schema and validation without empty-ID exceptions',async()=>{
   const Dashboard=require('../public/dashboard-board'),Core=require('../public/pipeline-core'),payload=fixture();
   const spec=(metric,groupBy)=>({version:1,title:metric+' by '+groupBy,chart:'bar',scope:'all',groupBy,bucket:'none',splitBy:null,

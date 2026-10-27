@@ -95,3 +95,108 @@ test('exact names, explicit cohorts, cancellation and numbered clarification rep
   assert.equal(G.guardIdentity(grounded('set Atlas owner to Sarah and keep all other data'),edit).crmAction.action,'clarify');
   assert.equal(G.guardIdentity(grounded('no, leave it unchanged',{pendingClarification:pending}),{crmAction:null}).crmAction,null);
 });
+
+const renameResult=()=>({crmAction:{action:'workspace_plan',steps:[{op:'select_records',id:'source'},{op:'update_records',id:'rename',selection:'source',assignments:[{field:'name',operation:'set',value:'Replacement'}]}]}});
+function identityFixture(command,names=['QA26 Saffron Studio','Control Alex01','Control Blair02']){
+  return {userCommand:command,pipeline:{primaryField:'name',fields:{name:'Account Name',owner:'Owner',notes:'Notes'},
+    records:names.map((name,i)=>({id:i+1,name})),todoView:[]}};
+}
+
+test('rename grounding resolves the exact saved source instead of the new name shared with other records',()=>{
+  const p=identityFixture('Rename QA26 Saffron Studio to Control Saffron Studio. Keep every other value unchanged.'),before=structuredClone(p),result=renameResult();
+  assert.deepEqual(G.identityContext(p).references,[{phrase:'qa26 saffron studio',candidates:[{id:1,name:'QA26 Saffron Studio'}],selection:'single_record'}]);
+  assert.equal(G.guardIdentity(p,result),result);assert.deepEqual(p,before);
+  assert.match(G.instructions,/SOURCE VERSUS VALUE/);assert.match(G.instructions,/original user command still supplies every replacement value/);
+});
+
+test('literal-value exclusion is name independent and handles quotes, embedded to, conjunctions and punctuation in sources',()=>{
+  for(const [source,target,command] of [
+    ['Cedar Workshop','Shared Workshop','Please rename Cedar Workshop to Shared Workshop'],
+    ['Route to Market','Shared Route','Rename Route to Market to Shared Route'],
+    ['Research and Design','Shared Research','Rename Research and Design to Shared Research'],
+    ['Smith, Inc.','Shared Smith','Rename Smith, Inc. to Shared Smith'],
+    ['Cedar Workshop','Shared and delete Acorn','Rename "Cedar Workshop" to "Shared and delete Acorn". Keep everything else unchanged.'],
+    ['Cedar Workshop','Shared Group',"Rename 'Cedar Workshop' as 'Shared Group'"],
+    ['Cedar Workshop','Shared Group','Rename \u201cCedar Workshop\u201d to \u201cShared Group\u201d']
+  ]){
+    const p=identityFixture(command,[source,'Shared East','Shared West','Acorn East','Acorn West']),result=renameResult();
+    result.crmAction.steps[1].assignments[0].value=target;
+    const refs=G.identityContext(p).references;
+    assert.equal(refs.length,1,command);assert.deepEqual(refs[0].candidates.map(row=>row.id),[1],command);
+    assert.equal(G.guardIdentity(p,result),result,command);
+  }
+});
+
+test('named-field assignment values never masquerade as selectors in either field ordering',()=>{
+  for(const command of ['Set Cedar Workshop owner to Shared','Update Cedar Workshop notes to Shared',
+    'Change the Owner of Cedar Workshop to Shared','Set Notes for Cedar Workshop to "Shared and delete Acorn"',
+    'Set Cedar Workshop Account Name = Shared Workshop','Change the name of Cedar Workshop to Shared Workshop']){
+    const p=identityFixture(command,['Cedar Workshop','Shared East','Shared West','Acorn East','Acorn West']),result=renameResult();
+    assert.deepEqual(G.identityContext(p).references.map(ref=>ref.candidates.map(row=>row.id)),[[1]],command);
+    assert.equal(G.guardIdentity(p,result),result,command);
+  }
+  const p=grounded('Set Atlas Field Services owner to Northstar');p.pipeline.records.push({id:4,account:'Northstar West'});
+  assert.equal(G.guardIdentity(p,renameResult()).crmAction.action,'workspace_plan');
+});
+
+test('partial and duplicate exact rename sources still require identity clarification regardless of the replacement',()=>{
+  for(const [command,names] of [
+    ['Rename Acorn to Shared Studio',['Acorn East','Acorn West','Shared East','Shared West']],
+    ['Rename Acorn Studio to Shared Studio',['Acorn Studio','Acorn Studio','Shared East','Shared West']],
+    ['Rename one of the Acorn accounts to Shared Studio',['Acorn East','Acorn West','Shared East','Shared West']]
+  ]){
+    const p=identityFixture(command,names),result=renameResult();
+    const actual=G.guardIdentity(p,result);assert.equal(actual.crmAction.action,'clarify',command);
+    assert.match(actual.crmAction.question,/Acorn/);assert.doesNotMatch(actual.crmAction.question,/Shared/);
+  }
+});
+
+test('assignment masking does not remove additional target clauses or ambiguities',()=>{
+  for(const command of ['Rename Cedar Workshop to Shared Studio and delete Acorn',
+    'Rename Cedar Workshop to Shared Studio; update Acorn notes to Hello',
+    'Rename Cedar Workshop to Shared Studio. Set Acorn owner to Shared',
+    'Rename Cedar Workshop to Shared Studio\nRename Acorn to Another Name',
+    'Rename Cedar Workshop to Shared Studio, Acorn to Another Name',
+    'Rename Cedar Workshop to Shared Studio & Acorn to Another Name',
+    'Rename Cedar Workshop to Shared Studio and Acorn to Another Name']){
+    const p=identityFixture(command,['Cedar Workshop','Shared East','Shared West','Acorn East','Acorn West']);
+    const guarded=G.guardIdentity(p,renameResult());assert.equal(guarded.crmAction.action,'clarify',command);
+    assert.match(guarded.crmAction.question,/Acorn/,command);
+  }
+  const p=identityFixture('Rename Cedar Workshop to Shared Studio and rename Birch Workshop to Shared Birch',
+    ['Cedar Workshop','Birch Workshop','Shared East','Shared West']);
+  assert.deepEqual(G.identityContext(p).references.map(ref=>ref.candidates[0].id),[1,2]);
+});
+
+test('other-record values and relationship endpoints retain grounding and model output cannot suppress a source',()=>{
+  const names=['Cedar Workshop','Shared East','Shared West'];
+  for(const command of ['Move Cedar Workshop to Shared','Link Cedar Workshop to Shared','Merge Cedar Workshop with Shared',
+    'Set Cedar Workshop owner to the same owner as Shared','Change Notes of Cedar Workshop to notes from Shared',
+    "Rename Cedar Workshop to Shared's name",
+    'Rename Cedar Workshop to the name of Shared','Rename Missing Source to Shared Studio',
+    'Rename Cedar Workshop to Shared Studio delete Shared']){
+    const p=identityFixture(command,names);
+    assert(G.identityContext(p).references.some(ref=>ref.phrase==='shared'&&ref.candidates.length===2),command);
+  }
+  const p=identityFixture('Rename Acorn to Cedar Workshop',['Acorn East','Acorn West','Cedar Workshop']);
+  const guessed=renameResult();guessed.crmAction.steps[1].assignments[0].value='Acorn';
+  assert.equal(G.guardIdentity(p,guessed).crmAction.action,'clarify');
+});
+
+test('rename identity keeps existing cohort and pending clarification contracts',()=>{
+  const p=identityFixture('Rename all Acorn accounts to Shared Studio',['Acorn East','Acorn West','Shared East','Shared West']);
+  assert.equal(G.identityContext(p).references[0].selection,'all_matching_candidates');
+  p.userCommand='Rename Acorn to Shared Studio';const question=G.guardIdentity(p,renameResult()).crmAction;
+  p.pendingClarification={originalCommand:p.userCommand,question:question.question,options:question.clarificationOptions};p.userCommand='2';
+  const context=G.identityContext(p);assert.equal(context.selectedId,2);assert(!context.references.some(ref=>ref.phrase==='shared'));
+  const result=renameResult();assert.equal(G.guardIdentity(p,result),result);
+});
+
+test('record assignment parsing is bounded and keeps unrecognized commands under the existing guard',()=>{
+  for(const command of ['Rename Cedar Workshop to Shared '+'.'.repeat(17000),
+    'Rename Cedar Workshop to Shared '+Array(4200).fill('x').join(' '),
+    'For Cedar Workshop, set an unspecified property to Shared']){
+    const p=identityFixture(command,['Cedar Workshop','Shared East','Shared West']);
+    assert(G.identityContext(p).references.some(ref=>ref.phrase==='shared'&&ref.candidates.length===2));
+  }
+});

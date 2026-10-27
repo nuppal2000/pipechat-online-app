@@ -68,8 +68,8 @@ test('review-only transform output schema extends, but never mutates, the read o
   const Reads=require('../lib/read-output-contract'),before=JSON.stringify(Reads.schema);
   const action=plan({field:'f_value',operation:'set',value:11000});
   const schema=Review.schemaFor(action).properties.requirements.items.properties.requiredOutputs;
-  assert.deepEqual(schema.items.enum,[...Reads.schema.items.enum,...transformKinds]);
-  assert.equal(schema.maxItems,Reads.schema.maxItems+2);assert.equal(JSON.stringify(Reads.schema),before);
+  assert.deepEqual(schema.items.enum,[...Reads.schema.items.enum,...transformKinds,'preview_only','unchanged_records','unchanged_tasks','unchanged_schema','unchanged_kpis','kpi_definition']);
+  assert.equal(schema.maxItems,schema.items.enum.length);assert.equal(JSON.stringify(Reads.schema),before);
   assert.match(schema.description,/even if the proposed action is a literal set/);
   for(const kind of transformKinds)assert.equal(Reads.supports(action,['edit'],[kind]),false);
 });
