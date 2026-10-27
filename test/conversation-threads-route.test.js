@@ -11,7 +11,7 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
     if (input.userCommand.includes('fixture canonical')) {
       const F = require('./fixtures/workspace-plans.cjs');
       const result = request.text.format.name === 'pipechat_action_review'
-        ? {requirements:[{description:'Compute requested record statistics',evidenceKind:'computed_read',stepIds:input.allowedStepIds,satisfied:true}],issues:[],clarificationQuestion:null}
+        ? {requirements:[{description:'Compute requested record statistics',evidenceKind:'computed_read',stepIds:['statistics'],requiredOutputs:['count','sum','average'],satisfied:true}],issues:[],clarificationQuestion:null,answerIntent:'canonical',answerSelection:null}
         : {assistantMessage:'I will calculate those numbers. Count: 99999.',memoryNote:null,crmAction:F.plan([
           F.select('population'),
           {op:'read_records',id:'statistics',label:'Saved amounts',selection:'population',showTable:false,
@@ -120,6 +120,9 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
     const r=await f.prepare('fixture canonical: give count, total and average of all records');
     const reply=await f.api('/api/pipechat-ai','POST',r);
     assert.equal(reply.body.turn?.status,'succeeded',JSON.stringify(reply.body));
+    const providerCalls=await f.providerCalls();
+    assert.equal(providerCalls.filter(call=>call._fixtureStage==='review').length,1,'The exact typed statistics mapping passes its first review');
+    assert(providerCalls.every(call=>!call.compilerRepair),'Normal structured-plan routing must not require a completeness repair');
     assert.match(reply.body.assistantMessage,/295,000\.00/);
     assert.match(reply.body.assistantMessage,/49,166\.67/);
     assert.doesNotMatch(reply.body.assistantMessage,/99999|I will calculate/);

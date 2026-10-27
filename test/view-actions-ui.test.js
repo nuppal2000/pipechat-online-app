@@ -34,14 +34,15 @@ class Element {
   remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; }
   setAttribute(key, value) { this.attributes[key] = String(value); }
   addEventListener(name, handler) { (this.handlers[name] ||= []).push(handler); }
-  async fire(name) { const event = {target:this,preventDefault() {}}; for (const handler of this.handlers[name] || []) await handler(event); if (this['on' + name]) await this['on' + name](event); }
+  async fire(name) { const event = {target:this,defaultPrevented:false,preventDefault() { this.defaultPrevented = true; }}; for (const handler of this.handlers[name] || []) await handler(event); if (this['on' + name]) await this['on' + name](event); if (name === 'cancel' && !event.defaultPrevented) this.close(); }
   querySelectorAll(selector) {
     const matches = child => selector === '[data-business-status]' ? Object.hasOwn(child.dataset, 'businessStatus') : selector.split(',').includes(child.tagName);
     return this.children.flatMap(child => [...(matches(child) ? [child] : []), ...child.querySelectorAll(selector)]);
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   showModal() { this.open = true; }
-  close() { this.open = false; }
+  close() { if (!this.open) return; this.open = false; for (const handler of this.handlers.close || []) handler({target:this}); }
+  focus() { this.ownerDocument.activeElement = this; }
   click() { if (this.ownerDocument.clickFailure) throw new Error('Download click failed'); this.ownerDocument.clicked.push({href:this.href,download:this.download}); }
 }
 function harness(options = {}) {
@@ -203,30 +204,87 @@ test('open authorization failures clear private data and restore usable controls
   assert.doesNotMatch(h.element.textContent,/Third|Saved order/);
 });
 
-test('CSV creates an actual scoped UTF-8 Blob download, protects formula cells, and revokes URLs', async t => {
+test('CSV creates an actual scoped UTF-8 Blob and keeps a visible repeatable download receipt', async t => {
   const files = downloads(t), h = harness(), before = plain(h.seed);
   const result = await h.ui.handleViewAction(exportAction());
-  assert.equal(result.status,'download_started'); assert.equal(result.count,2); assert.equal(result.protectedCellCount,1);
+  assert.equal(result.status,'download_ready'); assert.equal(result.count,2); assert.equal(result.protectedCellCount,1);
   assert.match(h.confirmations[0],/apostrophe/); assert.match(result.disclosure,/Anyone with the file/);
   assert.equal(h.document.clicked.length,1); const downloaded = h.document.clicked[0], blob = files.blobs.get(downloaded.href);
   assert.equal(downloaded.download,'pipechat-Saved-order.csv'); assert.equal(blob.type,'text/csv; charset=utf-8');
   const text = Buffer.from(await blob.arrayBuffer()).toString('utf8'); assert.equal(text[0],'\ufeff');
   assert.deepEqual(Papa.parse(text).data,[['Name','Amount','Notes'],['Third','',"'=1+1"],['First','0','']]);
   assert.deepEqual(h.ui.getSnapshot(),before); assert.equal(h.commits.length,0); assert.deepEqual(h.shares,[]);
-  assert.equal(h.element.querySelectorAll('a').length,0);
+  const receipt = h.element.querySelector('dialog'), link = receipt.querySelector('a');
+  assert.equal(receipt.open,true); assert.equal(link.textContent,'Download CSV'); assert.equal(Boolean(link.hidden),false);
+  assert.equal(link.href,downloaded.href); assert.equal(link.download,downloaded.download); assert.equal(h.document.activeElement,link);
+  assert.match(receipt.textContent,/pipechat-Saved-order\.csv/); assert.match(receipt.textContent,/Records2/); assert.match(receipt.textContent,/Columns3/);
+  assert(receipt.textContent.includes(result.disclosure)); assert.equal(h.button('Close').disabled,false);
+  assert.doesNotMatch(receipt.textContent,/Third|First|hidden row|=1\+1|blob:/);
+  assert.doesNotMatch(JSON.stringify(result),/blob:|artifact|Third|First|hidden row|=1\+1/);
+  assert.equal(files.timers.size,0); assert.equal(files.revoked.length,0);
+  link.click(); link.click(); assert.equal(h.document.clicked.length,3); assert(h.document.clicked.every(click => click.href === downloaded.href));
+  assert.equal(receipt.open,true); assert.equal(h.confirmations.length,1); assert.equal(files.blobs.size,1);
   h.ui.clear(); assert.equal(files.blobs.size,0); assert.equal(files.timers.size,0); assert.deepEqual(files.revoked,[downloaded.href]);
+  assert.equal(h.element.querySelector('dialog'),null);
 });
 
-test('CSV cancellation, stale confirmation, click failure and delayed expiry leave no false success or URL leak', async t => {
+test('CSV cancellation and stale confirmation create no receipt, while a blocked automatic click retains the manual link', async t => {
   const files = downloads(t), cancel = harness({confirm:() => false});
   assert.deepEqual(await cancel.ui.exportCsv(exportAction()),{status:'cancelled'}); assert.equal(files.blobs.size,0);
   const wait = deferred(), stale = harness({confirm:() => wait.promise}), work = stale.ui.exportCsv(exportAction());
   stale.context.columns.pop(); wait.resolve(true); await assert.rejects(() => work,/columns changed/); assert.equal(files.blobs.size,0);
   const failure = harness(); failure.document.clickFailure = true;
-  await assert.rejects(() => failure.ui.exportCsv(exportAction()),/click failed/); assert.equal(files.blobs.size,0); assert.equal(files.timers.size,0);
-  assert.doesNotMatch(failure.element.textContent,/download started/);
-  const expiry = harness(); await expiry.ui.exportCsv(exportAction()); [...files.timers.values()][0]();
-  assert.equal(files.blobs.size,0); assert.equal(files.timers.size,0);
+  const result = await failure.ui.exportCsv(exportAction()); assert.equal(result.status,'download_ready'); assert.equal(files.blobs.size,1);
+  assert.equal(failure.document.clicked.length,0); assert.doesNotMatch(result.message,/download started|downloaded|saved/i);
+  const receipt = failure.element.querySelector('dialog'), link = receipt.querySelector('a'); assert.equal(receipt.open,true);
+  failure.document.clickFailure = false; link.click(); assert.equal(failure.document.clicked.length,1); assert.equal(files.revoked.length,0);
+  assert.equal(files.timers.size,0); await failure.button('Close').fire('click');
+  assert.equal(files.blobs.size,0); assert.equal(failure.element.querySelector('dialog'),null); assert.deepEqual(files.revoked,[link.href]);
+});
+
+test('receipt URL is revoked exactly once on explicit close, Escape and native close', async t => {
+  const files = downloads(t);
+  for (const close of [h => h.button('Close').fire('click'),h => h.element.querySelector('dialog').fire('cancel'),h => h.element.querySelector('dialog').close()]) {
+    const h = harness(); await h.ui.exportCsv(exportAction()); const receipt = h.element.querySelector('dialog'), url = receipt.querySelector('a').href;
+    await close(h); assert.equal(receipt.open,false); assert.equal(receipt.isConnected,false); assert.equal(h.element.querySelector('dialog'),null);
+    assert.equal(files.blobs.has(url),false); assert.equal(files.revoked.filter(item => item === url).length,1);
+    h.ui.destroy(); await receipt.fire('close'); assert.equal(files.revoked.filter(item => item === url).length,1);
+  }
+});
+
+test('new export replaces the old receipt with a fresh file, and late old close cannot revoke it', async t => {
+  const files = downloads(t), h = harness(); await h.ui.exportCsv(exportAction());
+  const first = h.element.querySelector('dialog'), oldLink = first.querySelector('a'), firstBlob = files.blobs.get(oldLink.href);
+  h.context.records[0].f_notes = 'Updated, "current"\n\u00e9';
+  oldLink.click(); assert.equal(files.blobs.get(oldLink.href),firstBlob); assert.doesNotMatch(await firstBlob.text(),/Updated/);
+  await h.ui.exportCsv({...exportAction(),columns:{source:'selected',columnIds:['f_notes','f_amount']}});
+  const receipt = h.element.querySelector('dialog'), link = receipt.querySelector('a');
+  assert.notEqual(receipt,first); assert.equal(first.isConnected,false); assert.equal(first.open,false); assert.notEqual(link.href,oldLink.href);
+  assert.deepEqual(files.revoked,[oldLink.href]); assert.equal(files.blobs.size,1); assert.equal(h.element.querySelectorAll('a').length,1);
+  assert.deepEqual(Papa.parse(await files.blobs.get(link.href).text()).data,[['Notes','Amount'],["'=1+1",''],['Updated, "current"\n\u00e9','0']]);
+  assert.doesNotMatch(receipt.textContent,/Updated|=1\+1/); assert.match(receipt.textContent,/Columns2/);
+  await first.fire('close'); assert.equal(files.blobs.has(link.href),true); assert.equal(receipt.open,true);
+  await h.button('Close').fire('click'); assert.deepEqual(files.revoked,[oldLink.href,link.href]);
+});
+
+test('receipt links are cleared on workspace load, snapshot replacement, clear and destroy', async t => {
+  const files = downloads(t);
+  for (const reset of [h => h.ui.load(),h => h.ui.setSnapshot(h.seed),h => h.ui.clear(),h => h.ui.destroy()]) {
+    const h = harness(); await h.ui.exportCsv(exportAction()); const receipt = h.element.querySelector('dialog'), url = receipt.querySelector('a').href;
+    await reset(h); assert.equal(files.blobs.has(url),false); assert.equal(files.revoked.filter(item => item === url).length,1);
+    assert.equal(receipt.isConnected,false); assert.equal(h.element.querySelector('a'),null); assert.equal(files.timers.size,0);
+    h.ui.destroy(); assert.equal(files.revoked.filter(item => item === url).length,1);
+  }
+});
+
+test('another dialog replaces the receipt and Blob construction failures never claim readiness', async t => {
+  const files = downloads(t), h = harness(); h.ui.show('Sharing'); await h.ui.exportCsv(exportAction());
+  const receipt = h.element.querySelector('dialog'), url = receipt.querySelector('a').href;
+  await h.button('Save current table view').fire('click'); assert.equal(files.blobs.has(url),false); assert.equal(receipt.isConnected,false);
+  assert.equal(h.element.querySelector('a'),null); assert(h.element.querySelector('form')); await h.button('Cancel').fire('click');
+  t.mock.method(URL,'createObjectURL',() => { throw new Error('Blob creation failed'); });
+  await assert.rejects(h.ui.exportCsv(exportAction()),/Blob creation failed/); assert.equal(h.element.querySelector('dialog'),null);
+  assert.equal(h.element.querySelector('a'),null); assert.equal(files.blobs.size,0); assert.equal(h.commits.length,0);
 });
 
 test('saved-view row buttons and existing form events save, open and export selected columns without grants', async t => {

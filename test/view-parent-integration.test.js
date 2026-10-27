@@ -136,7 +136,9 @@ test('parent export dispatches real CSV Blob bytes and a safe download filename,
   assert(blob instanceof Blob); assert.equal(blob.type,'text/csv; charset=utf-8'); assert.match(click.download,/^[A-Za-z0-9_.-]+\.csv$/);
   const rows = Papa.parse(await blob.text()).data;
   assert.deepEqual(rows.slice(1),[["'=1+1",String(h.S.records[2].f_value)],['Quote " and, newline\n\u00e9','0']]);
-  assert.equal(h.calls.length,1); assert.match(h.messages.at(-1).content,/download started/i); assert.match(h.confirmations[0],/formula/i);
+  assert.equal(h.calls.length,1); assert.match(h.messages.at(-1).content,/CSV ready/i); assert.match(h.confirmations[0],/formula/i);
+  const receipt = h.document.getElementById('businessContent').querySelector('dialog'), link = receipt.querySelector('a');
+  assert.equal(receipt.open,true); assert.equal(link.textContent,'Download CSV'); assert.equal(link.href,click.href); assert.equal(link.download,click.download);
   assert.deepEqual(h.stored(),h.initial); h.ui.destroy(); assert.deepEqual(h.revoked,[click.href]);
 });
 
@@ -179,10 +181,13 @@ test('confirmation rechecks visible order before committing and does not broaden
   assert.equal(h.messages.length,0);
 });
 
-test('failed download dispatch never announces success or saves business data',async t => {
+test('blocked automatic download offers a visible manual retry without claiming delivery or saving business data',async t => {
   const h = harness(t); h.document.clickFailure = true;
-  await assert.rejects(h.run(csv()),/Download blocked/); assert.equal(h.messages.length,0);
-  assert.equal(h.revoked.length,1); assert.equal(h.calls.length,1);
+  await h.run(csv()); assert.equal(h.messages.length,1); assert.match(h.messages[0].content,/CSV ready/);
+  assert.doesNotMatch(h.messages[0].content,/download started|downloaded|saved/i); assert.equal(h.document.clicks.length,0);
+  const receipt = h.document.getElementById('businessContent').querySelector('dialog'), link = receipt.querySelector('a');
+  assert.equal(receipt.open,true); h.document.clickFailure = false; link.click(); assert.equal(h.document.clicks.length,1);
+  assert.equal(h.revoked.length,0); assert.equal(h.calls.length,1); assert.deepEqual(h.stored(),h.initial);
 });
 
 test('durable successful save adds the application receipt after the server preview',async t => {
@@ -200,7 +205,7 @@ test('durable cancellation is recorded without claiming a save or download',asyn
 test('durable download receipt follows one real dispatch and leaves backend UI state valid',async t => {
   const h = harness(t); await h.durable(csv());
   assert.equal(h.document.clicks.length,1); assert.equal(h.messages.length,1);
-  assert.match(h.messages[0].content,/download started/i); assert.equal(h.states.at(-1).sourceAction,null);
+  assert.match(h.messages[0].content,/CSV ready/i); assert.equal(h.states.at(-1).sourceAction,null);
   assert.equal(h.calls.length,1); assert.deepEqual(h.stored(),h.initial);
 });
 

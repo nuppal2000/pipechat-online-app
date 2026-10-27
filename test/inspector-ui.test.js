@@ -1,16 +1,42 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),crypto=require('node:crypto');
 const H=require('../public/inspector-core.js');
+const Core=require('../public/pipeline-core.js'),Schema=require('../public/table-schema.js');
+const markup=fs.readFileSync(require.resolve('../public/index.html'),'utf8');
+const nameMarkup=/<(\w+)\b[^>]*\bid="inspectorNameInput"[^>]*>/i.exec(markup);assert(nameMarkup);
+function schemaWithPrimary(type){
+  const schema=Schema.legacySchema();
+  schema.fields.push({id:'f_primary',name:'Current primary',role:'none',type,options:type==='choice'?['Acme','Other <x>']:[]});
+  schema.columnOrder=['f_primary',...schema.fields.map(field=>field.id).filter(id=>id!=='f_primary')];
+  return schema;
+}
 const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function harness(storage=new Map(),user='A'){
-  const nodes=new Map();const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,addEventListener(k,fn){this[k]=fn;},showModal(){this.open=true;},close(){this.open=false;},focus(){}});return nodes.get(id);};
+  const nodes=new Map(),document={activeElement:null};
+  function element(tag,id=''){
+    let value='';
+    const node={id,tagName:tag.toUpperCase(),textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,
+      get value(){return value;},set value(next){value=String(next);},
+      addEventListener(k,fn){this[k]=fn;},showModal(){this.open=true;},close(){this.open=false;},focus(){document.activeElement=this;},
+      replaceWith(next){assert.equal(nodes.get(this.id),this);nodes.delete(this.id);nodes.set(next.id,next);}};
+    // Match the platform's getter-only property, not a writable plain-object stub.
+    if(node.tagName==='TEXTAREA')Object.defineProperty(node,'type',{get:()=> 'textarea'});
+    else if(node.tagName==='INPUT'){node.type='text';node.step='';}
+    return node;
+  }
+  const node=id=>{if(!nodes.has(id)){
+    const next=element(id==='inspectorNameInput'?nameMarkup[1]:id==='inspectorNameChoice'?'select':'div',id);
+    if(id==='inspectorNameInput'){next.rows=Number(/\brows="(\d+)"/.exec(nameMarkup[0])?.[1]);next.maxLength=Number(/\bmaxlength="(\d+)"/.exec(nameMarkup[0])?.[1]);}
+    nodes.set(id,next);
+  }return nodes.get(id);};
+  document.getElementById=node;document.createElement=tag=>element(tag);
   const S={user:{id:user,name:'QA',email:user+'@example.invalid'},health:{storageProvider:'json'},records:[{id:1,account:'Acme',history:[]}],customFields:[],loaded:true,generation:1};
-  const context={crypto,window:{PipeChatInspector:H,PipeChatIcons:{},PipelineCore:require('../public/pipeline-core.js'),addEventListener(){}},document:{getElementById:node},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}};
+  const context={crypto,window:{PipeChatInspector:H,PipeChatIcons:{},PipelineCore:Core,addEventListener(){}},document,sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}};
   vm.runInNewContext(fs.readFileSync(require.resolve('../public/inspector-ui.js'),'utf8'),context);
-  let fail=false,calls=0,saved;
-  const ui=context.window.PipeChatInspectorUI.create({S,esc:escape,icon:()=>'',rowName:r=>r.account,persist:async rows=>{calls++;if(fail)return false;S.records=rows;return true;},editRecord:async(id,field,value)=>{calls++;if(fail){S.failedEdit={id,field,raw:value};return false;}S.records=S.records.map(r=>r.id===id?{...r,[field]:value}:r);return true;},refresh:async()=>{if(saved)S.records=saved;},toast(){}});
+  let fail=false,calls=0,saved;const edits=[];
+  const ui=context.window.PipeChatInspectorUI.create({S,esc:escape,icon:()=>'',rowName:r=>r[Core.create(S.tableSchema).role('primary')],persist:async rows=>{calls++;if(fail)return false;S.records=rows;return true;},editRecord:async(id,field,value)=>{calls++;edits.push({id,field,value});if(fail){S.failedEdit={id,field,raw:value};return false;}const parsed=Core.create(S.tableSchema).validateValue(field,value,S.customFields);S.records=S.records.map(r=>r.id===id?{...r,[field]:parsed}:r);return true;},refresh:async()=>{if(saved)S.records=saved;},toast(){}});
   const input=text=>{node('inspectorNote').value=text;node('inspectorNote').input();};
   const submit=()=>node('inspectorForm').submit({preventDefault(){}});
-  return {S,node,ui,input,submit,storage,fail:v=>fail=v,calls:()=>calls,saved:v=>saved=v};
+  return {S,node,ui,input,submit,storage,document,edits,fail:v=>fail=v,calls:()=>calls,saved:v=>saved=v};
 }
 test('inspector note save updates history only, blocks empty text, escapes untrusted text and shows chronological entries',async()=>{
   const h=harness();h.ui.open(1);assert(h.node('inspectorDialog').open);assert(h.node('inspectorSave').disabled);
@@ -46,6 +72,60 @@ test('name editor respects choice fields, schema changes, stale values and pendi
   h.node('inspectorNameCancel').onclick();h.node('inspectorEditName').onclick();h.S.records[0].account='Newer';await h.node('inspectorNameForm').submit({preventDefault(){}});assert.equal(h.calls(),0);
   h.node('inspectorNameCancel').onclick();h.node('inspectorEditName').onclick();h.node('inspectorNameChoice').value='Acme';await h.node('inspectorNameForm').submit({preventDefault(){}});assert.equal(h.calls(),1);
 });
+for(const [type,before,raw,expected] of [
+  ['text','Acme','Renamed\nSecond line','Renamed\nSecond line'],
+  ['number',0,'-12.345',-12.345],['currency',12.25,'0',0],
+  ['date','2026-10-26','2026-11-02','2026-11-02'],['choice','Acme','Other <x>','Other <x>']
+])test(`primary rename uses the actual textarea markup safely for a ${type} field`,async()=>{
+  const h=harness();h.S.tableSchema=schemaWithPrimary(type);
+  h.S.records=[{id:1,account:'Acme',f_primary:before,owner:'Ravi',history:[]},{id:2,account:'Acme',f_primary:before,owner:'Alex',history:[]}];
+  const untouched=structuredClone(h.S.records[1]),initial=h.node('inspectorNameInput');
+  assert.equal(initial.tagName,'TEXTAREA');assert.equal(initial.type,'textarea');
+  assert.throws(()=>{(function(){'use strict';initial.type='text';})();},TypeError,'textarea.type must behave like the real getter-only DOM property');
+  h.ui.open(1);assert.doesNotThrow(()=>h.node('inspectorEditName').onclick());
+  const id=type==='choice'?'inspectorNameChoice':'inspectorNameInput',editor=h.node(id);
+  assert.equal(editor.tagName,type==='choice'?'SELECT':type==='text'?'TEXTAREA':'INPUT');
+  assert.equal(editor.value,String(before));assert.equal(editor.hidden,false);
+  assert.equal(h.node('inspectorNameLabel').htmlFor,id);assert.equal(h.document.activeElement,editor);
+  assert.equal(h.node('inspectorNameForm').hidden,false);
+  if(type==='text'){assert.equal(editor,initial);assert.equal(editor.rows,2);assert.equal(editor.maxLength,12000);}
+  if(['number','currency','date'].includes(type)){
+    assert.notEqual(editor,initial);assert.equal(editor.type,type==='date'?'date':'number');
+    assert.equal(editor.step,type==='currency'?'0.01':'any');
+  }
+  editor.value=raw;await h.node('inspectorNameForm').submit({preventDefault(){}});
+  assert.deepEqual(h.edits,[{id:1,field:'f_primary',value:raw}]);assert.equal(h.S.records[0].f_primary,expected);assert.equal(h.S.records[0].account,'Acme');
+  assert.equal(h.S.records[0].owner,'Ravi');assert.deepEqual(h.S.records[0].history,[]);assert.deepEqual(h.S.records[1],untouched);
+  assert.equal(h.node('inspectorNameForm').hidden,true);assert.equal(h.node('inspectorNameInput').value,'');
+  assert.equal(h.document.activeElement,h.node('inspectorTitle'));
+});
+
+test('name control switches between typed inputs, choices and multiline text after schema changes',()=>{
+  const h=harness();
+  for(const [type,value] of [['currency',12.5],['date','2026-10-26'],['choice','Acme'],['text','Acme\nLong name'],['number',0],['text','Acme']]){
+    h.S.tableSchema=schemaWithPrimary(type);
+    h.S.records[0].f_primary=value;h.ui.open(1);h.node('inspectorEditName').onclick();
+    const editor=h.node(type==='choice'?'inspectorNameChoice':'inspectorNameInput');
+    assert.equal(editor.tagName,type==='choice'?'SELECT':type==='text'?'TEXTAREA':'INPUT');
+    assert.equal(editor.value,String(value));assert.equal(editor.disabled,false);
+    assert.equal(h.node('inspectorNameInput').hidden,type==='choice');assert.equal(h.node('inspectorNameChoice').hidden,type!=='choice');
+    assert.equal(h.node('inspectorNameLabel').htmlFor,editor.id);
+    if(type==='text'){assert.equal(editor.rows,2);assert.equal(editor.maxLength,12000);assert.equal(editor.type,'textarea');}
+    editor.value='Discarded';h.node('inspectorNameCancel').onclick();
+    assert.equal(h.calls(),0);assert.equal(h.node('inspectorNameInput').value,'');assert.equal(h.node('inspectorNameForm').hidden,true);
+    assert.equal(h.document.activeElement,h.node('inspectorEditName'));
+  }
+});
+
+test('renaming after primary-column reordering edits the effective numeric field, not the old account field',async()=>{
+  const h=harness();h.S.tableSchema=Schema.legacySchema();
+  h.S.tableSchema.columnOrder=['value',...h.S.tableSchema.fields.map(field=>field.id).filter(id=>id!=='value')];
+  h.S.records[0].value=125.5;h.ui.open(1);h.node('inspectorEditName').onclick();
+  const editor=h.node('inspectorNameInput');assert.equal(editor.tagName,'INPUT');assert.equal(editor.type,'number');assert.equal(editor.value,'125.5');
+  editor.value='250.75';await h.node('inspectorNameForm').submit({preventDefault(){}});
+  assert.deepEqual(h.edits,[{id:1,field:'value',value:'250.75'}]);assert.equal(h.S.records[0].value,250.75);assert.equal(h.S.records[0].account,'Acme');
+});
+
 test('inspector hides authors, filters inclusive dates and resets them without changing saved history',()=>{
   const h=harness();h.S.records[0].history=['2026-09-20T12:00:00Z | private@example.invalid: Company changed from "Old" to "Acme".',...H.addNote(h.S.records,1,'Notes: preserve this','private@example.invalid','n',new Date('2026-09-21T12:00:00Z'))[0].history];
   const before=JSON.stringify(h.S.records);h.ui.open(1);assert(!h.node('inspectorTimeline').innerHTML.includes('private@example.invalid'));assert.match(h.node('inspectorTimeline').innerHTML,/Notes: preserve/);

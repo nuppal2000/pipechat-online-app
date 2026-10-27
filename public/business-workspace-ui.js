@@ -34,9 +34,12 @@
    * prepareViewAction(action) returns an instance-local preview handle, not a
    * serializable authorization. saveView/openView/exportCsv accept it or an action.
    * handleViewAction(action) dispatches the same methods. Save/export confirm;
-   * results are saved/applied/download_started/cancelled/stale. Exceptions are
+   * results are saved/applied/download_ready/cancelled/stale. Exceptions are
    * actionable failures, never successes. Parent announces only result.message.
    * No new method calls api.share/api.revoke. Downloads are local Blob URLs.
+   * Export keeps a visible download receipt/link open, even if its automatic
+   * click is blocked. The URL lasts until close, replacement or lifecycle reset;
+   * download_ready confirms file preparation, not browser download completion.
    * Returns those methods plus {load,setSnapshot,clear,show,inspect,getSnapshot,destroy}; mount does not fetch.
    * clear() invalidates pending UI work and resets private state without fetching.
    */
@@ -62,15 +65,14 @@
     const newId = prefix => prefix + '_' + root.crypto.randomUUID();
     const schemaId = prefix => prefix + '_' + root.crypto.randomUUID().replace(/-/g, '');
     const copy = value => JSON.parse(JSON.stringify(value));
-    const preparedViews = new WeakMap(), downloads = new Map();
+    const preparedViews = new WeakMap(), downloads = new Set();
     const equal = (a, b) => a === b || Boolean(a && b && typeof a === 'object' && typeof b === 'object' &&
       Array.isArray(a) === Array.isArray(b) && Object.keys(a).length === Object.keys(b).length &&
       Object.keys(a).every(key => Object.hasOwn(b, key) && equal(a[key], b[key])));
     const viewEnabled = () => Boolean(ViewActions && owner() && typeof getViewContext === 'function');
     function viewError(message) { const e = new Error(message); e.reasonCode = 'view_action_stale'; throw e; }
     function releaseDownload(url) {
-      if (!downloads.has(url)) return;
-      root.clearTimeout(downloads.get(url)); downloads.delete(url); root.URL.revokeObjectURL(url);
+      if (downloads.delete(url)) root.URL.revokeObjectURL(url);
     }
     function releaseDownloads() { for (const url of [...downloads.keys()]) releaseDownload(url); }
     function button(label, action, glyph, compact = false) {
@@ -122,7 +124,9 @@
       if (!record) return node('span', 'Unavailable record');
       const b = button(recordName(record), () => inspect(id)); b.classList.add('pc-business-link'); return b;
     }
-    function closeDialog() { if (dialog) { dialog.close(); dialog.remove(); dialog = null; } }
+    function closeDialog() {
+      if (dialog) { const closing = dialog; dialog = null; releaseDownloads(); closing.close(); closing.remove(); }
+    }
     function openDialog(title) {
       closeDialog(); dialog = node('dialog'); const heading = node('h3', title); heading.id = componentId + '-dialog';
       dialog.setAttribute('aria-labelledby', heading.id); const bar = node('header', null, 'pc-business-bar');
@@ -240,16 +244,29 @@
       ViewActions.revalidateSelection(ticket.plan.selection, fresh.context);
       return fresh.context;
     }
-    function downloadCsv(artifact) {
+    function downloadCsv(exported) {
       if (typeof root.Blob !== 'function' || typeof root.URL?.createObjectURL !== 'function') throw new Error('CSV downloads are unavailable in this browser.');
-      const url = root.URL.createObjectURL(new root.Blob([artifact.body], {type:artifact.mimeType}));
-      downloads.set(url, null);
-      const link = node('a'); link.href = url; link.download = artifact.filename; link.hidden = true;
+      const content = openDialog('CSV ready'), receipt = dialog, artifact = exported.artifact;
+      receipt.classList.add('pc-business-download-receipt');
       try {
-        shell.append(link); link.click();
-        downloads.set(url, root.setTimeout(() => releaseDownload(url), 60000));
-      } catch (e) { releaseDownload(url); throw e; }
-      finally { link.remove(); }
+        const url = root.URL.createObjectURL(new root.Blob([artifact.body], {type:artifact.mimeType}));
+        downloads.add(url);
+        const details = node('dl', null, 'pc-business-details');
+        details.append(node('dt', 'File'), node('dd', artifact.filename), node('dt', 'Records'), node('dd', exported.count),
+          node('dt', 'Columns'), node('dd', exported.columnIds.length));
+        const link = node('a', null, 'pc-business-download pc-business-primary');
+        link.href = url; link.download = artifact.filename; link.type = artifact.mimeType;
+        const markup = icon ? icon('Download') : root.PipeChatIcons?.Download;
+        if (markup) { const symbol = node('span', null, 'pc-business-icon'); symbol.innerHTML = markup; symbol.setAttribute('aria-hidden', 'true'); link.append(symbol); }
+        link.append(node('span', 'Download CSV'));
+        const footer = node('footer', null, 'pc-business-bar'); footer.append(link);
+        content.append(details, node('p', exported.disclosure, 'pc-business-muted'), footer);
+        receipt.addEventListener('close', () => {
+          releaseDownload(url); receipt.remove(); if (dialog === receipt) dialog = null;
+        });
+        link.focus?.();
+        try { link.click(); } catch { /* A blocked automatic attempt leaves the explicit download link usable. */ }
+      } catch (e) { if (dialog === receipt) closeDialog(); throw e; }
     }
     async function executeView(input, expected) {
       if (busy) throw new Error('Wait for the current workspace action to finish.');
@@ -290,12 +307,12 @@
           result = ViewActions.verifyOpen(ticket.plan, currentView(ticket), receipt);
         } else {
           const exported = ViewActions.csvArtifact(ticket.action, context);
-          downloadCsv(exported.artifact);
-          result = {status:'download_started', filename:exported.artifact.filename, count:exported.count,
+          busy = false; controls(false); downloadCsv(exported);
+          result = {status:'download_ready', filename:exported.artifact.filename, count:exported.count,
             columnIds:exported.columnIds, protectedCellCount:exported.protectedCellCount, disclosure:exported.disclosure,
-            message:'CSV download started: ' + exported.count + ' records. ' + exported.disclosure};
+            message:'CSV ready: ' + exported.count + ' records. ' + exported.disclosure};
         }
-        preparedViews.delete(handle); notice = result.message; closeDialog(); drawStatus(); return result;
+        preparedViews.delete(handle); notice = result.message; if (expected === 'open_view') closeDialog(); drawStatus(); return result;
       } catch (e) {
         if (destroyed || generation !== epoch) return {status:'stale'};
         if ([401, 403].includes(e.status)) { snapshot = null; busy = false; closeDialog(); releaseDownloads(); error = 'Workspace access is unavailable.'; draw(); }
@@ -722,6 +739,8 @@
     .pc-business input[type=checkbox]{width:18px;min-height:18px;height:18px;accent-color:#08796e}
     .pc-business-icon{display:inline-flex;flex:none}.pc-business-icon svg{width:17px;height:17px}.pc-business .pc-business-icon-button{width:36px;height:36px;flex:none;padding:8px}
     .pc-business .pc-business-primary{background:#08796e;color:#fff;border-color:#08796e}
+    .pc-business .pc-business-download{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;max-width:100%;padding:7px 10px;border:1px solid #08796e;border-radius:5px;font:inherit;text-decoration:none;overflow-wrap:anywhere}
+    .pc-business .pc-business-download:hover{background:#06665d}.pc-business dialog.pc-business-download-receipt{width:min(460px,calc(100vw - 24px))}
     .pc-business-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between;margin:12px 0}
     .pc-business-bar>h3{margin:0}.pc-business-bar>input{width:220px;flex:1;min-width:140px}.pc-business-bar>.pc-business-field{min-width:150px;max-width:260px;flex:1}
     .pc-business-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.pc-business-role,.pc-business-muted{color:#52616b;font-size:13px}

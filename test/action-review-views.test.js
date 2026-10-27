@@ -22,7 +22,8 @@ test('save/open/export use exact helper selections while whitelisting reviewer m
     assert.equal(computed.kind,'view-preview');assert.equal(computed.operation,action.action);assert.equal(computed.status,'prepared');assert.equal(computed.count,2);
     assert.deepEqual(computed.selection.recordIds,action.action==='save_view'?[3,1]:[2,1]);
     assert.deepEqual(computed.columns,action.action==='export_records'?[{id:'f_notes',name:'Notes'},{id:'f_value',name:'Value'}]:[]);
-    assert.deepEqual(Object.keys(computed).sort(),['columns','count','disclosure','kind','lifecycle','operation','selection','status']);
+    assert.deepEqual(Object.keys(computed).sort(),['columns','constraintEvidence','count','disclosure','kind','lifecycle','operation','selection','status']);
+    assert.deepEqual(computed.constraintEvidence.map(item=>[item.id,item.output]),[['lifecycle:preview_only','preview_only']]);
     assert.deepEqual(Object.keys(computed.selection).sort(),['recordIds','source','viewId']);
     assert.equal(computed.lifecycle.executed,false);assert.equal(computed.lifecycle.writesApplied,0);
     const json=JSON.stringify(computed);assert.doesNotMatch(json,/PRIVATE|"artifact"|"body"|"commands"|"tableView"|"entityIds"|"filename"/);
