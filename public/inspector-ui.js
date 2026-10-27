@@ -48,9 +48,18 @@
       const row=S.records.find(r=>r.id===recordId),field=primaryField();if(!row||!field)return;
       nameEdit={id:recordId,field:JSON.stringify(field),before:row[field.id]};
       $('inspectorNameLabel').textContent=field.name;$('inspectorNameLabel').htmlFor=field.type==='choice'?'inspectorNameChoice':'inspectorNameInput';
-      $('inspectorNameInput').hidden=field.type==='choice';$('inspectorNameChoice').hidden=field.type!=='choice';
-      $('inspectorNameInput').type=field.type==='date'?'date':['number','currency'].includes(field.type)?'number':'text';
-      $('inspectorNameInput').step=field.type==='currency'?'0.01':'any';
+      let editor=$('inspectorNameInput');
+      if(field.type!=='choice'){
+        const type=field.type==='date'?'date':['number','currency'].includes(field.type)?'number':'text',typed=type!=='text';
+        // Text stays multiline; textarea.type is read-only, so typed fields need an input.
+        if(typed&&editor.tagName==='TEXTAREA'||!typed&&editor.tagName==='INPUT'){
+          const next=document.createElement(typed?'input':'textarea');next.id=editor.id;
+          if(!typed){next.rows=2;next.maxLength=12000;}
+          editor.replaceWith(next);editor=next;
+        }
+        if(editor.tagName==='INPUT'){editor.type=type;editor.step=field.type==='currency'?'0.01':'any';}
+      }
+      editor.hidden=field.type==='choice';$('inspectorNameChoice').hidden=field.type!=='choice';
       $('inspectorNameChoice').innerHTML='<option value="">Not set</option>'+(field.options||[]).map(value=>`<option>${esc(value)}</option>`).join('');
       const input=$(field.type==='choice'?'inspectorNameChoice':'inspectorNameInput');input.value=row[field.id]??'';
       $('inspectorNameForm').hidden=false;$('inspectorNameError').textContent='';controls();input.focus();
