@@ -57,6 +57,7 @@ function harness(options = {}) {
     access:{memberships:[],grants:[{scope:'view',resourceId:viewId,email:'existing@example.invalid'}]}};
   const context = {workspaceId,records,visibleIds:[2,1],columns,revision:'account1:revision1',primaryUpdatedAt:timestamp};
   const document = {clicked:[], createElement:tag => new Element(tag, document)}, element = document.createElement('main'); element.root = true;
+  if (options.detachedPanel) { document.body = document.createElement('body'); document.body.root = true; document.body.append(element); element.hidden = true; }
   const commits = [], shares = [], opens = [], confirmations = [], changes = [];
   let stored = plain(seed);
   const api = {read:async () => plain(stored), commit:async prepared => {
@@ -226,6 +227,29 @@ test('CSV creates an actual scoped UTF-8 Blob and keeps a visible repeatable dow
   assert.equal(receipt.open,true); assert.equal(h.confirmations.length,1); assert.equal(files.blobs.size,1);
   h.ui.clear(); assert.equal(files.blobs.size,0); assert.equal(files.timers.size,0); assert.deepEqual(files.revoked,[downloaded.href]);
   assert.equal(h.element.querySelector('dialog'),null);
+});
+
+test('chat export receipt is outside a hidden business panel and cleaned up on account reset', async t => {
+  const files = downloads(t), h = harness({detachedPanel:true});
+  await h.ui.exportCsv(exportAction());
+  const receipt = h.document.body.querySelector('dialog'), portal = receipt.parentNode;
+  assert.equal(h.element.hidden,true); assert.equal(h.element.querySelector('dialog'),null);
+  assert.equal(portal.parentNode,h.document.body); assert.match(portal.className,/pc-business-dialog-host/);
+  assert.equal(receipt.open,true); assert.equal(receipt.isConnected,true);
+  assert.equal(receipt.querySelector('a').textContent,'Download CSV');
+  h.ui.clear(); assert.equal(portal.isConnected,false); assert.equal(files.blobs.size,0);
+  assert.equal(h.document.body.querySelector('dialog'),null);
+});
+
+test('late close of a replaced portal receipt cannot remove the new download', async t => {
+  const files = downloads(t), h = harness({detachedPanel:true});
+  await h.ui.exportCsv(exportAction()); const first = h.document.body.querySelector('dialog');
+  await h.ui.exportCsv(exportAction()); const second = h.document.body.querySelector('dialog');
+  assert.notEqual(first,second); await first.fire('close');
+  assert.equal(second.isConnected,true); assert.equal(second.open,true); assert.equal(files.blobs.size,1);
+  await second.fire('cancel'); assert.equal(h.document.body.children.length,1); assert.equal(files.blobs.size,0);
+  await h.ui.exportCsv(exportAction()); h.ui.destroy();
+  assert.equal(h.document.body.querySelector('dialog'),null); assert.equal(files.blobs.size,0);
 });
 
 test('CSV cancellation and stale confirmation create no receipt, while a blocked automatic click retains the manual link', async t => {
