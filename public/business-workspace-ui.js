@@ -51,7 +51,7 @@
     }
     const document = element.ownerDocument;
     let snapshot = null, tab = 'Entities', busy = false, destroyed = false, epoch = 0, error = '', notice = '';
-    let selectedType = 'all', query = '', limit = 100, dialog = null, sequence = 0;
+    let selectedType = 'all', query = '', limit = 100, dialog = null, dialogHost = null, sequence = 0;
     const componentId = 'pc-business-' + root.crypto.randomUUID();
     const shell = document.createElement('section'); shell.className = 'pc-business'; element.append(shell);
     const style = document.createElement('style'); style.textContent = styles; shell.append(style);
@@ -126,13 +126,19 @@
     }
     function closeDialog() {
       if (dialog) { const closing = dialog; dialog = null; releaseDownloads(); closing.close(); closing.remove(); }
+      if (dialogHost) { dialogHost.remove(); dialogHost = null; }
     }
-    function openDialog(title) {
+    function openDialog(title, outsidePanel = false) {
       closeDialog(); dialog = node('dialog'); const heading = node('h3', title); heading.id = componentId + '-dialog';
       dialog.setAttribute('aria-labelledby', heading.id); const bar = node('header', null, 'pc-business-bar');
       bar.append(heading, button('Close', () => { if (!busy) closeDialog(); }, 'X', true));
       const content = node('div'); dialog.append(bar, content); dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
-      shell.append(dialog); dialog.showModal(); return content;
+      // Chat exports can finish while the business workspace panel is hidden.
+      if (outsidePanel && document.body) {
+        dialogHost = node('div', null, 'pc-business pc-business-dialog-host');
+        document.body.append(dialogHost); dialogHost.append(dialog);
+      } else shell.append(dialog);
+      dialog.showModal(); return content;
     }
     function form(title, submitLabel, save) {
       const content = openDialog(title), form = node('form'), fields = node('div', null, 'pc-business-form-fields');
@@ -246,7 +252,7 @@
     }
     function downloadCsv(exported) {
       if (typeof root.Blob !== 'function' || typeof root.URL?.createObjectURL !== 'function') throw new Error('CSV downloads are unavailable in this browser.');
-      const content = openDialog('CSV ready'), receipt = dialog, artifact = exported.artifact;
+      const content = openDialog('CSV ready', true), receipt = dialog, receiptHost = dialogHost, artifact = exported.artifact;
       receipt.classList.add('pc-business-download-receipt');
       try {
         const url = root.URL.createObjectURL(new root.Blob([artifact.body], {type:artifact.mimeType}));
@@ -263,6 +269,7 @@
         content.append(details, node('p', exported.disclosure, 'pc-business-muted'), footer);
         receipt.addEventListener('close', () => {
           releaseDownload(url); receipt.remove(); if (dialog === receipt) dialog = null;
+          if (receiptHost) { receiptHost.remove(); if (dialogHost === receiptHost) dialogHost = null; }
         });
         link.focus?.();
         try { link.click(); } catch { /* A blocked automatic attempt leaves the explicit download link usable. */ }
@@ -730,6 +737,7 @@
 
   const styles = `
     .pc-business{color:#20272d;background:#fff;font:14px/1.45 system-ui,sans-serif;min-width:0;letter-spacing:0}
+    .pc-business-dialog-host{display:contents}
     .pc-business *{box-sizing:border-box;letter-spacing:0}.pc-business [hidden]{display:none!important}
     .pc-business h2{font-size:22px;margin:0}.pc-business h3{font-size:16px;margin:20px 0 12px;overflow-wrap:anywhere;min-width:0}.pc-business h4{font-size:14px}
     .pc-business button,.pc-business input,.pc-business select,.pc-business textarea{font:inherit;color:inherit;max-width:100%}
