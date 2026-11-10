@@ -13,6 +13,7 @@ const dashboardBoard = require('./public/dashboard-board.js');
 const workspacePlan = require('./public/workspace-plan.js');
 const actionReview = require('./lib/action-review.js');
 const citationRepair = require('./lib/plan-citation-repair.js');
+const numericIntent = require('./lib/named-numeric-intent.js');
 const agentPersona = require('./lib/agent-persona.js');
 const {localStore:localAgentProfileStore} = require('./lib/agent-profile-store.js');
 const actionJournalContext = require('./lib/action-journal-context.js');
@@ -786,7 +787,7 @@ function parseModelResponse(response,data,model){
     throw error;
   }
 }
-async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simple){
+async function runStructuredReview(contract,startedAt,payload,model=AI_MODELS.simple){
   const controller=new AbortController();let timer;
   const deadline=new Promise((resolve,reject)=>{timer=setTimeout(()=>{reject(new RequestError('The completeness review timed out. No changes were prepared.',502));controller.abort();},Math.max(1,80000-(Date.now()-startedAt)));});
   try{
@@ -795,7 +796,7 @@ async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simp
       try{response=await fetch('https://api.openai.com/v1/responses',{
         method:'POST',signal:controller.signal,
         headers:{'Content-Type':'application/json',Authorization:`Bearer ${OPENAI_API_KEY}`},
-        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:actionReview.instructions+'\n'+conversationIntent.instructions+'\n'+agentPersona.baseInstructions,input:JSON.stringify({...input,conversationIntent:payload.conversationIntent,agentContext:payload._agentContext?.data,allowedStepIds:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed}).properties.requirements.items.properties.stepIds.items.enum}),text:{format:{type:'json_schema',name:'pipechat_action_review',strict:true,schema:actionReview.schemaFor(input.compiled,{pipeline:input.pipeline,computed:input.computed})}}})
+        body:JSON.stringify({model,store:false,max_output_tokens:8192,instructions:contract.instructions,input:JSON.stringify(contract.input),text:{format:{type:'json_schema',name:contract.name,strict:true,schema:contract.schema}}})
       });data=await response.json();}
       catch(error){await recordModelAttempt(payload,model,modelStarted,null,false);throw error;}
       controller.signal.throwIfAborted();
@@ -805,7 +806,7 @@ async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simp
         await recordModelAttempt(payload,model,modelStarted,data?.usage,false);
         if(modelResponse.takeFallback(error,payload,model,AI_MODELS,startedAt,Date.now())){
           clearTimeout(timer);
-          return reviewCompiledAction(input,startedAt,payload,AI_MODELS.complex);
+          return runStructuredReview(contract,startedAt,payload,AI_MODELS.complex);
         }
         throw error;
       }
@@ -815,6 +816,15 @@ async function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simp
     })()]);
   }catch(error){throw error instanceof RequestError?error:new RequestError('The completeness review could not finish. No changes were prepared.',502);}
   finally{clearTimeout(timer);}
+}
+
+function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simple){
+  const context={pipeline:input.pipeline,computed:input.computed};
+  const schema=actionReview.schemaFor(input.compiled,context);
+  return runStructuredReview({name:'pipechat_action_review',schema,
+    instructions:actionReview.instructions+'\n'+conversationIntent.instructions+'\n'+agentPersona.baseInstructions,
+    input:{...input,conversationIntent:payload.conversationIntent,agentContext:payload._agentContext?.data,
+      allowedStepIds:actionReview.allowedStepIdsFor(input.compiled,context)}},startedAt,payload,model);
 }
 
 async function planPipeChatAction(payload, selectedRoute = modelRouter.route(payload, AI_MODELS), startedAt = Date.now()) {
@@ -1028,9 +1038,22 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
       grounded.lifecycle=computed.lifecycle;
       stage='review';
       const reviewInput={userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed};
-      review=await reviewCompiledAction(reviewInput,startedAt,payload);
-      stage='mapping';
-      coverage=actionReview.validateReview(review,result,{pipeline,computed});
+      const numericInput=numericIntent.eligible(result.crmAction)&&numericIntent.input(payload);
+      if(numericInput){
+        const intent=await runStructuredReview({name:'pipechat_named_numeric_intent',schema:numericIntent.schema,
+          instructions:numericIntent.instructions,input:numericInput},startedAt,payload);
+        if(intent?.completeIntent===true){
+          const exact=numericIntent.matches(intent,result.crmAction,{pipeline,computed});
+          const requested=1+(Array.isArray(intent.assignments)?intent.assignments.length:0);
+          review={requirements:[],issues:exact?[]:['The complete requested numeric column and named cell values must match the preview, with all other cells blank.'],clarificationQuestion:null};
+          coverage={ok:exact,requested,compiled:exact?requested:0,mappingIssues:[]};
+        }
+      }
+      if(!coverage){
+        review=await reviewCompiledAction(reviewInput,startedAt,payload);
+        stage='mapping';
+        coverage=actionReview.validateReview(review,result,{pipeline,computed});
+      }else stage='mapping';
       if(Date.now()-startedAt<55000&&citationRepair.eligible(result.crmAction,review,coverage,computed)){
         citationRepairUsed=true;
         const repaired=await reviewCompiledAction({...reviewInput,citationRepair:{requirements:review.requirements,
