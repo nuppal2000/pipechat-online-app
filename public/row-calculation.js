@@ -85,17 +85,25 @@
     }
     const exact=contributions.length?fraction(total,divisor):null;
     return {kind:'row_calculation',expression,factors,type,selectedRecordIds:[...seen],
-      expressionText:'SUM(('+factors.map(f=>JSON.stringify(f.name)+' ['+f.id+']').join(' * ')+') / '+expression.divisor+')',
+      expressionText:'SUM(('+factors.map(f=>JSON.stringify(f.name)).join(' * ')+') / '+expression.divisor+')',
       ...(exact?rounded(exact,places):{value:null,valueText:null}),exactTotal:exact?serialized(exact):null,
       precision:{arithmetic:'decimal_from_json_numbers',decimalPlaces:places,rounding:'half_away_from_zero',roundingStage:'aggregate_after_sum',rowValues:'display_only'},
       coverage:{selectedCount:records.length,includedCount:contributions.length,excludedCount:excludedRows.length,excludedRows},contributions};
   }
   // Plain text only. HTML callers must escape it; complete row evidence stays in the result.
   function describe(result){
-    const {coverage:c,precision:p}=result,display=result.value===null?'Not set':(result.type==='currency'?'$':'')+result.valueText;
-    const excluded=c.excludedRows.slice(0,20).map(row=>JSON.stringify(row.name.length>200?row.name.slice(0,200)+'...':row.name)+' (#'+row.recordId+'): missing '+row.missingFields.join(', ')).join('; ');
-    return result.expressionText+' = '+display+'.\n'+c.includedCount+' of '+c.selectedCount+' selected records included; '+c.excludedCount+' excluded for missing factors. Zeroes included; missing values are not zero.\n'+
-      'Total rounded once after summing to '+p.decimalPlaces+' decimals (half away from zero); displayed row contributions are rounded separately, not summed.'+
+    const {coverage:c,precision:p}=result,display=result.value===null?'Not set':new Intl.NumberFormat('en-US',{
+      maximumFractionDigits:p.decimalPlaces,...(result.type==='currency'?{style:'currency',currency:'USD'}:{})
+    }).format(result.value);
+    const labels=new Map(result.factors.map(f=>[f.id,f.name]));
+    const factors=result.factors.map(f=>JSON.stringify(f.name));
+    const calculation=(factors.length===1?'use '+factors[0]:'multiply '+factors.join(' by '))+', divide by '+result.expression.divisor+', then add the results.';
+    const excluded=c.excludedRows.slice(0,20).map(row=>{
+      const name=row.name==='Unnamed record #'+row.recordId?'Unnamed record':row.name;
+      return JSON.stringify(name.length>200?name.slice(0,200)+'...':name)+': missing '+row.missingFields.map(id=>JSON.stringify(labels.get(id)||'Unnamed field')).join(', ');
+    }).join('; ');
+    return 'Total: '+display+'.\nFor each included record, '+calculation+'\n'+c.includedCount+' of '+c.selectedCount+' selected records included; '+c.excludedCount+' excluded because a calculation field is missing. Zero values are included.\n'+
+      'The total is rounded to '+p.decimalPlaces+' decimal places after adding the unrounded results.'+
       (excluded?'\nExcluded: '+excluded+(c.excludedCount>20?'; '+(c.excludedCount-20)+' more (complete exclusions in calculation evidence)':''):'');
   }
   return {limits,responseSchema,validate,evaluate,describe};
