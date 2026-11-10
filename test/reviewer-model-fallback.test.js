@@ -17,6 +17,10 @@ function harness(respond){
     process:{env:{PIPECHAT_STORAGE_PROVIDER:'json',OPENAI_API_KEY:'OFFLINE_FIXTURE_ONLY',NODE_ENV:'test',PIPECHAT_SIMPLE_MODEL:simple,PIPECHAT_COMPLEX_MODEL:complex}},
     require(name){
       if(name==='node:http')return {createServer:()=>({})};
+      // Isolate shared review/fallback behavior; intent-gate integration has its
+      // own server-path tests, including bounded repair and malformed evidence.
+      if(['./lib/conditional-classification-intent.js','./lib/derived-calculation-intent.js'].includes(name))
+        return {...localRequire(name),eligible:()=>false};
       if(name==='./lib/action-review.js')return {...Review,
         evidence:(payload,result)=>{const p=copy(payload),computed=Review.evidence(p,copy(result));pipelines.set(computed,p.pipeline);return computed;},
         schemaFor:(action,c)=>Review.schemaFor(copy(action),{...c,pipeline:pipelines.get(c.computed)}),

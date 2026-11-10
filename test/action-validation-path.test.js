@@ -26,7 +26,7 @@ function contact(){return {assistantMessage:'The company and deal are one combin
     {op:'link',typeId:'people_deals',from:{source:'alias',key:'person'},to:{source:'primary',key:Workspace.legacyId(wid,1)}}]}};}
 const requirement=(description,evidenceKind='compiled_action',satisfied=true,stepIds=['root'])=>({description,evidenceKind,satisfied,stepIds});
 const review=requirements=>({requirements,issues:[],clarificationQuestion:null});
-function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected named numeric intent request')){
+function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected named numeric intent request'),populationReviewer=()=>({completeIntent:false})){
   const evidencePipelines=new WeakMap();
   const calls=[],logs=[],assertions=[],context={__dirname:path.dirname(serverPath),Buffer,URL,structuredClone,AbortController,AbortSignal,setTimeout,clearTimeout,
     console:{log:line=>logs.push(JSON.parse(line)),warn:line=>logs.push(JSON.parse(line))},
@@ -46,6 +46,11 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
         return {...numeric,eligible:action=>numeric.eligible(copy(action)),
           matches:(intent,action,context)=>numeric.matches(copy(intent),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
       }
+      if(['./lib/conditional-classification-intent.js','./lib/derived-calculation-intent.js'].includes(name)){
+        const intent=localRequire(name);
+        return {...intent,eligible:action=>intent.eligible(copy(action)),assess:(value,action,context)=>
+          intent.assess(copy(value),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
+      }
       if(name==='./lib/conversation-core.js'){
         const core=localRequire(name);return {...core,validateState:input=>core.validateState(copy(input)),contextFor:(page,command,recalled)=>core.contextFor(copy(page),command,copy(recalled))};
       }
@@ -56,7 +61,8 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
       const body=JSON.parse(options.body),input=JSON.parse(typeof body.input==='string'?body.input:body.input[0].content[0].text);
       const name=body.text.format.name,isReview=name==='pipechat_action_review';calls.push({name,body,input,isReview});
       let result;
-      try{result=await (isReview?reviewer:name==='pipechat_named_numeric_intent'?numericReviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
+      try{result=await (isReview?reviewer:name==='pipechat_named_numeric_intent'?numericReviewer:
+        ['pipechat_conditional_classification_intent','pipechat_derived_calculation_intent'].includes(name)?populationReviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
       return {ok:true,json:async()=>({output_text:JSON.stringify(result)})};
     }};
   const startup=source.lastIndexOf('start().catch(');assert(startup>0);
@@ -68,6 +74,57 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
 }
 
 const plannerFormat='pipechat_response',numericFormat='pipechat_named_numeric_intent',genericFormat='pipechat_action_review';
+test('independent classification repairs a stale focus before allowing a full-cohort confirmation preview',async()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),p=F.workspace();
+  p.records=p.records.slice(0,3);p.records[0].f_value=12000;p.records[1].f_value=30000;p.records[2].f_value=null;
+  p.currentDate='2026-11-10';p.workspaceVersion='current';p.visibleIds=[1];p.conversationFocus={kind:'table',ids:[1]};
+  const payload={userCommand:'For all deals set Priority High at 15000 or above, otherwise Medium; leave unknown amounts unchanged.',pipeline:p};
+  const operation={kind:'classify_number',numberField:'f_value',operator:'gte',threshold:15000,targetField:'f_priority',whenTrue:'High',otherwise:'Medium',whenBlank:'unchanged'};
+  const intent={completeIntent:true,source:'all',where:[],...operation,otherRequestedWork:false,ambiguity:false};delete intent.kind;
+  let attempt=0;
+  const h=harness(()=>({assistantMessage:'Review this preview.',memoryNote:null,crmAction:{action:'scoped_table_request',title:'Classify',source:attempt++?'all':'focus',where:[],operation}}),
+    ()=>assert.fail('A known population mismatch must not fall through to generic approval'),undefined,(input,body)=>{
+      assert.equal(body.text.format.name,'pipechat_conditional_classification_intent');
+      assert.deepEqual(Object.keys(input).sort(),['fields','userCommand']);
+      assert.equal(input.userCommand,payload.userCommand);assert(!JSON.stringify(input).includes('Summit'));
+      return intent;
+    });
+  const before=copy(p),result=await h.plan(payload);
+  assert.equal(result.crmAction?.action,'workspace_plan');assert.equal(result.crmAction.steps[0].source,'all');
+  assert.equal(result.lifecycle.writesApplied,0);assert.equal(result.lifecycle.requiresConfirmation,true);
+  assert.deepEqual(p,before);assert.equal(attempt,2);
+  assert.deepEqual(h.logs.map(x=>[x.attempt,x.counts.compiled]),[[0,0]]);
+});
+
+test('a persistently narrowed weighted-calculation population is rejected despite the correct total',async()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),p=F.workspace();
+  p.customFields=[{id:'cf_probability',name:'Probability percent',type:'number'}];
+  p.records=p.records.slice(0,3).map((r,i)=>({...r,cf_probability:i===0?50:null}));
+  p.currentDate='2026-11-10';p.workspaceVersion='current';
+  const expression={kind:'sum_product',factors:['f_value','cf_probability'],divisor:100};
+  const action=F.plan([F.select('present',[[F.where('cf_probability','is_not_blank')]]),
+    {op:'read_records',id:'calculate',label:'Weighted total',selection:'present',showTable:false,outputs:[{kind:'row_calculation',expression}]}]);
+  const payload={userCommand:'Compute weighted value across all deals and report missing-factor exclusions.',pipeline:p};
+  const h=harness(()=>({assistantMessage:'PRIVATE_PLANNER_PROSE',memoryNote:null,crmAction:action}),
+    ()=>assert.fail('A known calculation-population mismatch must never get generic approval'),undefined,(input,body)=>{
+      assert.equal(body.text.format.name,'pipechat_derived_calculation_intent');
+      assert(!JSON.stringify(input).includes('PRIVATE_PLANNER_PROSE'));
+      return {completeIntent:true,population:{source:'all',where:[]},expression,coverage:true,counts:['selected','included','excluded'],otherRequestedWork:false,ambiguity:false};
+    });
+  const before=copy(p),result=await h.plan(payload);
+  assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);assert.equal(result.computedAnswer,undefined);
+  assert.deepEqual(p,before);assert.equal(h.logs.length,2);assert(h.logs.every(x=>x.counts.compiled===0));
+});
+
+test('malformed independent population evidence cannot fall through to generic approval',async()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),p=F.workspace();p.currentDate='2026-11-10';p.workspaceVersion='current';
+  const action=F.plan([F.select('rows',[[F.where('f_value','gte',15000)]]),F.update('priority','rows','f_priority','High')]);
+  const h=harness(()=>({assistantMessage:'Review.',memoryNote:null,crmAction:action}),
+    ()=>assert.fail('Malformed independent intent cannot authorize generic fallback'),undefined,()=>({}));
+  const response=await h.plan({userCommand:'Classify all priorities above and below 15000.',pipeline:p});
+  assert.equal(response.outcome,'validation_failed');assert.equal(response.crmAction,null);
+  assert.equal(h.calls.filter(c=>c.name==='pipechat_conditional_classification_intent').length,2);
+});
 function numericFixture(){
   const payload=fixture(),p=payload.pipeline;
   payload.userCommand='Create a number column called Confidence score. Set Harbor Studio to 12.75 and Cedar Grove to 0. Leave all other cells in the new column blank.';
