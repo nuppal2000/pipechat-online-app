@@ -14,6 +14,8 @@ const workspacePlan = require('./public/workspace-plan.js');
 const actionReview = require('./lib/action-review.js');
 const citationRepair = require('./lib/plan-citation-repair.js');
 const numericIntent = require('./lib/named-numeric-intent.js');
+const classificationIntent = require('./lib/conditional-classification-intent.js');
+const derivedIntent = require('./lib/derived-calculation-intent.js');
 const agentPersona = require('./lib/agent-persona.js');
 const {localStore:localAgentProfileStore} = require('./lib/agent-profile-store.js');
 const actionJournalContext = require('./lib/action-journal-context.js');
@@ -1058,8 +1060,23 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
       grounded.lifecycle=computed.lifecycle;
       stage='review';
       const reviewInput={userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed};
+      // Read intent without the candidate plan or its prose, then compare the
+      // complete requested population against authenticated execution evidence.
+      for(const [name,checker] of [['conditional_classification',classificationIntent],['derived_calculation',derivedIntent]]){
+        if(coverage||!checker.eligible(result.crmAction))continue;
+        const input=checker.input(payload),schema=checker.schemaFor(pipeline);
+        if(!input||!schema)continue;
+        const intent=await runStructuredReview({name:'pipechat_'+name+'_intent',schema,
+          instructions:checker.instructions,input},startedAt,payload);
+        if(intent?.completeIntent===false)continue;
+        const assessment=checker.assess(intent,result.crmAction,{pipeline,computed});
+        const exact=assessment.complete===true&&assessment.ok===true;
+        review={requirements:[],issues:exact?[]:assessment.issues?.length?assessment.issues:
+          ['The complete requested population and operation must match the proposed plan. Preserve unknown values and include requested coverage.'],clarificationQuestion:null};
+        coverage={ok:exact,requested:assessment.requested??1,compiled:exact?(assessment.compiled??assessment.requested??1):0,mappingIssues:[]};
+      }
       const numericInput=numericIntent.eligible(result.crmAction)&&numericIntent.input(payload);
-      if(numericInput){
+      if(!coverage&&numericInput){
         const intent=await runStructuredReview({name:'pipechat_named_numeric_intent',schema:numericIntent.schema,
           instructions:numericIntent.instructions,input:numericInput},startedAt,payload);
         if(intent?.completeIntent===true){
