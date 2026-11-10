@@ -19,6 +19,7 @@ const average={id:'kpi_user_average',title:'Average selected value',metric:'aver
 const percentage={id:'kpi_user_percentage',title:'Missing follow-up percentage',metric:'percentage',field:null,conditions:[],where:[[c('f_follow','is_blank')]],denominatorWhere:[]};
 const fortyNine=Array.from({length:49},(_,i)=>({...records[i%4],id:i+1,f_name:'Record '+(i+1),f_follow:i<25?'':'2026-11-01'}));
 const calculate=(k,rows=records,s=schema,custom=[])=>X.calculate(k,rows,s,custom,today);
+const K=require('./fixtures/scoped-kpis.cjs');
 const reload=value=>Schema.validate(JSON.parse(JSON.stringify(value)));
 const dateSpaces=[' ','\t','\n','\r','\v','\f','\u00a0','\u1680','\u2000','\u2001','\u2002','\u2003','\u2004','\u2005','\u2006','\u2007','\u2008','\u2009','\u200a','\u2028','\u2029','\u202f','\u205f','\u3000','\ufeff'];
 
@@ -53,9 +54,10 @@ function invalidDefinitions(){
 function invalidReferences(){
   return [
     {...average,field:'missing'}, {...average,field:'f_name'},
+    {...average,metric:'median',field:'f_name'},{...average,metric:'median',field:null},
     {...average,metric:'count'},
     ...[
-      c('missing','equals','x'),c('constructor','equals','x'),c('f_follow','is_blank',''),
+      c('missing','equals','x'),c('constructor','equals','x'),c('f_follow','is_blank',''),c('f_follow','is_dated','today'),c('f_score','is_dated'),
       c('f_follow','before_today',1),c('f_name','before_today'),c('f_status','older_than_days',2),
       c('f_follow','older_than_days',-1),c('f_follow','older_than_days',1.5),c('f_follow','older_than_days',36501),
       c('f_follow','older_than_days','2'),c('f_value','gt','100'),c('f_name','gt',1),
@@ -155,6 +157,60 @@ test('legacy defaults, dynamic today, custom columns, date comparisons and store
   assert.deepEqual(converted.dropped,[average.title]);
 });
 
+test('F03: scoped percentages reject a shadowing OR proposal; saved refinements follow row edits',()=>{
+  const id='kpi_user_refinement',make=input=>X.addKpi(schema,[],id,input).after;
+  const {cohort,blank,rows}=K,den=[[cohort]],union=[[cohort],[blank]];
+  assert.throws(()=>make(K.ratio('Missing',den,union)),/already includes the entire denominator/);
+  const flat={title:'Missing',metric:'percentage',field:null,conditions:[],where:union,denominatorWhere:den};
+  assert.throws(()=>make(flat),/entire denominator/);
+  const card=make(K.missing),summary=X.summarize(card,rows,schema,[],today);
+  assert.deepEqual([summary.numeratorCount,summary.denominatorCount,summary.displayValue],[2,6,'33.33%']);
+  assert.deepEqual(summary.selection,{populationWhere:den,withinPopulationWhere:[[blank]],populationCoverageProven:false,shadowedAlternatives:[]});
+  const edited=rows.map((row,i)=>i===0?{...row,f_follow:today}:row);
+  assert.deepEqual(calculate(card,edited),{value:1/6*100,type:'percentage',count:1,numeratorCount:1,denominatorCount:6});
+  const actualFull=X.summarize(card,rows.map(row=>({...row,f_follow:''})),schema);
+  assert.equal(actualFull.value,100);assert.equal(actualFull.selection.populationCoverageProven,false);
+  // A knowingly inclusive union (and any preexisting saved definition) stays literal.
+  const full=make(K.ratio('Whole cohort',den,union,'entire_population'));
+  assert.deepEqual(full.where,union);assert.equal(calculate(full,rows).value,100);
+  assert.deepEqual(X.summarize(full,rows,schema).selection.shadowedAlternatives,[1]);
+  assert.deepEqual(X.configure({...schema,kpis:[full]},[],id,{...flat,title:'Renamed'}).after.where,union);
+  const both=[[cohort],[c('f_name','starts_with','Outside')]];
+  const legitimate=make(K.ratio('Cohort or blanks',both,union));
+  assert.deepEqual(legitimate.where,union);assert.equal(calculate(legitimate,edited).numeratorCount,7);
+  assert.throws(()=>make(K.ratio('Not the whole denominator',both,union,'entire_population')),/do not establish/);
+  const local=make(K.ratio('Blank cohort or low score',both,[[cohort,blank],[c('f_score','lt',1)]]));
+  assert.equal(calculate(local,rows).numeratorCount,2); // overlapping branches count each row once
+  const twoGroups=K.ratio('Shadowed',both,[...both,[blank]]);
+  assert.throws(()=>make(twoGroups),/entire denominator/);
+});
+
+test('F09: add the true median and dated overdue percentage atomically, preserving definitions',()=>{
+  const schemaBefore={...schema,kpis:[average]},ids=['kpi_user_median','kpi_user_overdue'],inputs=[K.median,K.late];
+  const snapshot=structuredClone({schemaBefore,inputs,rows:K.rows});
+  const change=X.addKpis(schemaBefore,[],ids,inputs),cards=X.kpis(reload(change.tableSchema)).slice(-2);
+  assert.deepEqual(cards,change.after);assert.deepEqual(change.tableSchema.kpis[0],average);
+  const [middle,late]=cards,summary=X.summarize(middle,K.rows,schema,[],today);
+  assert.deepEqual([summary.metric,summary.type,summary.value,summary.count,summary.numericCount],['median','currency',12000,6,5]);
+  assert.equal(calculate({...middle,metric:'average'},K.rows).value,14000);
+  assert.deepEqual(calculate(late,K.rows),{value:50,type:'percentage',count:2,numeratorCount:2,denominatorCount:4});
+  assert.equal(calculate(late,K.rows.map(r=>({...r,f_follow:today}))).value,0);
+  assert.equal(calculate(late,K.rows.map(r=>({...r,f_follow:''}))).value,null);
+  const legacyRows=['',null,'TBD','February 30, 2026','October 20, 2026','Today',today,'2027-01-01'].map((follow,i)=>({id:i+1,account:'X',follow}));
+  const legacyRatio=K.ratio('Dated legacy follow-ups',[[c('follow','is_dated')]],[[c('follow','before_today')]]);
+  assert.deepEqual(calculate(X.addKpi(null,[],'kpi_user_legacy_rate',legacyRatio).after,legacyRows,null),
+    {value:25,type:'percentage',count:1,numeratorCount:1,denominatorCount:4});
+  for(const [values,value] of [[[2,10,-6,0],1],[[1.25,2.5],1.875],[['0',null,' ','bad'],0],[[null,'',false],null],[[],null]]){
+    const rows=values.map(v=>({...K.rows[0],f_score:v}));
+    assert.equal(calculate({...middle,field:'f_score'},rows).value,value);
+  }
+  for(const bad of [[K.median,{...K.late,title:K.median.title}],[K.median,{...K.median,field:'f_name'}],[K.median,K.ratio('Invalid',[[K.cohort]],[[K.cohort],[K.blank]])],[K.median,{title:'No scope',metric:'count',conditions:[],field:null}]]){
+    assert.throws(()=>X.addKpis(schemaBefore,[],ids,bad));
+  }
+  assert.throws(()=>X.addKpis(schemaBefore,[],[ids[0],ids[0]],inputs));
+  assert.deepEqual({schemaBefore,inputs,rows:K.rows},snapshot);
+});
+
 test('malformed, ambiguous, unbounded and malicious definitions fail before evaluation or persistence',()=>{
   for(const bad of invalidDefinitions()){
     assert.throws(()=>Schema.validateKpis([bad]),undefined,JSON.stringify(bad));
@@ -194,10 +250,17 @@ test('024 full local migration chain preserves saved KPIs and ACLs, validates JS
   assert.deepEqual((await db.query(aclSql)).rows,beforeAcl);assert.deepEqual(await read(),before);
   await run('migrations/024-kpi-scopes.sql');
   assert.deepEqual((await db.query(aclSql)).rows,beforeAcl);assert.deepEqual(await read(),before);
-  for(const name of files.filter(name=>name>'024-kpi-scopes.sql'))await run('migrations/'+name);
+  const medianMigration='027-saved-kpi-median.sql';assert(files.includes(medianMigration));
+  for(const name of files.filter(name=>name>'024-kpi-scopes.sql')){
+    if(name===medianMigration){
+      const acl=(await db.query(aclSql)).rows,existing=await read();
+      await run('migrations/'+name);await run('migrations/'+name);
+      assert.deepEqual((await db.query(aclSql)).rows,acl);assert.deepEqual(await read(),existing);
+    }else await run('migrations/'+name);
+  }
   await run('tests/security.sql');
   const sqlValidate=async (definitions,defs=null)=>(await db.query('select pipechat.validate_kpis($1::jsonb,$2::jsonb) result',[JSON.stringify(definitions),defs===null?null:JSON.stringify(defs)])).rows[0].result;
-  const defs=core.definitions([]),valid=[legacy,average,percentage,{...average,where:[[c('f_name','starts_with','North')]]},
+  const defs=core.definitions([]),valid=[legacy,average,percentage,{...legacy,metric:'median'},{...K.median,id:'kpi_user_middle'},{...average,where:[[c('f_name','starts_with','North')]]},
     {...percentage,denominatorWhere:[[c('f_status','equals','Open')]]},
     {...legacy,conditions:[c('f_follow','lt','October 20, 2026')]},
     {...average,where:[[c('f_name','equals',"x'); drop table auth.users; --")]]},
@@ -207,7 +270,7 @@ test('024 full local migration chain preserves saved KPIs and ACLs, validates JS
     {...average,title:'\ud83d\ude00'.repeat(60),where:[[c('f_name','equals','x'.repeat(12000))]]}
   ];
   for(const leaf of [c('f_status','starts_with','Op'),c('f_value','equals',0),c('f_value','not_equals',0),
-    c('f_name','is_blank'),c('f_follow','is_not_blank'),c('f_follow','before_today'),c('f_follow','older_than_days',0),
+    c('f_name','is_blank'),c('f_follow','is_not_blank'),c('f_follow','is_dated'),c('f_follow','before_today'),c('f_follow','older_than_days',0),
     c('f_follow','older_than_days',36500),c('f_value','gt',0),c('f_value','gte',0),c('f_value','lt',0),c('f_value','lte',0),
     c('f_follow','gt','2026-10-26'),c('f_follow','equals','today')]){
     valid.push({...legacy,conditions:[leaf]},{...percentage,denominatorWhere:[[leaf]]});
@@ -241,6 +304,17 @@ test('024 full local migration chain preserves saved KPIs and ACLs, validates JS
   const edited=loaded.deals.map((row,i)=>i<4?{...row,f_follow:'2026-10-27'}:row);
   saved=await write(edited,loaded.tableSchema,loaded.updatedAt);
   assert.equal(calculate(card,(await read()).deals).value,21/49*100);
+  const batch=X.addKpis(saved.tableSchema,[],['kpi_user_middle','kpi_user_late','kpi_user_blank'],[K.median,K.late,K.missing]);
+  saved=await write(saved.deals,batch.tableSchema,saved.updatedAt);
+  saved=await write(K.rows,saved.tableSchema,saved.updatedAt);
+  const fetched=await read(),[middle,late,missing]=X.kpis(fetched.tableSchema).slice(-3);
+  assert.deepEqual(fetched.tableSchema.kpis,batch.tableSchema.kpis);
+  assert.equal(calculate(middle,fetched.deals).value,12000);assert.equal(calculate(late,fetched.deals).value,50);
+  assert.equal(calculate(missing,fetched.deals).value,2/6*100);
+  saved=await write(fetched.deals.map((row,i)=>i===0?{...row,f_value:32000,f_follow:today}:row),saved.tableSchema,saved.updatedAt);
+  const refreshed=await read();assert.deepEqual(refreshed.tableSchema,fetched.tableSchema);
+  assert.equal(calculate(middle,refreshed.deals).value,20000);assert.equal(calculate(late,refreshed.deals).value,40);
+  assert.equal(calculate(missing,refreshed.deals).value,1/6*100);
   const fourRows=[...records];saved=await write(fourRows,saved.tableSchema,saved.updatedAt);
   const averageLoaded=X.kpis((await read()).tableSchema).find(k=>k.id===average.id);
   assert.equal(calculate(averageLoaded,(await read()).deals).value,8500);

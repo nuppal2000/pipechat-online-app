@@ -206,6 +206,27 @@ test('AI can add and delete KPI cards with previews, cancel, undo, reload and un
   h.reply({action:'delete_kpi',kpiId:'kpi_records'});await h.send('Delete Records');await h.confirmDraft();h.useSchema(plain(h.S.tableSchema));assert(!Customize.kpis(h.S.tableSchema).some(k=>k.id==='kpi_records'));assert.deepEqual(plain(h.S.records),records);
   await h.undo();assert(Customize.kpis(h.S.tableSchema).some(k=>k.id==='kpi_records'));
 });
+test('saved multi-KPI add previews full populations, cancels without writes, and confirms both cards once',async()=>{
+  const h=harness(),K=require('./fixtures/scoped-kpis.cjs');
+  const table={...schema,fields:[schema.fields[0],{...schema.fields[1],id:'f_value',type:'currency',name:'Value'},
+    {id:'f_follow',name:'Follow-up',role:'followup',type:'date',options:[]}],kpis:[{id:'kpi_user_kept',title:'Existing count',field:null,conditions:[],metric:'count'}]};
+  h.useSchema(table);h.S.records=structuredClone(K.rows);h.S.search='Outside';const before=plain(Customize.kpis(table));
+  const action={action:'add_kpis',kpis:[K.median,K.late]};h.reply(action);await h.send('Add both KPI cards');
+  assert.equal(h.S.pending.kind,'add-kpis');assert.equal(h.S.tab,'dashboard');h.renderTrust();
+  const preview=h.node('trustBody').innerHTML;assert.match(preview,/Median deal value: \$12,000/);assert.match(preview,/2 \/ 4 records/);
+  assert.equal((preview.match(/data-confirm/g)||[]).length,1);
+  const writes=()=>h.calls.filter(c=>c.url==='/api/crm-data');
+  h.cancelDraft();assert.equal(writes().length,0);assert.deepEqual(plain(Customize.kpis(h.S.tableSchema)),before);
+  h.prepare(action);h.S.revision++;await h.confirmDraft();assert.equal(writes().length,0);
+  h.prepare(action);await h.confirmDraft();assert.equal(writes().length,1);
+  assert.deepEqual(plain(h.S.records),K.rows);h.useSchema(plain(h.S.tableSchema));
+  const cards=Customize.kpis(h.S.tableSchema);assert.deepEqual(plain(cards.slice(0,-2)),before);
+  assert.deepEqual(plain(cards.slice(-2).map(k=>k.metric)),['median','percentage']);
+  h.renderDashboardKpis([]);assert.match(h.node('.metrics').innerHTML,/\$12,000/);assert.match(h.node('.metrics').innerHTML,/50%/);
+  h.S.records[0].f_follow='2000-01-01';h.S.records[0].f_value=32000;
+  h.renderDashboardKpis([]);assert.match(h.node('.metrics').innerHTML,/\$20,000/);assert.match(h.node('.metrics').innerHTML,/60%/);
+});
+
 test('All records clears AI filters, search and owner scope without editing or charging',()=>{
   const h=harness();h.S.scope='mine';h.S.search='nothing';h.S.filter={field:'f_status',operator:'equals',value:'Warm'};h.node('dealSearch').value='nothing';
   assert.equal(h.visible().length,0);h.selectScope('all');assert.equal(h.visible().length,2);assert.equal(h.S.filter,null);assert.equal(h.S.search,'');assert.equal(h.node('dealSearch').value,'');assert.equal(h.calls.length,0);

@@ -17,4 +17,14 @@ test('one workspace transaction saves schema, cells and tasks; late errors roll 
   await assert.rejects(()=>write(a,proposed),e=>e.code==='PT409');assert.deepEqual(await read(a),saved);
   saved=await write(a,{...original,updatedAt:saved.updatedAt});assert.deepEqual(saved.deals,original.deals);assert.deepEqual(saved.customFields,original.customFields);assert.deepEqual(saved.todoCards,original.todoCards);assert.deepEqual(saved.tableSchema,original.tableSchema);
   assert.deepEqual(await read(b),other);assert.deepEqual((await db.query('select * from pipechat.usage_counters')).rows,quota);await run('tests/security.sql');
+  await t.test('numeric custom definition and dependent cells commit or roll back together and reload as JSON numbers',async()=>{
+    const field={id:'cf_signed',name:'Signed change',type:'number'};
+    const proposed={...saved,customFields:[field],deals:saved.deals.map((row,i)=>({...row,[field.id]:[0,-12.125,50][i]??null}))};
+    const invalid=structuredClone(proposed);invalid.deals.at(-1)[field.id]='invalid';
+    await assert.rejects(()=>write(a,invalid),e=>e.code==='PT400');assert.deepEqual(await read(a),saved);
+    await write(a,proposed);
+    const reloaded=await read(a);assert.deepEqual(reloaded.customFields,[field]);
+    assert.deepEqual(reloaded.deals.map(r=>r[field.id]),[0,-12.125,50,null,null,null]);
+    assert.deepEqual(await read(b),other);
+  });
 });
