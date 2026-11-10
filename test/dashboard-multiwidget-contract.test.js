@@ -7,6 +7,7 @@ const Review=require('../lib/action-review'),Conversation=require('../lib/conver
 const Customize=require('../public/workspace-customization');
 const F=require('./fixtures/workspace-plans.cjs');
 const today='2026-10-23';
+const retainedKpiIds=['kpi_records','kpi_f_value','kpi_followup','kpi_owner','kpi_user_retained'].map(id=>'unchanged:kpi:'+id);
 const spec=(metric,extra={})=>({version:1,title:metric+' by stage',chart:'bar',scope:'all',groupBy:'f_stage',
   bucket:'none',splitBy:null,where:[],sort:'label_asc',limit:null,
   measures:[{label:metric,metric,field:metric==='count'?null:'f_value',where:[]}],...extra});
@@ -51,7 +52,7 @@ for(const [command,questions] of [
     requirement('Separate graphs',['separate_graphs'],['graph:stage_counts','graph:stage_average']),
     requirement('Retain existing card',['unchanged_graphs'],['unchanged:graph:existing_kpi'])],issues:[],clarificationQuestion:null};
   const allowed=Review.schemaFor(action,context).properties.requirements.items.properties.stepIds.items.enum;
-  assert.deepEqual([...allowed].sort(),['root','graph:existing_kpi','graph:stage_counts','graph:stage_average','unchanged:graph:existing_kpi','lifecycle:preview_only'].sort());
+  assert.deepEqual([...allowed].sort(),['root','graph:existing_kpi','graph:stage_counts','graph:stage_average','unchanged:graph:existing_kpi','lifecycle:preview_only',...retainedKpiIds].sort());
   assert(review.requirements.every(item=>item.stepIds.every(id=>allowed.includes(id))));
   assert.deepEqual(Review.validateReview(review,result,context),{ok:true,requested:4,compiled:4,mappingIssues:[]});
   for(const stepIds of [['root'],['graph:existing_kpi'],[]]){
@@ -177,7 +178,7 @@ test('review schema uses the supplied persisted board for updates and analysis, 
   const result={crmAction:action},computed=Review.evidence({pipeline},result),context={pipeline,computed};
   assert.equal(computed.displayed[1].summaries[0].metric,'sum');
   const allowed=Review.schemaFor(action,context).properties.requirements.items.properties.stepIds.items.enum;
-  assert.deepEqual(allowed,['root','graph:stage_counts','graph:stage_average','unchanged:graph:stage_counts','lifecycle:preview_only']);
+  assert.deepEqual(allowed,['root','graph:stage_counts','graph:stage_average','unchanged:graph:stage_counts','lifecycle:preview_only',...retainedKpiIds]);
   const review={requirements:[requirement('Updated total',['sum','groups'],['graph:stage_average']),
     requirement('Retain counts',['unchanged_graphs'],['unchanged:graph:stage_counts'])],issues:[],clarificationQuestion:null};
   assert.equal(Review.validateReview(review,result,context).ok,true);
@@ -189,7 +190,7 @@ test('review schema uses the supplied persisted board for updates and analysis, 
   assert.equal(Review.validateReview(review,{crmAction:analysis},{pipeline}).ok,false);
   const remove={action:'dashboard_plan',operations:[{op:'remove',ids:['stage_average']}],questions:[]};
   const removed={pipeline,computed:Review.evidence({pipeline},{crmAction:remove})};
-  assert.deepEqual(Review.schemaFor(remove,removed).properties.requirements.items.properties.stepIds.items.enum,['root','graph:stage_counts','unchanged:graph:stage_counts','lifecycle:preview_only']);
+  assert.deepEqual(Review.schemaFor(remove,removed).properties.requirements.items.properties.stepIds.items.enum,['root','graph:stage_counts','unchanged:graph:stage_counts','lifecycle:preview_only',...retainedKpiIds]);
   assert.equal(Review.validateReview(review,{crmAction:remove},removed).ok,false);
   const malformed={action:'dashboard_plan',operations:[{op:'update',ids:['missing'],mode:'add_filter',where:[],replaceFields:[],changes:[]}],questions:[]};
   assert.throws(()=>Review.evidence({pipeline},{crmAction:malformed}),/existing graph/);

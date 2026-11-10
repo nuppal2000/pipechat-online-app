@@ -3,6 +3,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const Board=require('../public/dashboard-board'),Core=require('../public/pipeline-core');
 const Read=require('../lib/read-output-contract'),Review=require('../lib/action-review');
+const Customize=require('../public/workspace-customization');
 const F=require('./fixtures/workspace-plans.cjs');
 
 const first='Show a stage chart of total deal value by stage and a KPI chart of average deal value for QA1105 deals';
@@ -199,4 +200,65 @@ test('shared source intersects base and common measure predicates, never percent
   assert.equal(share.views[1].snapshot.summaries[0].value,50);
   assert.deepEqual(share.board.elements[1].spec.measures[0].where,prefix);
   assert.throws(()=>apply(w,plan({fromAdd:'owner_count'},average()),scoped.board),/unique new graph/);
+});
+
+const savedCardsCommand='For deals beginning QA1105 only, plot total Deal Value grouped by Stage and put the mean Deal Value in a temporary KPI next to it. Do not modify saved cards.';
+const ownerCountCommand='For the six QA1105 deals, display three separate charts side by side: a bar for how many accounts each owner has, a line for summed deal value by stage, and a bar for mean deal size per owner.';
+function existing(w){
+  return apply(w,plan(null,total('line'),count(),{op:'set_shared_filter',id:'ben',targets:['owner_count'],where:where('f_owner','equals','Ben')}));
+}
+
+test('F04 existing board: '+savedCardsCommand,()=>{
+  const w=workspace(),prior=existing(w);
+  w.tableSchema=Customize.addKpi(w.tableSchema,[],'kpi_user_saved',{title:'Saved value',metric:'sum',field:'f_value',conditions:[]}).tableSchema;
+  const before=structuredClone({w,board:prior.board}),saved=Customize.kpis(w.tableSchema,[]);
+  const a=F.plan([{id:'charts',label:'Show temporary charts without changing saved cards',op:'dashboard',
+    plan:plan(cohort('QA1105'),add('requested_total','bar','sum','f_stage'),average())}]);
+  const ids=['charts/graph:requested_total','charts/graph:mean'];
+  const computed=checked(w,savedCardsCommand,a,[req('Stage total',['sum','groups'],[ids[0]]),req('Mean KPI',['average'],[ids[1]]),
+    req('Separate temporary widgets',['separate_widgets'],ids),req('Leave all saved cards unchanged',['unchanged_kpis'],saved.map(k=>'unchanged:kpi:'+k.id),'constraint')],prior.board);
+  assert.equal(computed.mutates,false);
+  assert.deepEqual(computed.effects.map(e=>e.kind),['dashboard']);
+  const views=Board.evaluate(computed.effects[0].board,w.records,Core.create(w.tableSchema),[],{today:w.currentDate});
+  assert.deepEqual(views.slice(0,2),prior.views);
+  assert.deepEqual(views.slice(2).map(v=>[v.spec.chart,v.snapshot.recordCount,v.snapshot.summaries[0].value]),[['bar',6,70000],['kpi',6,14000]]);
+  assert.deepEqual({w,board:prior.board},before);
+  assert.match(Review.compilerInstructions,/workspace_plan dashboard step.*unchanged saved-card definitions/);
+  const direct=a.steps[0].plan, directIds=['graph:requested_total','graph:mean'];
+  const verified=checked(w,savedCardsCommand,direct,[req('Stage total',['sum','groups'],[directIds[0]]),
+    req('Mean KPI',['average'],[directIds[1]]),req('Separate temporary widgets',['separate_widgets'],directIds),
+    req('Leave all saved cards unchanged',['unchanged_kpis'],saved.map(k=>'unchanged:kpi:'+k.id),'constraint')],prior.board);
+  assert.deepEqual(verified.board.elements.slice(0,2),prior.board.elements);
+});
+
+test('F08 existing board: '+ownerCountCommand,()=>{
+  const w=workspace(),prior=existing(w),a=plan(cohort('QA1105'),
+    add('requested_count','bar','count','f_owner'),add('requested_total','line','sum','f_stage'),byOwner());
+  const ids=a.operations.map(op=>'graph:'+op.id);
+  const computed=checked(w,ownerCountCommand,a,[req('How many accounts each owner has',['count','groups'],[ids[0]]),
+    req('Summed deal value by stage',['sum','groups'],[ids[1]]),req('Mean deal size per owner',['average','groups'],[ids[2]]),
+    req('Three separate plotted charts',['separate_graphs'],ids)],prior.board);
+  assert.deepEqual(computed.board.elements.slice(0,2),prior.board.elements);
+  assert.deepEqual(computed.board.sharedFilters,prior.board.sharedFilters);
+  const views=Board.evaluate(computed.board,w.records,Core.create(w.tableSchema),[],{today:w.currentDate}).slice(2);
+  assert.deepEqual(views.map(v=>[v.spec.chart,v.snapshot.recordCount]),[['bar',6],['line',6],['bar',6]]);
+  assert.deepEqual(views[0].result.datasets[0].values,[3,2,1]);assert.deepEqual(views[1].result.datasets[0].values,[null,30000,40000]);
+  assertOwners(views[2]);
+});
+
+test('new chart measure schema admits only field/metric pairs the report executor supports',()=>{
+  const w=workspace(),core=Core.create(w.tableSchema);
+  const branches=Board.schemas(core)[0].properties.operations.items.anyOf.find(op=>op.properties.op.enum.includes('add'))
+    .properties.spec.properties.measures.items.anyOf;
+  const allowed=(metric,field)=>branches.some(({properties:p})=>p.metric.enum.includes(metric)&&
+    (p.field.type==='null'?field===null:p.field.enum.includes(field)));
+  for(const metric of ['count','percentage','count_distinct','average','sum','median','min','max']){
+    for(const field of [null,'f_deal','f_value','missing']){
+      const op=count();op.spec.measures=[{metric,label:metric,field,where:[]}];
+      const run=()=>apply(w,plan(cohort('QA1105'),op));
+      const valid=['count','percentage'].includes(metric)?field===null:field==='f_value'||metric==='count_distinct'&&field==='f_deal';
+      assert.equal(allowed(metric,field),valid,metric+':'+field);
+      if(valid)assert.doesNotThrow(run);else assert.throws(run);
+    }
+  }
 });
