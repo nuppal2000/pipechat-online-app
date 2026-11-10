@@ -39,6 +39,7 @@ function harness(action,reviewer){
       if(name==='./lib/action-review.js')return {...Review,evidence:(payload,result)=>{
         const normalized=copy(payload),computed=Review.evidence(normalized,copy(result));pipelines.set(computed,normalized.pipeline);return computed;
       },schemaFor:(action,context)=>Review.schemaFor(copy(action),boundContext(context)),
+      allowedStepIdsFor:(action,context)=>Review.allowedStepIdsFor(copy(action),boundContext(context)),
       validateReview:(review,result,context)=>Review.validateReview(copy(review),copy(result),boundContext(context))};
       return localRequire(name);
     },

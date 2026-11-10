@@ -258,7 +258,7 @@ function modelWireHarness(){
   const section=(from,to)=>{const a=serverSource.indexOf(from),b=serverSource.indexOf(to);assert(a>=0&&b>a);return serverSource.slice(a,b);};
   vm.runInContext(section('const reportInstructions =','const csvImportCore ='),model);
   vm.runInContext(section('const actionSchema =','function sendJson('),model);
-  vm.runInContext(section('async function reviewCompiledAction(','async function prepareConversation(')+
+  vm.runInContext(section('async function runStructuredReview(','async function prepareConversation(')+
     ';globalThis.plan=planPipeChatActionCore;globalThis.review=reviewCompiledAction;',model);
   return {bodies,stop,model};
 }

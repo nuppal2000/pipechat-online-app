@@ -35,7 +35,7 @@ test('canonical materialized preservation IDs reach the review schema and satisf
   const ids=[invariant('by_stage'),invariant('value_by_stage')];
   assert.deepEqual(invariants(action,context),ids);
   assert.deepEqual(context.computed.preservation.evidenceIds,ids);
-  const allowed=Review.schemaFor(action,context).properties.requirements.items.properties.stepIds.items.enum;
+  const allowed=Review.allowedStepIdsFor(action,context);
   assert(ids.every(id=>allowed.includes(id)));
   assert.equal(supports(action,context,...ids),true);
   assert.equal(review(action,context,requirement(ids)).ok,true);

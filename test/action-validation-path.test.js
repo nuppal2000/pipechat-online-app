@@ -26,7 +26,7 @@ function contact(){return {assistantMessage:'The company and deal are one combin
     {op:'link',typeId:'people_deals',from:{source:'alias',key:'person'},to:{source:'primary',key:Workspace.legacyId(wid,1)}}]}};}
 const requirement=(description,evidenceKind='compiled_action',satisfied=true,stepIds=['root'])=>({description,evidenceKind,satisfied,stepIds});
 const review=requirements=>({requirements,issues:[],clarificationQuestion:null});
-function harness(planner,reviewer){
+function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected named numeric intent request')){
   const evidencePipelines=new WeakMap();
   const calls=[],logs=[],assertions=[],context={__dirname:path.dirname(serverPath),Buffer,URL,structuredClone,AbortController,AbortSignal,setTimeout,clearTimeout,
     console:{log:line=>logs.push(JSON.parse(line)),warn:line=>logs.push(JSON.parse(line))},
@@ -39,7 +39,13 @@ function harness(planner,reviewer){
         if(payload.pipeline.recordHistories instanceof Map)Object.defineProperty(normalized.pipeline,'recordHistories',{value:payload.pipeline.recordHistories});
         const computed=Review.evidence(normalized,copy(result));evidencePipelines.set(computed,normalized.pipeline);return computed;
       },schemaFor:(action,context)=>Review.schemaFor(copy(action),{...context,pipeline:evidencePipelines.get(context.computed)||context.pipeline}),
+      allowedStepIdsFor:(action,context)=>Review.allowedStepIdsFor(copy(action),{...context,pipeline:evidencePipelines.get(context.computed)||context.pipeline}),
       validateReview:(review,result,context)=>Review.validateReview(copy(review),copy(result),{...context,pipeline:evidencePipelines.get(context.computed)||context.pipeline})};
+      if(name==='./lib/named-numeric-intent.js'){
+        const numeric=localRequire(name);
+        return {...numeric,eligible:action=>numeric.eligible(copy(action)),
+          matches:(intent,action,context)=>numeric.matches(copy(intent),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
+      }
       if(name==='./lib/conversation-core.js'){
         const core=localRequire(name);return {...core,validateState:input=>core.validateState(copy(input)),contextFor:(page,command,recalled)=>core.contextFor(copy(page),command,copy(recalled))};
       }
@@ -48,9 +54,9 @@ function harness(planner,reviewer){
     fetch:async(url,options)=>{
       assert.equal(url,'https://api.openai.com/v1/responses');
       const body=JSON.parse(options.body),input=JSON.parse(typeof body.input==='string'?body.input:body.input[0].content[0].text);
-      const isReview=body.text.format.name==='pipechat_action_review';calls.push({body,input,isReview});
+      const name=body.text.format.name,isReview=name==='pipechat_action_review';calls.push({name,body,input,isReview});
       let result;
-      try{result=await (isReview?reviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
+      try{result=await (isReview?reviewer:name==='pipechat_named_numeric_intent'?numericReviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
       return {ok:true,json:async()=>({output_text:JSON.stringify(result)})};
     }};
   const startup=source.lastIndexOf('start().catch(');assert(startup>0);
@@ -60,6 +66,66 @@ function harness(planner,reviewer){
     return context.turnTest(req,...args);
   },plan:async payload=>{try{return await context.planTest(payload,{tier:'complex',model:'gpt-5.2',reason:'offline_test'});}finally{if(assertions.length)throw assertions[0];}}};
 }
+
+const plannerFormat='pipechat_response',numericFormat='pipechat_named_numeric_intent',genericFormat='pipechat_action_review';
+function numericFixture(){
+  const payload=fixture(),p=payload.pipeline;
+  payload.userCommand='Create a number column called Confidence score. Set Harbor Studio to 12.75 and Cedar Grove to 0. Leave all other cells in the new column blank.';
+  payload.conversationHistory=[{role:'assistant',content:'PRIVATE_HISTORY_SENTINEL'}];
+  p.records=['Cedar Grove','PRIVATE_OUTSIDER_SENTINEL','Harbor Studio'].map((f_deal,i)=>({...p.records[0],id:i+1,f_deal,f_notes:'PRIVATE_CELL_SENTINEL'}));
+  p.visibleIds=[2];
+  return payload;
+}
+const numericProposal=(harbor,cedar)=>({assistantMessage:'PRIVATE_PROPOSAL_SENTINEL',memoryNote:null,
+  crmAction:{action:'scoped_table_request',title:'Add confidence scores',source:'all',where:[],operation:{kind:'add_named_numbers',name:'Confidence score',
+    entries:[{recordName:'Harbor Studio',value:harbor},{recordName:'Cedar Grove',value:cedar}]}}});
+const numericIntent=()=>({completeIntent:true,fieldName:'Confidence score',assignments:[{name:'Harbor Studio',value:12.75},{name:'Cedar Grove',value:0}],
+  leaveOthersBlank:true,otherRequestedWork:false,ambiguity:false});
+
+test('named numeric intent receives only the user command and approves the exact decimal/zero preview',async()=>{
+  const payload=numericFixture(),before=copy(payload.pipeline);
+  const h=harness(()=>numericProposal(12.75,0),()=>assert.fail('An exact numeric preview does not need generic review'),(input,body)=>{
+    assert.deepEqual(input,{userCommand:payload.userCommand});
+    assert.equal(body.text.format.strict,true);
+    assert.doesNotMatch(JSON.stringify(body),/PRIVATE_(?:HISTORY|OUTSIDER|CELL|PROPOSAL)_SENTINEL/);
+    return numericIntent();
+  });
+  const response=await h.plan(payload);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat]);
+  assert.equal(response.crmAction?.action,'workspace_plan');assert.deepEqual(copy(response.coverage),{requested:3,compiled:3});
+  assert.equal(response.lifecycle.requiresConfirmation,true);assert.equal(response.lifecycle.writesApplied,0);
+  const {records,customFields,tableSchema,todoCards}=payload.pipeline;
+  const preview=require('../public/workspace-plan').prepare({records,customFields,tableSchema,todoCards},copy(response.crmAction),{nonce:'client',visibleIds:[2]});
+  const [column]=preview.addedFields;assert.equal(column.name,'Confidence score');assert.equal(column.type,'number');
+  assert.deepEqual(preview.next.records,records.map((row,i)=>({...row,[column.id]:[0,null,12.75][i]})));
+  assert.deepEqual(payload.pipeline,before);
+});
+
+test('named numeric intent blocks swapped values on both attempts without generic approval',async()=>{
+  const payload=numericFixture(),before=copy(payload.pipeline);
+  const h=harness(()=>numericProposal(0,12.75),()=>assert.fail('A mismatched complete intent cannot fall back to generic approval'),numericIntent);
+  const response=await h.plan(payload);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat,plannerFormat,numericFormat]);
+  assert.equal(response.outcome,'validation_failed');assert.equal(response.crmAction,null);assert.equal(response.computedAnswer,undefined);
+  assert.deepEqual(h.logs.map(l=>[l.attempt,l.stage,l.counts.requested,l.counts.compiled]),[[0,'mapping',3,0],[1,'mapping',3,0]]);
+  assert.deepEqual(payload.pipeline,before);
+});
+
+test('additional work falls through to generic validation; a numeric write cannot satisfy the requested sum',async()=>{
+  const payload=numericFixture();payload.userCommand+=' Also tell me the sum of deal values.';
+  const h=harness(()=>numericProposal(12.75,0),input=>{
+    assert.equal(input.userCommand,payload.userCommand);
+    const defs=input.computed.numericAssignmentEvidence;
+    const numeric=defs.map(p=>({...requirement(p.output,'compiled_action',true,[p.stepId]),requiredOutputs:[p.output]}));
+    const write=defs.find(p=>p.output==='literal_numeric_assignment');
+    return {...review([...numeric,{...requirement('Sum of deal values','computed_read',true,[write.stepId]),requiredOutputs:['sum']}]),
+      answerIntent:'canonical',answerSelection:null};
+  },()=>({completeIntent:false,fieldName:null,assignments:[],leaveOthersBlank:false,otherRequestedWork:true,ambiguity:false}));
+  const response=await h.plan(payload);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat,genericFormat,plannerFormat,numericFormat,genericFormat]);
+  assert.equal(response.outcome,'validation_failed');assert.equal(response.crmAction,null);
+  assert.deepEqual(h.logs.map(l=>[l.counts.requested,l.counts.compiled,l.mappingReasons.no_evidence_action]),[[4,3,1],[4,3,1]]);
+});
 
 test('typed proposal reviewer receives representation disclosure and the same full entity contract',async()=>{
   const payload=fixture(),before=copy(payload),result=contact();
@@ -153,6 +219,29 @@ test('a dashboard citation can be repaired without regenerating its graph or dro
   assert.deepEqual(h.calls.map(c=>c.isReview),[false,true,true]);
   assert.deepEqual(h.calls[1].input.computed,h.calls[2].input.computed);
   assert.equal(h.calls[2].input.citationRepair.requirements[0].stepIds[0],'root');
+});
+
+test('F04v sends the strict element/layout union and accepts its actual mixed review on the first attempt',async()=>{
+  const payload=fixture();payload.userCommand='For QA1105 deals plot total deal value by stage beside a temporary mean KPI. Keep saved cards.';
+  const where=[[{field:'f_deal',operator:'starts_with',value:'QA1105',values:[]}]];
+  const desired=(chart,groupBy,metric)=>({chart,groupBy,scope:'all',bucket:'none',splitBy:null,limit:null,where,
+    measures:[{metric,field:'f_value',where:[]}]});
+  const requested=[desired('plot','f_stage','sum'),desired('kpi',null,'average')],ids=['stage_total','mean'];
+  const operations=requested.map((element,i)=>({op:'add',id:ids[i],spec:{...element,version:1,where:[],chart:i?'kpi':'bar',title:ids[i],
+    sort:'label_asc',measures:element.measures.map(m=>({...m,label:m.metric}))}}));
+  const result={assistantMessage:'Showing both.',memoryNote:null,crmAction:{action:'dashboard_plan',requestScope:{scope:'all',where},operations,questions:[]}};
+  const h=harness(()=>result,(input,body)=>{
+    const item=body.text.format.schema.properties.requirements.items;
+    assert.equal(body.text.format.strict,true);assert(!item.properties);
+    assert(item.anyOf.some(b=>b.properties.element));assert(item.anyOf.some(b=>b.properties.widgetLayout));
+    assert(!item.anyOf.some(b=>b.properties.plottedLayout));assert(input.allowedStepIds.includes('unchanged:kpis'));
+    const claim=(shape,stepIds,requiredOutputs,evidenceKind='computed_read')=>({...shape,...requirement('Requested outcome',evidenceKind,true,stepIds),requiredOutputs});
+    return {...review([claim({element:requested[0]},['graph:stage_total'],['sum','groups']),claim({element:requested[1]},['graph:mean'],['average','scalar_kpi']),
+      claim({widgetLayout:['plot','kpi']},['graph:stage_total','graph:mean'],['separate_widgets']),
+      claim({preserve:'verified_constraint'},['unchanged:kpis'],['unchanged_kpis'],'constraint')]),answerIntent:'canonical',answerSelection:null};
+  });
+  const response=await h.plan(payload);
+  assert.equal(response.coverage.compiled,4);assert.deepEqual(h.calls.map(call=>call.isReview),[false,true]);assert.deepEqual(h.logs,[]);
 });
 
 test('undo turn persists and replays the canonical nine-record preview instead of approved stale model prose',async t=>{
