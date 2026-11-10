@@ -17,9 +17,27 @@ test('F08 weighted pipeline totals 32000 and reports three missing probabilities
   assert.deepEqual(r.selectedRecordIds,[1,2,3,4,5,6]);
   assert.deepEqual([r.coverage.selectedCount,r.coverage.includedCount,r.coverage.excludedCount],[6,3,3]);
   assert.deepEqual(r.coverage.excludedRows.map(r=>[r.recordId,r.missingFields]),[[4,['cf_probability']],[5,['cf_probability']],[6,['cf_probability']]]);
-  assert.match(Calc.describe(r),/SUM.*Probability percent.*\/ 100/);
-  assert.match(Calc.describe(r),/3 of 6.*3 excluded/);assert.match(Calc.describe(r),/Record 4.*cf_probability/);
+  assert.match(Calc.describe(r),/Total: \$32,000\.00/);
+  assert.match(Calc.describe(r),/multiply "Value" by "Probability percent", divide by 100, then add/);
+  assert.match(Calc.describe(r),/3 of 6.*3 excluded/);assert.match(Calc.describe(r),/Record 4.*Probability percent/);
+  assert.doesNotMatch(Calc.describe(r),/cf_probability|SUM\(|half away|#4/);
   assert.deepEqual(rows,before);assert.deepEqual(JSON.parse(JSON.stringify(r)),r);
+});
+
+test('human wording uses factor labels and money formatting while evidence retains exact typed IDs',()=>{
+  const amount='f_7ba65c2e55bd4dafbf4af04dbdf12345',probability='cf_d12aee55cbb84c5789dc1ad9bdf12345';
+  const core={definitions:()=>[{id:amount,name:'Deal Value (USD)',type:'currency'},{id:probability,name:'Probability percent',type:'number'}],role:()=> 'account'};
+  const r=Calc.evaluate([{id:1,account:'Included', [amount]:30000,[probability]:80},{id:2,account:'Excluded', [amount]:10000,[probability]:null}],
+    {kind:'sum_product',factors:[amount,probability],divisor:100},core),before=structuredClone(r);
+  const text=Calc.describe(r);
+  assert.match(text,/Total: \$24,000\.00/);assert.match(text,/Deal Value \(USD\).*Probability percent/);
+  assert.match(text,/Excluded.*missing "Probability percent"/);
+  for(const id of [amount,probability]){assert(!text.includes(id));assert(!r.expressionText.includes(id));}
+  assert.deepEqual(r.expression.factors,[amount,probability]);
+  assert.deepEqual(r.coverage.excludedRows[0].missingFields,[probability]);assert.deepEqual(r,before);
+  assert.match(Calc.describe(calculate([row(1,100,-25)])),/Total: -\$25\.00/);
+  assert.match(Calc.describe(calculate([row(1,100,0)])),/Total: \$0\.00/);
+  assert.match(Calc.describe(calculate([row(1,0,1234.125)],{kind:'sum_product',factors:['cf_probability'],divisor:1})),/Total: 1,234\.125/);
 });
 
 test('divisor is explicit, never inferred from values; zero and negative factors are real data',()=>{

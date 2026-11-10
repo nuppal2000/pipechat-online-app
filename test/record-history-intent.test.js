@@ -31,7 +31,9 @@ for(const [name,question,text] of [
   assert(answer.includes(text));assert(!answer.includes('Unrelated private fact'));assert.equal(computed.mutates,false);
   assert.deepEqual(computed.effects,[{kind:'table',show:false,ids:[1]}]);
   assert.deepEqual(computed.recordReadEvidence,[{stepId:'saved_context',source:'record_history',selection:'selected',
-    outputs:['count','names','fields','history','notes'],recordIds:[1],limits:{total:1,returned:1,omitted:0,truncated:0}}]);
+    outputs:['count','names','fields','history','notes'],recordIds:[1],limits:{total:1,returned:1,omitted:0,truncated:0},
+    selectionChain:[{selectionId:'selected',source:'all',where:[[F.where('f_deal','equals',name)]],relatedTasks:null,
+      orderBy:null,direction:'asc',limit:null,ranking:null,matchedCount:1,recordIds:[1]}]}]);
   assert(!JSON.stringify(computed.recordReadEvidence).includes(text));
   const coverage=Review.validateReview(review(requirement()),result,{pipeline:payload.pipeline});
   assert.deepEqual(coverage,{ok:true,requested:1,compiled:1,mappingIssues:[]});
@@ -85,7 +87,10 @@ test('facts already in current cells use field evidence without exposing or requ
   payload.pipeline.records[0].f_notes='Contact the operations team by email.';
   const result={crmAction:F.plan([select,{op:'read_records',id:'current_fact',label:'Read contact instructions',selection:'selected',outputs:[{kind:'fields',field:'f_notes'}],showTable:false}])};
   const computed=Review.evidence(payload,result);
-  assert.deepEqual(computed.recordReadEvidence,[{stepId:'current_fact',source:'current_fields',selection:'selected',outputs:['fields'],recordIds:[1]}]);
+  assert.deepEqual(computed.recordReadEvidence,[{stepId:'current_fact',source:'current_fields',selection:'selected',outputs:['fields'],recordIds:[1],
+    outputDefinitions:[{kind:'fields',field:'f_notes'}],
+    selectionChain:[{selectionId:'selected',source:'all',where:[[F.where('f_deal','equals','Cedar Studio')]],relatedTasks:null,
+      orderBy:null,direction:'asc',limit:null,ranking:null,matchedCount:1,recordIds:[1]}]}]);
   assert.match(Review.renderAnswer(payload,result,computed),/Contact the operations team by email/);
   assert.doesNotMatch(JSON.stringify(computed),/Historical private fact|Unrelated private fact/);
   assert.equal(Review.validateReview(review(requirement({stepIds:['current_fact']})),result,{pipeline:payload.pipeline}).ok,true);
@@ -147,6 +152,9 @@ test('ranked names/current-value projection has typed selection metadata, not in
   const f=rankingFixture(),payload=f.payload('Which account now has the largest Deal Value (USD)? Give its name and current value.'),result={crmAction:f.action()};
   const computed=Review.evidence(payload,result),read=computed.recordReadEvidence[0];
   assert.deepEqual(read,{stepId:'ranked_answer',source:'current_fields',selection:'ranked',outputs:['names','fields'],recordIds:[41],
+    outputDefinitions:[{kind:'names',field:null},{kind:'fields',field:'f_value'}],
+    selectionChain:[{selectionId:'ranked',source:'all',where:[[F.where('f_value','is_not_blank')]],relatedTasks:null,
+      orderBy:'f_value',direction:'desc',limit:1,ranking:null,matchedCount:3,recordIds:[41]}],
     ranking:{selection:'ranked',source:'all',field:'f_value',fieldType:'currency',direction:'desc',limit:1,matched:3}});
   const requested=review(requirement({description:'The highest-ranked account name and current value',stepIds:['ranked_answer'],requiredOutputs:['names','fields']}));
   assert.deepEqual(Review.validateReview(requested,result,{pipeline:payload.pipeline}),{ok:true,requested:1,compiled:1,mappingIssues:[]});

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {parse,takeFallback,ModelResponseError} = require('../lib/model-response');
+const {parse,takeFallback,reviewModel,ModelResponseError} = require('../lib/model-response');
 const models={simple:'gpt-5.4-mini',complex:'gpt-5.2'};
 const valid={assistantMessage:'Hello',crmAction:null};
 const rest={status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(valid)}]}]};
@@ -37,4 +37,19 @@ test('fallback is once per turn, only from the simple model, with time left and 
   assert.equal(takeFallback(error,{},models.simple,models,0,65000),false);
   assert.equal(takeFallback(new ModelResponseError('refusal'),{},models.simple,models,0,0),false);
   assert.equal(takeFallback(error,{},models.simple,{simple:models.simple,complex:models.simple},0,0),false);
+});
+
+test('later reviews stay complex after completion fallback without changing its one-use allowance',()=>{
+  const payload={},error=new ModelResponseError('output_limit',true);
+  assert.equal(reviewModel(payload,models.simple,models),models.simple);
+  assert.equal(takeFallback(error,payload,models.simple,models,0,30000),true);
+  const repair={...payload,_reviewAttempt:1};
+  assert.equal(reviewModel(repair,models.simple,models),models.complex);
+  assert.equal(reviewModel(repair,models.complex,models),models.complex);
+  assert.equal(reviewModel(repair,'explicit-model',models),'explicit-model');
+  assert.equal(takeFallback(error,repair,models.simple,models,0,30001),false);
+  assert.equal(reviewModel({},models.simple,models),models.simple,'separate requests remain independent');
+  assert.equal(reviewModel(null,models.simple,models),models.simple);
+  assert.equal(reviewModel(repair,models.simple,{simple:models.simple,complex:models.simple}),models.simple);
+  assert.deepEqual(repair,{_completionFallbackUsed:true,_reviewAttempt:1});
 });

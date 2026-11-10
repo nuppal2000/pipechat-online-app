@@ -19,7 +19,7 @@ test('derived reads use the selected cohort, retain checked row evidence and nev
   assert.equal(e.value,32000);assert.equal(e.coverage.includedCount,3);assert.equal(e.coverage.excludedCount,3);
   assert.deepEqual(e.selectedRecordIds,w.records.map(r=>r.id));assert.deepEqual(w,before);assert.deepEqual(r.next,w);
   assert.equal(r.mutates,false);assert(r.effects.every(e=>e.kind==='table'&&e.show===false));
-  assert.match(r.answers[0],/32000\.00/);assert.match(r.answers[0],/3 of 6.*3 excluded/);
+  assert.match(r.answers[0],/\$32,000\.00/);assert.match(r.answers[0],/3 of 6.*3 excluded/);
   assert(Output.supports(a,['answer'],['derived_sum','sum']));
   assert(!Output.supports(action([{kind:'sum',field:'f_value'}]),['answer'],['derived_sum']));
   assert(!Output.supports(a,['cohort'],['derived_sum']));
@@ -31,7 +31,7 @@ test('renamed fields, fractional scales, zeroes and reordered cohorts keep the s
   w.records.reverse();w.records.find(r=>r.id===4).f_probability=0.7;
   const r=Plan.prepare(w,action([derived('f_probability',1)]),{today:'2026-11-10',nonce:'fraction'});
   const e=r.queryResults[0].rowCalculations[0];assert.equal(e.value,32000);assert.equal(e.coverage.includedCount,4);
-  assert.equal(e.coverage.excludedCount,2);assert.match(r.answers[0],/Confidence fraction.*\/ 1/);
+  assert.equal(e.coverage.excludedCount,2);assert.match(r.answers[0],/Confidence fraction.*divide by 1/);
 });
 
 test('invalid derived operations reject an entire mixed plan without exposing partial changes',()=>{

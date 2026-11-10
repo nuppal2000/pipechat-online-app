@@ -133,6 +133,36 @@ test('temporary graph KPI labels and each graph scope are copied independently o
   for(const text of ['Temporary total','$50,000','$70,000','Visible filtered graph','Full-cohort graph'])assert(content.includes(text));
   doc.getElementById('dashboardView').hidden=true;assert.throws(()=>PDF.capture(doc),/Open the dashboard/);
 });
+test('graph captions preserve frozen header counts and explicit undated exclusions independently of the current 63-record table',()=>{
+  const doc=fakeDocument([]),query=doc.querySelectorAll.bind(doc);
+  const graph=(header,notes=[])=>({
+    querySelector:selector=>selector==='h4'?textNode('Saved graph'):selector===':scope > header span.subtle'&&header!==undefined?textNode(header):null,
+    querySelectorAll:selector=>({
+      '.dashboard-element-scope,.dashboard-shared-filter':[textNode('Current pipeline view'),textNode('Stage excludes Closed')],
+      ':scope > p.subtle':notes.map(textNode),
+      th:['Stage','Contract amount (USD)','Records'].map(textNode),
+      'tbody tr':[{cells:['Example','$50,000','99'].map(textNode)}]
+    }[selector]||[])
+  });
+  const headers=['qa1105_open / bar / 4 records','dated_followups / line / 3 records','<b>literal-id</b> / kpi / 0 records'];
+  doc.querySelectorAll=selector=>selector==='.dashboard-element'?[
+    graph(headers[0]),graph(headers[1],['2 blank dates excluded from date groups.']),graph(headers[2]),graph(undefined)
+  ]:query(selector);
+  const filters=['Pipeline table context: All records / 63 selected records'];
+  const snapshot=PDF.capture(doc,filters),captions=snapshot.reports.map(report=>report.caption);
+  assert.deepEqual(captions,[
+    headers[0]+' / Current pipeline view / Stage excludes Closed',
+    headers[1]+' / Current pipeline view / Stage excludes Closed / 2 blank dates excluded from date groups.',
+    headers[2]+' / Current pipeline view / Stage excludes Closed',
+    'Current pipeline view / Stage excludes Closed'
+  ]);
+  assert.deepEqual(snapshot.filters,filters);
+  const definition=PDF.definition(snapshot),text=JSON.stringify(definition.content);
+  for(const caption of captions)assert(definition.content.some(node=>node.text===caption),caption);
+  assert.match(text,/63 selected records/);assert.match(text,/qa1105_open \/ bar \/ 4 records/);
+  assert(!captions[0].includes('blank dates'));assert(!captions[3].includes('99'));assert(!captions.some(caption=>caption.includes('63')));
+});
+
 test('PDF includes current KPI values, filtered summary, chart-mode KPIs and literal user content',()=>{
   const doc=PDF.definition({...sample,chartKpis:[{label:'Ravi',value:'0'}],title:{url:'https://invalid.test'}}),serialized=JSON.stringify(doc.content);
   assert.match(serialized,/Owners: Ravi, Sarah/);assert.match(serialized,/Not set/);assert.match(serialized,/Stale candidates/);assert.match(serialized,/\[object Object\]/);
