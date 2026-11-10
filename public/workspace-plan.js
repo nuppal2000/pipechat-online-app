@@ -1,27 +1,31 @@
 (function(root,factory){
-  const api=typeof module==='object'&&module.exports?factory(require('./pipeline-core.js'),require('./report-engine.js'),require('./todo-core.js'),require('./todo-actions.js'),require('./dashboard-board.js'),require('./inspector-core.js')):factory(root.PipelineCore,root.PipeChatReports,root.PipeChatTodo,root.PipeChatTodoActions,root.PipeChatDashboard,root.PipeChatInspector);
+  const api=typeof module==='object'&&module.exports?factory(require('./pipeline-core.js'),require('./report-engine.js'),require('./todo-core.js'),require('./todo-actions.js'),require('./dashboard-board.js'),require('./inspector-core.js'),require('./row-calculation.js')):factory(root.PipelineCore,root.PipeChatReports,root.PipeChatTodo,root.PipeChatTodoActions,root.PipeChatDashboard,root.PipeChatInspector,root.PipeChatRowCalculation);
   if(typeof module==='object'&&module.exports)module.exports=api;else root.PipeChatPlan=api;
-})(typeof globalThis!=='undefined'?globalThis:this,function(Core,Reports,Todo,TaskActions,Dashboard,Inspector){
+})(typeof globalThis!=='undefined'?globalThis:this,function(Core,Reports,Todo,TaskActions,Dashboard,Inspector,RowCalculation){
   'use strict';
   const clone=value=>JSON.parse(JSON.stringify(value));
   const supportedOps=new Set(['select_records','add_field','rename_choice_option','update_records','add_todos','add_unlinked_task','update_tasks','read_records','read_history','report','dashboard']);
   const reasonCodes=new Set(['plan_validation','goal_shape_invalid','step_reference_invalid','goal_coverage_invalid','date_invalid','date_offset_invalid','current_date_unavailable','field_unavailable','selection_dependency','focus_unavailable','record_selection_stale','numeric_field_required','unsupported_operation',
     'transform_invalid','transform_type_invalid','transform_blank','transform_base_invalid','transform_result_invalid',
-    'task_validation','task_reference_ambiguous','task_reference_missing','task_focus_unavailable','task_selection_stale','task_selection_empty','task_write_conflict','task_no_changes']);
+    'task_validation','task_reference_ambiguous','task_reference_missing','task_focus_unavailable','task_selection_stale','task_selection_empty','task_write_conflict','task_no_changes','row_calculation_invalid']);
   const fail=(message,reasonCode='plan_validation',goalCoverage)=>{const error=new Error(message);error.clarification=true;error.reasonCode=reasonCode;if(goalCoverage)error.goalCoverage=goalCoverage;throw error;};
   const object=properties=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
   const str={type:'string'},scalar={type:['string','number']};
   const transformOps=new Set(['adjust_percent','shift_date']),maxPercent=10000,maxShiftDays=366;
+  const taskRelationshipInstructions='LINKED TASK QUERIES: use workspace_plan select_records.relatedTasks, then read_records for names/counts; scoped_table_request does not express task relationships. String any means no task filter; none means no linked tasks in ANY lane; exists means at least one linked task in ANY lane. For status-filtered relationships use {quantifier:"none"|"exists",statuses:[exact task statuses]}. Open tasks are To Do or In Progress; completed/closed tasks are Done. No open task is {quantifier:"none",statuses:["To Do","In Progress"]}: include records with only Done tasks AND records with no tasks, exclude a record with even one open task. Use exists with those statuses for at least one open task. Do not substitute none, a guessed record list, or the existence of a Done task. Apply the relationship AND all requested record predicates to the same source population. Unlinked cards do not satisfy a record relationship. All task eligibility uses the original saved task snapshot, not earlier proposed task changes. The computed selection review states its canonical relatedTasks predicate and original_tasks source; check this against the request.';
+  const rankingInstructions='ORDINAL RECORD QUERIES: use workspace_plan select_records with the requested cohort, orderBy and direction, then read_records names and each requested field (such as owner). For the nth record use limit {offset:n-1,count:1,mode:"rows"}, not integer limit n: the latter means top n records. An offset is zero-based. Rank windows require orderBy and exclude blank/non-numeric sort values on numeric fields; zero is a real value. Rows mode counts individual records and resolves equal sort values by ascending record ID. Only for an explicit distinct-value rank or all records tied at a value rank use mode distinct_values: offset/count count distinct numeric values, retaining every record tied at the selected values. Never silently switch between row position and distinct-value rank. When ties affect an ambiguous request for a different rank policy, clarify. All filtering and task relationships precede ranking; eligibility uses original saved cells. An out-of-range rank returns no records, never top n or a broader cohort. Only returned record IDs become conversation focus; a later change to that result must use that exact focus. The selection review carries the canonical rank window and available ranks. A ranked names/owner read is not an independently requested min/max statistic.';
   function responseSchema(core=Core.create(null),custom=[],focus=null){
     const definitions=core.definitions(custom),fieldIds=definitions.map(field=>field.id);
     const createdField={type:'string',pattern:'^@[a-z][a-z0-9_]{0,39}$'};
     const fieldRef={anyOf:[...(fieldIds.length?[{type:'string',enum:fieldIds}]:[]),createdField]};
     const optionalField={anyOf:[...fieldRef.anyOf,{type:'null'}]};
     const numericIds=definitions.filter(field=>['number','currency'].includes(field.type)).map(field=>field.id);
+    const expression=RowCalculation.responseSchema(core,custom);
     const outputs={anyOf:[
       object({kind:{type:'string',enum:['count','names']},field:{type:'null'}}),
       object({kind:{type:'string',enum:['fields','distinct']},field:fieldRef}),
-      ...(numericIds.length?[object({kind:{type:'string',enum:['sum','average','median','min','max']},field:{type:'string',enum:numericIds}})]:[])
+      ...(numericIds.length?[object({kind:{type:'string',enum:['sum','average','median','min','max']},field:{type:'string',enum:numericIds}})]:[]),
+      ...(expression?[object({kind:{type:'string',enum:['row_calculation']},expression})]:[])
     ]};
     const date=object({dateMode:{type:'string',enum:['literal','calendar_days','business_days']},date:{type:['string','null']},offset:{type:['integer','null']}});
     const blankPolicy={type:'string',enum:['error','skip'],description:'Use error unless the user explicitly asks to skip blank saved cells. Never substitute zero, today or another value.'};
@@ -41,7 +45,13 @@
       unmappedFacts:{type:'array',maxItems:40,items:object({text:str,source:str,reason:str})},
       goals:{type:'array',minItems:1,maxItems:20,description:'Requested business outcomes mapped to exact step IDs. Every non-selection operation must be explicitly covered. Preceding select_records dependencies are covered transitively; unused selections still need explicit coverage. Never invent an ID or treat a field, task, read or dashboard operation as an implicit dependency.',items:object({description:str,stepIds:{type:'array',minItems:1,items:str}})},
       steps:{type:'array',minItems:1,maxItems:30,items:{anyOf:[
-        step('select_records',{source:{anyOf:[str,object({kind:{type:'string',enum:['exact_primary']},name:{type:'string',minLength:1,maxLength:12000}})]},where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
+        step('select_records',{source:{anyOf:[str,object({kind:{type:'string',enum:['exact_primary']},name:{type:'string',minLength:1,maxLength:12000}})]},where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{description:rankingInstructions,anyOf:[
+          {type:['integer','null'],minimum:1,maximum:2000},
+          object({offset:{type:'integer',minimum:0,maximum:2000},count:{type:'integer',minimum:1,maximum:2000},mode:{type:'string',enum:['rows','distinct_values']}})
+        ]},relatedTasks:{description:taskRelationshipInstructions,anyOf:[
+          {type:'string',enum:['any','none','exists']},
+          object({quantifier:{type:'string',enum:['none','exists']},statuses:{type:'array',minItems:1,maxItems:Todo.statuses.length,items:{type:'string',enum:Todo.statuses}}})
+        ]}}),
         step('add_field',{name:str,type:{type:'string',enum:core.customFieldTypes},options:{type:'array',items:str}}),
         step('rename_choice_option',{field:fieldRef,from:str,to:str}),
         step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:assignment}}),
@@ -54,6 +64,27 @@
         step('dashboard',{plan:Dashboard.schemas(core,custom)[0]})
       ]}}
     });
+  }
+  function taskRelationship(condition,cards,records){
+    if(condition==null||condition==='any')return null;
+    const definition=typeof condition==='string'?{quantifier:condition,statuses:Todo.statuses}:condition;
+    if(!definition||typeof definition!=='object'||Array.isArray(definition)||Object.keys(definition).some(k=>!['quantifier','statuses'].includes(k))||
+      !['none','exists'].includes(definition.quantifier)||!Array.isArray(definition.statuses)||!definition.statuses.length||
+      definition.statuses.length>Todo.statuses.length||new Set(definition.statuses).size!==definition.statuses.length||
+      definition.statuses.some(status=>!Todo.statuses.includes(status)))fail('Choose any, none, exists, or a linked-task quantifier with distinct saved task statuses.');
+    const statuses=Todo.statuses.filter(status=>definition.statuses.includes(status));
+    // Quantify over matching linked cards, not all cards or the current board lane.
+    const linked=new Set(Todo.validate(cards,records).filter(card=>card.recordId!==null&&statuses.includes(card.status)).map(card=>card.recordId));
+    return {definition:{source:'original_tasks',quantifier:definition.quantifier,statuses},
+      matches:row=>linked.has(row.id)===(definition.quantifier==='exists'),
+      description:'Linked tasks: '+definition.quantifier+' with status in ['+statuses.join(', ')+']'};
+  }
+  function rankWindow(limit){
+    if(limit===null||Number.isInteger(limit)&&limit>=1&&limit<=2000)return null;
+    if(!limit||typeof limit!=='object'||Array.isArray(limit)||Object.keys(limit).some(key=>!['offset','count','mode'].includes(key))||
+      !Number.isInteger(limit.offset)||limit.offset<0||limit.offset>2000||!Number.isInteger(limit.count)||limit.count<1||limit.count>2000||
+      !['rows','distinct_values'].includes(limit.mode))fail('Use a valid selection limit or rank window with offset, count and mode.');
+    return {offset:limit.offset,count:limit.count,mode:limit.mode};
   }
   function dateValue(spec,today){
     if(!spec||typeof spec!=='object'||Array.isArray(spec))fail('Please specify a complete date or an offset from today.','date_invalid');
@@ -184,14 +215,21 @@
           const where=step.where.map(group=>{if(!Array.isArray(group))fail('Selection conditions must be grouped.');return group.map(condition=>({...condition,field:resolve(condition.field)}));});
           const spec={version:1,title:step.label,chart:'kpi',scope:'all',groupBy:null,bucket:'none',splitBy:null,measures:[{label:'Count',metric:'count',field:null,where:[]}],where,sort:'label_asc',limit:null};
           let matched=Reports.execute(rows,spec,core,next.customFields,{today}).rows.slice();
-          if(!['any','none','exists'].includes(step.relatedTasks??'any'))fail('Choose any, none or exists for the linked-task condition.');
-          if(step.relatedTasks&&step.relatedTasks!=='any')matched=matched.filter(row=>workspace.todoCards.some(card=>card.recordId===row.id)===(step.relatedTasks==='exists'));
+          const relation=taskRelationship(step.relatedTasks,workspace.todoCards,workspace.records);
+          if(relation)matched=matched.filter(relation.matches);
           if(sourceIds)matched.sort((a,b)=>sourceIds.indexOf(a.id)-sourceIds.indexOf(b.id));
           const count=matched.length;
-          if(!['asc','desc'].includes(step.direction)||step.limit!==null&&(!Number.isInteger(step.limit)||step.limit<1||step.limit>2000))fail('Use a valid selection order and limit.');
+          if(!['asc','desc'].includes(step.direction))fail('Use a valid selection order.');
+          const window=rankWindow(step.limit);
           let orderField=null;
           if(step.orderBy!==null){
             orderField=core.definitions(next.customFields).find(f=>f.id===resolve(step.orderBy));
+            if(window){
+              const numeric=['number','currency'].includes(orderField.type);
+              if(window.mode==='distinct_values'&&!numeric)fail('Distinct-value ranking requires a numeric sort field. Use rows for other field types.');
+              matched=matched.filter(row=>numeric?typeof row[orderField.id]==='number'&&Number.isFinite(row[orderField.id]):
+                row[orderField.id]!=null&&String(row[orderField.id]).trim()!=='');
+            }
             const empty=v=>v==null||v==='';
             matched.sort((a,b)=>{
               const x=a[orderField.id],y=b[orderField.id];
@@ -200,9 +238,25 @@
               return (step.direction==='desc'?-compared:compared)||a.id-b.id;
             });
           }
-          if(step.limit!==null)matched=matched.slice(0,step.limit);
+          let ranking=null;
+          if(window){
+            if(!orderField)fail('A rank window requires an explicit sort field.');
+            // Windows count either stable row positions or entire numeric value
+            // groups. Equal values never depend on input order in either mode.
+            const groups=[];
+            for(const row of matched){
+              const previous=groups.at(-1);
+              if(window.mode==='distinct_values'&&previous&&previous[0][orderField.id]===row[orderField.id])previous.push(row);
+              else groups.push([row]);
+            }
+            ranking={...window,available:groups.length};
+            matched=groups.slice(window.offset,window.offset+window.count).flat();
+          }else if(step.limit!==null)matched=matched.slice(0,step.limit);
           selections.set(step.id,matched.map(row=>row.id));
-          review.push({id:step.id,label:step.label,op:step.op,matched:count,filter:Reports.describe(spec,core,next.customFields)+(step.relatedTasks&&step.relatedTasks!=='any'?`; Linked tasks: ${step.relatedTasks}`:''),source:sourceLabel,order:orderField?`${orderField.name}, ${step.direction==='desc'?'highest first':'lowest first'}; ties by record ID`:'Saved row order',limit:step.limit,records:matched.map(row=>({id:row.id,name:String(row[core.role('primary')]||'Unnamed record #'+row.id),value:orderField?row[orderField.id]:null}))});
+          const order=orderField?`${orderField.name}, ${step.direction==='desc'?'highest first':'lowest first'}; ties by record ID`:'Saved row order';
+          review.push({id:step.id,label:step.label,op:step.op,matched:count,filter:Reports.describe(spec,core,next.customFields)+(relation?'; '+relation.description:''),...(relation?{relatedTasks:relation.definition}:{}),source:sourceLabel,
+            order:order+(ranking?`; skip ${ranking.offset}, take ${ranking.count} ${ranking.mode==='rows'?'rows':'distinct values (all tied records)'} from ${ranking.available} nonblank ranks`:''),...(ranking?{ranking}:{}),
+            limit:step.limit,records:matched.map(row=>({id:row.id,name:String(row[core.role('primary')]||'Unnamed record #'+row.id),value:orderField?row[orderField.id]:null}))});
         }else if(step.op==='add_field'){
           if(!core.customFieldTypes.includes(step.type)||!Array.isArray(step.options)||step.type!=='choice'&&step.options.length)fail('Choose a text, number, date or dropdown field with the appropriate options.');
           next.customFields=core.validateCustomFields([...next.customFields,{id:`cf_${nonce}_${index}`,name:step.name,type:step.type,options:step.options}]);
@@ -277,8 +331,14 @@
           const recordIds=selected(step.selection),rows=recordIds.map(id=>next.records.find(row=>row.id===id));
           if(!Array.isArray(step.outputs)||!step.outputs.length||step.outputs.length>40||typeof step.showTable!=='boolean')fail('Specify the requested read outputs and whether to show the table.');
           const name=row=>String(row[core.role('primary')]||'Unnamed record #'+row.id);
-          const projected=[];
+          const projected=[],rowCalculations=[];
           const lines=step.outputs.map(output=>{
+            if(output.kind==='row_calculation'){
+              if(Object.keys(output).some(key=>!['kind','expression'].includes(key)))fail('Use a typed row calculation, without extra fields.','row_calculation_invalid');
+              const result=RowCalculation.evaluate(rows,output.expression,core,next.customFields);
+              rowCalculations.push(result);
+              return RowCalculation.describe(result);
+            }
             if(output.kind==='count'&&output.field===null)return `Record count: ${rows.length}.`;
             if(output.kind==='names'&&output.field===null)return 'Accounts (selection order):\n'+(rows.map(row=>`- ${name(row)} (#${row.id})`).join('\n')||'None.');
             if(!['fields','sum','average','median','distinct','min','max'].includes(output.kind))fail('Choose supported fields, count, names or calculated outputs.');
@@ -295,7 +355,7 @@
             const formatted=value===null?'Not set':new Intl.NumberFormat('en-US',{maximumFractionDigits:2,...(def.type==='currency'?{style:'currency',currency:'USD'}:{})}).format(value);
             return `${{sum:'Total',average:'Average',median:'Median',min:'Lowest',max:'Highest'}[output.kind]} ${def.name}: ${formatted}${['min','max'].includes(output.kind)&&value!==null?' ('+values.filter(row=>row[field]===value).map(name).join(', ')+')':''}. ${values.length} numeric values across ${rows.length} records. Blank/non-numeric values excluded; zeroes included.`;
           });
-          queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),projected,viewEffect:step.showTable?'show_table':'answer_only'});
+          queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),projected,...(rowCalculations.length?{rowCalculations}:{}),viewEffect:step.showTable?'show_table':'answer_only'});
           answers.push(lines.join('\n'));effects.push({kind:'table',show:step.showTable,ids:recordIds});review.push({id:step.id,op:step.op,label:step.label,count:rows.length});
         }else if(step.op==='read_history'){
           const recordIds=selected(step.selection),rows=recordIds.map(id=>next.records.find(row=>row.id===id));
@@ -357,5 +417,5 @@
     const unmapped=(plan.unmappedFacts||[]).length?'<h3>Facts needing a destination</h3>'+plan.unmappedFacts.map(f=>section(f.text,`<p>${esc(f.reason)}</p><blockquote>${esc(f.source)}</blockquote>`)).join(''):'';
     return `<h3>Complete workspace plan</h3><p>One confirmation: ${plan.addedFields.length} new columns, ${plan.patches.length} changed records, ${plan.addedCards.length} new tasks, ${plan.taskPatches.length} updated tasks.</p><h3>Requested outcomes</h3><ul>${goals.map(g=>`<li>${esc(g)}</li>`).join('')}</ul>${unmapped}<h3>Selection and steps</h3>${selections}${plan.calculations.length?'<h3>Calculations</h3>'+plan.calculations.map(c=>`<p>${esc(c)}</p>`).join(''):''}<h3>Table changes</h3>${cells||'<p>No cell changes.</p>'}<h3>Task additions</h3>${cards||'<p>No new cards.</p>'}${edits?'<h3>Task edits</h3>'+edits:''}${plan.answers.length?'<h3>Calculated answers</h3>'+plan.answers.map(a=>`<p class="preserve-lines">${esc(a)}</p>`).join(''):''}<div class="proposal-actions"><button class="primary" data-confirm ${saving?'disabled':''}>Confirm entire plan</button><button class="secondary" data-cancel ${saving?'disabled':''}>Cancel entire plan</button></div>`;
   }
-  return {responseSchema,prepare,dateValue,snapshot,render};
+  return {responseSchema,prepare,dateValue,snapshot,render,taskRelationshipInstructions,rankingInstructions};
 });

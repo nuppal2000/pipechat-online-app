@@ -23,17 +23,24 @@
     const defs=core.definitions(customFields),primary=core.role('primary'),status=core.role('status'),follow=core.role('followup');
     const dates=defs.filter(f=>f.id===follow||f.type==='date'&&/\b(?:follow.?up|reminder|appointment|interview|renewal|deadline|due)\b/i.test(f.name));
     const contacts=defs.filter(f=>f.type==='date'&&/\b(?:last contacted|last contact|last activity)\b/i.test(f.name));
-    const items=[],names=new Map(records.map(r=>[r.id,String(r[primary]??'').trim()||'Unnamed record #'+r.id]));
+    const items=[],taskDates=new Map(),names=new Map(records.map(r=>[r.id,String(r[primary]??'').trim()||'Unnamed record #'+r.id]));
     const group=time=>time<now?'overdue':time===now?'today':time<=now+7*dayMs?'upcoming':null;
     const stamp=time=>new Date(time).toISOString().slice(0,10);
     for(const card of cards){
       if(card.status==='Done'||card.recordId!==null&&!names.has(card.recordId))continue;
-      const time=day(card.dueDate),section=time===null?null:group(time);if(!section)continue;
+      const time=day(card.dueDate),section=time===null?null:group(time);
+      // A dated active task still schedules follow-up beyond the seven-day display window.
+      if(time!==null&&card.recordId!==null){
+        if(!taskDates.has(card.recordId))taskDates.set(card.recordId,[]);
+        taskDates.get(card.recordId).push({card,time});
+      }
+      if(!section)continue;
       items.push({key:'task:'+card.id,kind:'task',id:card.id,title:card.recordId===null?card.customTitle:names.get(card.recordId),detail:card.nextAction||'Task',date:stamp(time),section});
     }
     for(const row of records){
       if(/^(?:(?:closed[ -])?(?:won|lost)|done|completed|rejected|hired|cancelled|canceled)$/i.test(String(row[status]||'').trim()))continue;
-      let scheduled=false;
+      const linked=taskDates.get(row.id)||[];
+      let scheduled=linked.some(task=>task.time>=now);
       for(const field of dates){
         const time=due(row[field.id],today),section=time===null?null:group(time);if(time!==null)scheduled=true;if(!section)continue;
         items.push({key:`record:${row.id}:${field.id}`,kind:'record',id:row.id,field:field.id,title:names.get(row.id),detail:field.name,date:stamp(time),section});
@@ -42,7 +49,11 @@
       for(const field of contacts){const time=day(row[field.id]);if(time!==null)times.push(time);}
       const latest=times.length?Math.max(...times):null;
       if(!scheduled&&latest!==null&&latest<=now-14*dayMs){
-        items.push({key:'stale:'+row.id,kind:'record',id:row.id,field:null,title:names.get(row.id),detail:'No recorded activity for '+Math.floor((now-latest)/dayMs)+' days; no dated reminder',date:stamp(latest),section:'stale'});
+        const overdue=linked.filter(task=>task.time<now).sort((a,b)=>a.time-b.time||String(a.card.id).localeCompare(String(b.card.id)));
+        const first=overdue[0],remaining=overdue.length-1;
+        const reminder=first?'overdue task: '+(first.card.nextAction||'Task')+' (due '+stamp(first.time)+')'+
+          (remaining>0?'; '+remaining+' more overdue task'+(remaining===1?'':'s'):''):'no dated reminder';
+        items.push({key:'stale:'+row.id,kind:'record',id:row.id,field:null,title:names.get(row.id),detail:'No recorded activity for '+Math.floor((now-latest)/dayMs)+' days; '+reminder,date:stamp(latest),section:'stale'});
       }
     }
     const order={overdue:0,today:1,upcoming:2,stale:3};
