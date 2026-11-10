@@ -41,7 +41,7 @@
       unmappedFacts:{type:'array',maxItems:40,items:object({text:str,source:str,reason:str})},
       goals:{type:'array',minItems:1,maxItems:20,description:'Requested business outcomes mapped to exact step IDs. Every non-selection operation must be explicitly covered. Preceding select_records dependencies are covered transitively; unused selections still need explicit coverage. Never invent an ID or treat a field, task, read or dashboard operation as an implicit dependency.',items:object({description:str,stepIds:{type:'array',minItems:1,items:str}})},
       steps:{type:'array',minItems:1,maxItems:30,items:{anyOf:[
-        step('select_records',{source:str,where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
+        step('select_records',{source:{anyOf:[str,object({kind:{type:'string',enum:['exact_primary']},name:{type:'string',minLength:1,maxLength:12000}})]},where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
         step('add_field',{name:str,type:{type:'string',enum:core.customFieldTypes},options:{type:'array',items:str}}),
         step('rename_choice_option',{field:fieldRef,from:str,to:str}),
         step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:assignment}}),
@@ -169,7 +169,14 @@
     for(const [index,step]of action.steps.entries()){
       try{
         if(step.op==='select_records'){
-          const sourceIds=step.source==='all'?null:step.source==='visible'?visibleIds:step.source==='focus'&&focus?.kind==='table'&&Array.isArray(focus.ids)?focus.ids:selected(step.source);
+          let sourceIds,sourceLabel=step.source;
+          if(step.source?.kind==='exact_primary'){
+            const {name}=step.source,primary=core.role('primary');
+            if(typeof name!=='string'||name.length>12000||!core.normalize(name))fail('Provide a nonblank primary record name.');
+            const key=core.normalize(name),matches=workspace.records.filter(row=>core.normalize(row[primary])===key);
+            if(matches.length!==1)fail((matches.length?'More than one exact match':'No exact match')+' for '+JSON.stringify(name)+'. Clarify the intended record before applying any values.');
+            sourceIds=[matches[0].id];sourceLabel='Exact primary name: '+name;
+          }else sourceIds=step.source==='all'?null:step.source==='visible'?visibleIds:step.source==='focus'&&focus?.kind==='table'&&Array.isArray(focus.ids)?focus.ids:selected(step.source);
           if(sourceIds&&sourceIds.some(id=>!workspace.records.some(row=>row.id===id)))fail('A selected record no longer exists. Please select the records again.','record_selection_stale');
           // Eligibility reads the original snapshot, even if an earlier step updates a predicate field.
           const rows=next.records.map(row=>({...row,...eligibility.find(r=>r.id===row.id)})).filter(row=>sourceIds===null||sourceIds.includes(row.id));
@@ -195,7 +202,7 @@
           }
           if(step.limit!==null)matched=matched.slice(0,step.limit);
           selections.set(step.id,matched.map(row=>row.id));
-          review.push({id:step.id,label:step.label,op:step.op,matched:count,filter:Reports.describe(spec,core,next.customFields)+(step.relatedTasks&&step.relatedTasks!=='any'?`; Linked tasks: ${step.relatedTasks}`:''),source:step.source,order:orderField?`${orderField.name}, ${step.direction==='desc'?'highest first':'lowest first'}; ties by record ID`:'Saved row order',limit:step.limit,records:matched.map(row=>({id:row.id,name:String(row[core.role('primary')]||'Unnamed record #'+row.id),value:orderField?row[orderField.id]:null}))});
+          review.push({id:step.id,label:step.label,op:step.op,matched:count,filter:Reports.describe(spec,core,next.customFields)+(step.relatedTasks&&step.relatedTasks!=='any'?`; Linked tasks: ${step.relatedTasks}`:''),source:sourceLabel,order:orderField?`${orderField.name}, ${step.direction==='desc'?'highest first':'lowest first'}; ties by record ID`:'Saved row order',limit:step.limit,records:matched.map(row=>({id:row.id,name:String(row[core.role('primary')]||'Unnamed record #'+row.id),value:orderField?row[orderField.id]:null}))});
         }else if(step.op==='add_field'){
           if(!core.customFieldTypes.includes(step.type)||!Array.isArray(step.options)||step.type!=='choice'&&step.options.length)fail('Choose a text, number, date or dropdown field with the appropriate options.');
           next.customFields=core.validateCustomFields([...next.customFields,{id:`cf_${nonce}_${index}`,name:step.name,type:step.type,options:step.options}]);

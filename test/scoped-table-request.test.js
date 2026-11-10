@@ -12,11 +12,18 @@ function prepare(p,operation,where=[]){
 test('a fresh list uses exactly one full-table selection for its table, ordered names and total',()=>{
   const p=pipeline();
   p.records[1].f_owner='Jo';p.records[3].f_owner='Jo';p.records[4].f_owner='Jo';
-  const {computed}=prepare(p,{kind:'show_rows',orderBy:'f_value',direction:'desc',outputs:[{kind:'sum',field:'f_value'}]},
+  const {computed,action}=prepare(p,{kind:'show_rows',orderBy:'f_value',direction:'desc',outputs:[{kind:'sum',field:'f_value'}]},
     [[condition('f_owner','equals','Jo'),condition('f_stage','in',null,['Qualified','Negotiation'])]]);
   assert.deepEqual(computed.effects.find(e=>e.kind==='table').ids,[4,2,5]);
   assert.deepEqual(computed.queryResults[0].recordIds,[4,2,5]);assert.match(computed.answers.join(' '),/84,000/);
   assert.equal(computed.mutates,false);
+  assert.deepEqual(action.steps.at(-1).outputs,[{kind:'names',field:null},{kind:'fields',field:'f_value'},{kind:'sum',field:'f_value'}]);
+});
+test('rows without a sort do not invent a field and an explicitly projected sort column is not duplicated',()=>{
+  for(const [orderBy,requested] of [[null,[{kind:'names',field:null}]],['f_owner',[{kind:'names',field:null},{kind:'fields',field:'f_owner'}]]]){
+    const {action}=prepare(pipeline(),{kind:'show_rows',orderBy,direction:'asc',outputs:requested});
+    assert.deepEqual(action.steps.at(-1).outputs,requested);
+  }
 });
 test('complementary threshold branches preserve unknown values including in scoped exclusion evidence',()=>{
   const p=pipeline();p.records[0].f_value=null;

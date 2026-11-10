@@ -15,6 +15,45 @@ test('plural cohorts do not trigger a singular identity question',()=>{
   assert.equal(Grounding.guardIdentity(payload('Set Acorn priority'),{crmAction:{action:'workspace_plan'}}).crmAction.action,'clarify');
 });
 
+test('leading named cohort scopes preserve the conditional write for the matching reference only',()=>{
+  const result={crmAction:{action:'workspace_plan',steps:[{op:'select_records'},{op:'update_records'}]}};
+  for(const [name,command] of [
+    ['QA1105','Within the QA1105 cohort classify known deal amounts into Priority: 15000 and above High, below 15000 Medium; make no assignment for a missing amount.'],
+    ['Acorn','For Acorn cohort, set Priority by value.'],
+    ['North Ridge','Across the North-Ridge cohort: mark missing dates for review.']
+  ]){
+    const p=payload(command);
+    p.pipeline.records=[...['Alpha','Beta','Gamma'].map((suffix,i)=>({id:i+1,name:name+' '+suffix})),{id:4,name:'Outside'}];
+    const [ref]=Grounding.identityContext(p).references;
+    assert.equal(ref.phrase,name.toLowerCase());assert.equal(ref.selection,'all_matching_candidates',command);
+    assert.deepEqual(ref.candidates.map(c=>c.id),[1,2,3]);assert.equal(Grounding.guardIdentity(p,result),result);
+  }
+  const mixed=payload('Within the Acorn cohort set Priority by value; also update Cedar.');
+  mixed.pipeline.records.push({id:4,name:'Cedar Alpha'},{id:5,name:'Cedar Beta'});
+  const refs=Grounding.identityContext(mixed).references;
+  assert.equal(refs.find(ref=>ref.phrase==='acorn').selection,'all_matching_candidates');
+  assert.equal(refs.find(ref=>ref.phrase==='cedar').selection,'single_record');
+  assert.match(Grounding.guardIdentity(mixed,result).crmAction.question,/Which record did you mean by "cedar"/);
+});
+
+test('mentioning a cohort does not authorize a singular, limited, or independently ambiguous target',()=>{
+  const result={crmAction:{action:'workspace_plan',steps:[{op:'update_records'}]}};
+  for(const command of [
+    'Update one record within the Acorn cohort.', 'For the Acorn cohort, update one of its members.',
+    'Within Acorn cohort assign priority to a deal.', 'Within the Acorn cohort, set Priority for two records.',
+    'For the Acorn cohort, choose one and update the owner.', 'Move that record into the Acorn cohort.',
+    'Set notes to "within the Acorn cohort".', 'Update Acorn; within the Acorn cohort classify amounts.',
+    'Within the Acorn cohort, classify amounts; also update Acorn.', 'For Acorn, set the cohort label.',
+    'Within Acorn cohort update the highest-value deal.', 'Within Acorn cohort update another matching record.',
+    'Within Acorn cohort update one record and leave all other Acorn deals unchanged.',
+    'Within Acorn cohort set Priority for two matching records.', 'Within the Acorn cohort? Update priority.'
+  ]){
+    const p=payload(command),ref=Grounding.identityContext(p).references.find(ref=>ref.phrase==='acorn');
+    assert.equal(ref.selection,'single_record',command);
+    assert.equal(Grounding.guardIdentity(p,result).crmAction.action,'clarify',command);
+  }
+});
+
 test('all offered record identities retains the original conditional intent',()=>{
   const p=payload('Set Acorn priority according to its value'),question=Grounding.guardIdentity(p,{crmAction:{action:'workspace_plan'}}).crmAction;
   p.pendingClarification={originalCommand:p.userCommand,question:question.question,options:question.clarificationOptions};
