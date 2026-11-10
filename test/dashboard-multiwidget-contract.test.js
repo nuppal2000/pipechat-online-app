@@ -51,7 +51,7 @@ for(const [command,questions] of [
   const review={requirements:[requirement('Stage counts',['count','groups'],['graph:stage_counts']),requirement('Average by stage',['average','groups'],['graph:stage_average']),
     requirement('Separate graphs',['separate_graphs'],['graph:stage_counts','graph:stage_average']),
     requirement('Retain existing card',['unchanged_graphs'],['unchanged:graph:existing_kpi'])],issues:[],clarificationQuestion:null};
-  const allowed=Review.schemaFor(action,context).properties.requirements.items.properties.stepIds.items.enum;
+  const allowed=Review.allowedStepIdsFor(action,context);
   assert.deepEqual([...allowed].sort(),['root','graph:existing_kpi','graph:stage_counts','graph:stage_average','unchanged:graph:existing_kpi','lifecycle:preview_only',...retainedKpiIds].sort());
   assert(review.requirements.every(item=>item.stepIds.every(id=>allowed.includes(id))));
   assert.deepEqual(Review.validateReview(review,result,context),{ok:true,requested:4,compiled:4,mappingIssues:[]});
