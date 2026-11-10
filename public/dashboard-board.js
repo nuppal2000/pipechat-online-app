@@ -5,6 +5,8 @@
   const id={type:'string',pattern:'^[a-z][a-z0-9_-]{0,47}$'},ids={type:'array',minItems:1,maxItems:12,items:id};
   const identifier=v=>typeof v==='string'&&/^[a-z][a-z0-9_-]{0,47}$/.test(v);
   const chartMeasureRule='One graph axis may contain only one metric family: counts (count/count_distinct), percentages, or field values (sum/average/min/max/median with compatible field units). Numeric storage does not make record counts and field values compatible. To display independent metric families side by side, add separate graph elements with distinct IDs and preserve each requested grouping, scope and filter. Do not put those families in multiple series of one graph. KPI readouts have no shared axis.';
+  const planningInstructions='For a coordinated list of new graphs, put its common population in dashboard_plan.requestScope {scope,where} once, whether stated before or after the list. Use actual field IDs and typed predicates; a name prefix uses starts_with, not a sampled list of names. Alternatively requestScope:{fromAdd:id} explicitly reuses the effective cohort of one new add, including conditions common to all of its non-percentage measures, even when that add comes last. Never infer a cohort from a title or a matching record count. It restricts every add in this request, including temporary KPI charts, never existing elements. Each spec.where may narrow it; measure.where is only for measure-specific predicates. For unrelated or explicitly different populations with no common restriction use requestScope:null and independent specs. Use one add per requested new graph; keeping existing graphs needs no operations on them. Showing graphs together for visual comparison needs questions:[] unless a statistic or explanation in addition to the graphs is requested; do not invent cross-unit arithmetic.';
+  const reviewInstructions='For visual comparison map each chart to its graph:<id>, check its actual chart type, grouping, metric, field and full materialized cohort, not just its title or matching count. Reject a scope stated on only the last widget when requested for all; inspect baseWhere AND commonMeasureWhere on each displayed widget. A misleading generated title claiming a different population must also be repaired; prefer a neutral metric/group title. A population restriction is not a names/fields output. Compare count (all selected records) with numericCount (finite nonblank values including zero) for numeric measures. Use separate_graphs for distinct plotted charts or separate_widgets when the requested layout includes temporary KPI readouts; map the layout to EVERY requested final component ID, not root or only two out of three. Check retained graphs separately with unchanged_graphs and their unchanged:graph:<id> IDs. A visual comparison alone does not request a difference, percentage or saved-record projection.';
   function shape(v,keys){if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).length!==keys.length||keys.some(k=>!Object.hasOwn(v,k)))bad('Please use complete, supported dashboard properties.');}
   function list(values){if(!Array.isArray(values)||!values.length||values.length>12||values.some(v=>!identifier(v))||new Set(values).size!==values.length)bad('Choose distinct dashboard element IDs.');return values;}
   function validateChartMeasures(spec){
@@ -27,7 +29,9 @@
     const distribution=obj({kind:{type:'string',enum:['group_percentages'],description:'Compute a percentage for every plotted group/series using one shared denominator. Required for grouped shares; groups alone only lists values and counts.'},elementId:id,measure,denominator:{type:'string',enum:['matching_records','measure_total'],description:'matching_records: each plotted cell\'s selected record count / the full cached matchingCount before top-N and blank-date exclusions. measure_total: each plotted value / the cached selected measure total; count or sum only, with no omitted groups or records. No per-group denominators, renormalization, assumed counts, or cross-graph populations.'}});
     const question={anyOf:[obj({kind:{type:'string',enum:['summary']},elementIds:ids}),obj({kind:{type:'string',enum:['groups']},elementId:id,measure}),distribution,obj({kind:{type:'string',enum:['value']},label:{type:'string',maxLength:200},reference}),obj({kind:{type:'string',enum:['difference','percentage']},label:{type:'string',maxLength:200},left:reference,right:reference})]};
     const questions={type:'array',maxItems:20,items:question};
-    return [obj({action:{type:'string',enum:['dashboard_plan']},operations:{type:'array',minItems:1,maxItems:24,items:{anyOf:[
+    const requestScope={description:planningInstructions,anyOf:[{type:'null'},obj({scope:spec.properties.scope,where:spec.properties.where}),
+      obj({fromAdd:{...id,description:'ID of a new graph supplying the common population, not an existing graph. Use when the shared predicate is already in that spec.where or all its non-percentage measures.'}})]};
+    return [obj({action:{type:'string',enum:['dashboard_plan']},requestScope,operations:{type:'array',minItems:1,maxItems:24,items:{anyOf:[
       obj({op:{type:'string',enum:['clear']}}),
       obj({op:{type:'string',enum:['add']},id,spec}),
       obj({op:{type:'string',enum:['update']},ids,mode:p.mode,where:p.where,replaceFields:p.replaceFields,changes}),
@@ -84,6 +88,41 @@
     return immutable({evidenceIds:elements.filter(element=>element.unchanged).map(element=>element.evidenceId),elements,orderPreserved:sameValue(beforeOrder,afterOrder)});
   }
   function intersect(left,right){if(!right.length)return clone(left);if(!left.length)return clone(right);if(left.length*right.length>12)bad('The combined dashboard filter is too complex. Please simplify the alternatives.');return left.flatMap(a=>right.map(b=>[...a,...b]));}
+  const conjunction=(a,b)=>sameValue(a,b)?a:intersect(a,b);
+  function checkWhere(where){
+    R.filteringRefinement({action:'filter_records',target:'report',mode:'add_filter',where,removeFields:[]});
+  }
+  function validateRequestScope(action,records,core,custom,options){
+    // Older persisted actions and manual controls have independent specs only.
+    if(!Object.hasOwn(action,'requestScope')||action.requestScope===null)return null;
+    let shared=action.requestScope;
+    if(shared&&Object.hasOwn(shared,'fromAdd')){
+      shape(shared,['fromAdd']);
+      const sources=action.operations.filter(op=>op?.op==='add'&&op.id===shared.fromAdd);
+      if(!identifier(shared.fromAdd)||sources.length!==1)bad('Choose one unique new graph as the request scope source.');
+      const spec=sources[0].spec,common=R.commonMeasureWhere(spec?.measures);
+      if(!spec||spec.owners!=null||spec.accounts!=null)bad('Use explicit typed conditions for the request scope.');
+      checkWhere(spec.where);checkWhere(common);
+      if(!spec.where.length&&!common.length&&spec.scope!=='visible')bad('The source graph has no shared population restriction. Supply explicit request conditions, not a measure-specific numerator or unrelated series filters.');
+      shared={scope:spec.scope,where:conjunction(spec.where,common),fromAdd:shared.fromAdd};
+    }else shape(shared,['scope','where']);
+    if(!['all','visible'].includes(shared.scope)||!action.operations.some(op=>op?.op==='add'))bad('A request scope needs a valid population and at least one new graph.');
+    checkWhere(shared.where);
+    R.tableMatches({where:shared.where},core,custom,records,options.today);
+    return shared;
+  }
+  function newGraphSpec(op,shared){
+    const spec=op.spec;
+    if(!shared)return spec;
+    if(!['all','visible'].includes(spec?.scope)||!Array.isArray(spec.where))bad('Supply a valid base scope and local filters for each new graph.');
+    // Validate local branches first: intersecting with a shared predicate could mask an empty AND.
+    checkWhere(spec.where);
+    const source=op.id===shared.fromAdd,common=R.commonMeasureWhere(spec.measures);
+    const where=source?shared.where:conjunction(shared.where,spec.where);
+    // Hoist a measure predicate only when the declared common base already enforces it.
+    const measures=common.length&&(source||sameValue(common,shared.where))?spec.measures.map(m=>({...m,where:[]})):spec.measures;
+    return {...spec,scope:shared.scope==='visible'?'visible':spec.scope,where,measures};
+  }
   function evaluate(board,records,core,custom=[],options={}){
     validate(board);
     // Validate every filter even when no graph currently has matching records.
@@ -97,9 +136,10 @@
     });
   }
   function format(value,type='number'){return value===null?'Not set':new Intl.NumberFormat('en-US',{maximumFractionDigits:2,...(type==='currency'?{style:'currency',currency:'USD'}:{})}).format(value)+(type==='percent'?'%':'');}
+  function numericDetail(m){return m.numericCount<m.count?` (${m.numericCount} numeric value${m.numericCount===1?'':'s'})`:'';}
   function context(board,views){
     if(!board)return null;
-    return {board:clone(board),displayed:views.map(v=>{const {recordIds,table,...s}=v.snapshot;return {...s,series:[...new Set(table.map(r=>r.series))],extrema:extrema(v),table:table.length<=120?table:undefined,tableOmitted:table.length>120};}),analysisRule:'Select structured questions against these element IDs. The app computes from its cached displayed results; do not calculate or rebuild a graph to answer. For each group\'s percentage/share/distribution use group_percentages {elementId,measure,denominator}, not groups. matching_records divides each cell\'s selected record count by matchingCount before top-N/date exclusions; measure_total divides plotted count/sum values by the complete cached measure total and requires no omitted groups or records. One denominator covers all groups and split series; shares are never renormalized. tableOmitted only limits this context, not the cached analysis.'};
+    return {board:clone(board),displayed:views.map(v=>{const {recordIds,table,...s}=v.snapshot;return {...s,baseWhere:clone(v.spec.where),commonMeasureWhere:clone(R.commonMeasureWhere(v.spec.measures)),series:[...new Set(table.map(r=>r.series))],extrema:extrema(v),table:table.length<=120?table:undefined,tableOmitted:table.length>120};}),analysisRule:'Select structured questions against these element IDs. The app computes from its cached displayed results; do not calculate or rebuild a graph to answer. For each group\'s percentage/share/distribution use group_percentages {elementId,measure,denominator}, not groups. matching_records divides each cell\'s selected record count by matchingCount before top-N/date exclusions; measure_total divides plotted count/sum values by the complete cached measure total and requires no omitted groups or records. One denominator covers all groups and split series; shares are never renormalized. tableOmitted only limits this context, not the cached analysis.'};
   }
   function extrema(view){
     const s=view.snapshot;
@@ -169,11 +209,11 @@
     const lines=[];
     for(const q of questions){
       if(q.kind==='summary'){
-        shape(q,['kind','elementIds']);for(const id of list(q.elementIds)){const s=views.find(v=>v.id===id)?.snapshot;if(!s)bad('A requested report is not currently displayed.');lines.push(`${s.title} [${id}]: ${s.recordCount} records represented${s.matchingCount!==s.recordCount?` (${s.matchingCount} matched before date/group exclusions)`:''}. ${s.summaries.map(m=>`${m.label}: ${format(m.value,m.type)}`).join('; ')}. Scope: ${s.scope}.`);}
+        shape(q,['kind','elementIds']);for(const id of list(q.elementIds)){const s=views.find(v=>v.id===id)?.snapshot;if(!s)bad('A requested report is not currently displayed.');lines.push(`${s.title} [${id}]: ${s.recordCount} records represented${s.matchingCount!==s.recordCount?` (${s.matchingCount} matched before date/group exclusions)`:''}. ${s.summaries.map(m=>`${m.label}: ${format(m.value,m.type)}${numericDetail(m)}`).join('; ')}. Scope: ${s.scope}.`);}
       }else if(q.kind==='groups'){
         shape(q,['kind','elementId','measure']);const v=views.find(v=>v.id===q.elementId);if(!v||!Number.isInteger(q.measure)||q.measure<0||q.measure>=v.snapshot.summaries.length)bad('Choose a displayed graph and measure for the group report.');
         const {series,rows}=measureCells(v,q.measure);
-        lines.push(`${v.snapshot.title} [${v.id}]: ${v.snapshot.recordCount} records represented. Scope: ${v.snapshot.scope}.\n${rows.map(row=>`- ${row.group}${series.length>1?' / '+row.series:''}: ${format(row.value,row.type)} (${row.count} records).`).join('\n')||'No groups.'}`);
+        lines.push(`${v.snapshot.title} [${v.id}]: ${v.snapshot.recordCount} records represented. Scope: ${v.snapshot.scope}.\n${rows.map(row=>`- ${row.group}${series.length>1?' / '+row.series:''}: ${format(row.value,row.type)} (${row.count} records)${numericDetail(row)}.`).join('\n')||'No groups.'}`);
       }else if(q.kind==='group_percentages'){
         lines.push(groupPercentages(q,views));
       }else if(q.kind==='value'){
@@ -192,13 +232,15 @@
     return lines.join('\n\n')+'\n\nCalculated from the displayed graph results. No CRM data or saved KPI cards were changed.';
   }
   function apply(current,action,records,core,custom=[],options={}){
-    shape(action,['action','operations','questions']);if(action.action!=='dashboard_plan'||!Array.isArray(action.operations)||!action.operations.length||action.operations.length>24)bad('Supply a bounded dashboard plan.');
+    shape(action,['action','operations','questions',...(Object.hasOwn(action||{},'requestScope')?['requestScope']:[])]);if(action.action!=='dashboard_plan'||!Array.isArray(action.operations)||!action.operations.length||action.operations.length>24)bad('Supply a bounded dashboard plan.');
+    const shared=validateRequestScope(action,records,core,custom,options);
     const before=clone(current??empty());validate(before);const next=clone(before);
     for(const op of action.operations){
       if(op.op==='clear'){shape(op,['op']);next.elements=[];next.sharedFilters=[];next.activeId=null;}
       else if(op.op==='add'){
         shape(op,['op','id','spec']);if(!identifier(op.id)||next.elements.some(e=>e.id===op.id))bad('Each new graph needs a new unique ID.');
-        validateChartMeasures(op.spec);R.execute(records,op.spec,core,custom,options);next.elements.push({id:op.id,spec:clone(op.spec),visibleIds:op.spec.scope==='visible'?[...(options.visibleIds||[])]:[]});next.activeId=op.id;
+        const spec=newGraphSpec(op,shared);
+        validateChartMeasures(spec);R.execute(records,spec,core,custom,options);next.elements.push({id:op.id,spec:clone(spec),visibleIds:spec.scope==='visible'?[...(options.visibleIds||[])]:[]});next.activeId=op.id;
       }else if(op.op==='update'){
         // Preserve readable older boards; enforce the axis contract when authoring chart properties.
         shape(op,['op','ids','mode','where','replaceFields','changes']);for(const id of list(op.ids)){const e=next.elements.find(e=>e.id===id);if(!e)bad('Choose an existing graph to update.');e.spec=R.refine(e.spec,{action:'refine_report',mode:op.mode,where:op.where,replaceFields:op.replaceFields,changes:op.changes},core,custom,{...options,records,visibleIds:e.visibleIds});if(op.changes.some(change=>['chart','measures'].includes(change.field)))validateChartMeasures(e.spec);}
@@ -217,5 +259,5 @@
     const answer=analyze(questions,views);
     return {board:next,views,answer,preservation:preservation(before,next,{prefix:options.preservationPrefix??''})};
   }
-  return {empty,validate,preservation,validateChartMeasures,schemas,evaluate,apply,analyze,context,format};
+  return {empty,validate,preservation,validateChartMeasures,schemas,evaluate,apply,analyze,context,format,numericDetail,planningInstructions,reviewInstructions};
 });

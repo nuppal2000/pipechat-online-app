@@ -42,7 +42,7 @@
       goals:{type:'array',minItems:1,maxItems:20,description:'Requested business outcomes mapped to exact step IDs. Every non-selection operation must be explicitly covered. Preceding select_records dependencies are covered transitively; unused selections still need explicit coverage. Never invent an ID or treat a field, task, read or dashboard operation as an implicit dependency.',items:object({description:str,stepIds:{type:'array',minItems:1,items:str}})},
       steps:{type:'array',minItems:1,maxItems:30,items:{anyOf:[
         step('select_records',{source:str,where:{type:'array',items:{type:'array',items:condition}},orderBy:optionalField,direction:{type:'string',enum:['asc','desc']},limit:{type:['integer','null']},relatedTasks:{type:'string',enum:['any','none','exists']}}),
-        step('add_field',{name:str,type:{type:'string',enum:['text','choice','date']},options:{type:'array',items:str}}),
+        step('add_field',{name:str,type:{type:'string',enum:core.customFieldTypes},options:{type:'array',items:str}}),
         step('rename_choice_option',{field:fieldRef,from:str,to:str}),
         step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:assignment}}),
         step('add_todos',{selection:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
@@ -197,10 +197,10 @@
           selections.set(step.id,matched.map(row=>row.id));
           review.push({id:step.id,label:step.label,op:step.op,matched:count,filter:Reports.describe(spec,core,next.customFields)+(step.relatedTasks&&step.relatedTasks!=='any'?`; Linked tasks: ${step.relatedTasks}`:''),source:step.source,order:orderField?`${orderField.name}, ${step.direction==='desc'?'highest first':'lowest first'}; ties by record ID`:'Saved row order',limit:step.limit,records:matched.map(row=>({id:row.id,name:String(row[core.role('primary')]||'Unnamed record #'+row.id),value:orderField?row[orderField.id]:null}))});
         }else if(step.op==='add_field'){
-          if(!['text','choice','date'].includes(step.type)||!Array.isArray(step.options)||step.type!=='choice'&&step.options.length)fail('Choose a text, date or dropdown field with the appropriate options.');
-          const field={id:`cf_${nonce}_${index}`,name:step.name,type:step.type,...(step.type==='choice'?{options:step.options}:{})};
-          next.customFields=core.validateCustomFields([...next.customFields,field]);
-          next.records=next.records.map(row=>({...row,[field.id]:''}));fields.set(step.id,field.id);addedFields.push(field);
+          if(!core.customFieldTypes.includes(step.type)||!Array.isArray(step.options)||step.type!=='choice'&&step.options.length)fail('Choose a text, number, date or dropdown field with the appropriate options.');
+          next.customFields=core.validateCustomFields([...next.customFields,{id:`cf_${nonce}_${index}`,name:step.name,type:step.type,options:step.options}]);
+          const field=next.customFields.at(-1),blank=core.validateStoredValue(field.id,'',next.customFields);
+          next.records=next.records.map(row=>({...row,[field.id]:blank}));fields.set(step.id,field.id);addedFields.push(field);
           review.push({id:step.id,op:step.op,label:step.label,field});
         }else if(step.op==='rename_choice_option'){
           const field=resolve(step.field),definition=core.definitions(next.customFields).find(f=>f.id===field);

@@ -30,9 +30,12 @@
   }
   function drawBoard({host,views,board,esc,Chart,document,onSelect,onRemove,icon}){
     const charts=[];
-    host.innerHTML='';
     const focusId=host.dataset.focusId;
-    if(!views.some(view=>view.id===focusId))delete host.dataset.focusId;
+    if(focusId){
+      const previous=new Set(Array.from(host.querySelectorAll('[data-element-id]'),e=>e.dataset.elementId));
+      if(!views.some(v=>v.id===focusId)||views.some(v=>!previous.has(v.id)))delete host.dataset.focusId;
+    }
+    host.innerHTML='';
     function applyFocus(){
       const id=host.dataset.focusId;
       host.querySelectorAll('[data-element-id]').forEach(element=>{
@@ -48,7 +51,7 @@
     const ordered=[...views.filter(v=>v.spec.chart==='kpi'),...views.filter(v=>v.spec.chart!=='kpi')];
     for(const v of ordered){
       const s=v.snapshot,section=document.createElement('section');section.className='dashboard-element'+(v.spec.chart==='kpi'?' dashboard-element-kpi':'');section.dataset.elementId=v.id;
-      section.innerHTML=`<header><div><h4>${esc(s.title)}</h4><span class="subtle">${esc(v.id)} / ${esc(v.spec.chart)} / ${s.recordCount} records</span></div><div class="dashboard-element-actions"><button type="button" class="icon-btn" data-edit-report title="Edit graph controls" aria-label="Edit ${esc(s.title)} controls">${icon('ListFilter')}</button><button type="button" class="icon-btn" data-remove-report title="Remove graph" aria-label="Remove ${esc(s.title)}">${icon('X')}</button></div></header><p class="dashboard-element-scope">${esc(s.scope)}</p>${s.sharedFilters.map(f=>`<p class="dashboard-shared-filter">Shared filter ${esc(f.id)}: ${esc(f.description)}</p>`).join('')}${s.undated?`<p class="subtle">${s.undated} blank dates excluded from date groups.</p>`:''}<div class="dashboard-element-visual"></div><details class="dashboard-element-data"><summary>Data / ${s.recordCount} records</summary><div class="report-table-wrap"><table><thead><tr><th>${esc(s.groupBy)}</th><th>Measure</th><th>Value</th><th>Records</th></tr></thead><tbody>${s.table.map(r=>`<tr><td>${esc(r.group)}</td><td>${esc(r.series)}</td><td>${esc(root.PipeChatDashboard.format(r.value,r.type))}</td><td>${r.count}</td></tr>`).join('')}</tbody></table></div></details>`;
+      section.innerHTML=`<header><div><h4>${esc(s.title)}</h4><span class="subtle">${esc(v.id)} / ${esc(v.spec.chart)} / ${s.recordCount} records</span></div><div class="dashboard-element-actions"><button type="button" class="icon-btn" data-edit-report title="Edit graph controls" aria-label="Edit ${esc(s.title)} controls">${icon('ListFilter')}</button><button type="button" class="icon-btn" data-remove-report title="Remove graph" aria-label="Remove ${esc(s.title)}">${icon('X')}</button></div></header><p class="dashboard-element-scope">${esc(s.scope)}</p>${s.sharedFilters.map(f=>`<p class="dashboard-shared-filter">Shared filter ${esc(f.id)}: ${esc(f.description)}</p>`).join('')}${s.undated?`<p class="subtle">${s.undated} blank dates excluded from date groups.</p>`:''}<div class="dashboard-element-visual"></div><details class="dashboard-element-data"><summary>Data / ${s.recordCount} records</summary><div class="report-table-wrap"><table><thead><tr><th>${esc(s.groupBy)}</th><th>Measure</th><th>Value</th><th>Records</th></tr></thead><tbody>${s.table.map(r=>`<tr><td>${esc(r.group)}</td><td>${esc(r.series)}</td><td>${esc(root.PipeChatDashboard.format(r.value,r.type))}</td><td>${r.count}${esc(root.PipeChatDashboard.numericDetail(r))}</td></tr>`).join('')}</tbody></table></div></details>`;
       section.querySelector('[data-edit-report]').onclick=()=>onSelect(v.id);section.querySelector('[data-remove-report]').onclick=()=>onRemove(v.id);
       const focusButton=document.createElement('button');focusButton.type='button';focusButton.className='icon-btn';focusButton.dataset.focusReport='';focusButton.title='Focus graph';focusButton.setAttribute('aria-label','Focus graph');focusButton.innerHTML=icon('Search');
       focusButton.onclick=()=>{if(host.dataset.focusId===v.id)delete host.dataset.focusId;else host.dataset.focusId=v.id;applyFocus();};

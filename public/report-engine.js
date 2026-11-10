@@ -229,6 +229,16 @@
     if(bucket==='quarter')return iso.slice(0,4)+'-Q'+(Math.floor(date.getUTCMonth()/3)+1);
     return bucket==='year'?iso.slice(0,4):iso;
   }
+  // Identical non-percentage filters across all measures already restrict report coverage.
+  // A percentage predicate is a numerator, never an implicit population predicate.
+  function commonMeasureWhere(measures){
+    if(!Array.isArray(measures))return [];
+    const first=measures[0]?.where;
+    if(!Array.isArray(first)||!first.length||measures.some(m=>m?.metric==='percentage'))return [];
+    if(measures.length===1)return first;
+    const signature=JSON.stringify(first);
+    return measures.every(m=>JSON.stringify(m?.where)===signature)?first:[];
+  }
   function execute(records,spec,core,custom=[],options={}){
     const defs=new Map(core.definitions(custom).map(f=>[f.id,f])),today=core.date(options.today||new Date().toISOString().slice(0,10))?.getTime();
     if(!spec||spec.version!==1||!['bar','line','stage','kpi'].includes(spec.chart)||!['all','visible'].includes(spec.scope)||!buckets.includes(spec.bucket)||!['label_asc','label_desc','value_asc','value_desc'].includes(spec.sort))fail('Which chart and grouping would you like? This report definition is not supported.');
@@ -252,7 +262,7 @@
     });
     // Shared non-percentage filters describe the report cohort, not empty categories.
     // Keep percentage denominators and intentionally different measure cohorts intact.
-    const sharedMeasureFilter=measures.every(m=>m.metric!=='percentage'&&m.where.length&&JSON.stringify(m.where)===JSON.stringify(measures[0].where))?measures[0].matches:()=>true;
+    const sharedMeasureFilter=commonMeasureWhere(measures).length?measures[0].matches:()=>true;
     const rows=records.filter(r=>(spec.scope==='all'||visible.has(r.id))&&matches(r)&&sharedMeasureFilter(r)&&selections.every(s=>s.values===null||s.values.has(norm(r[s.field]))));
     const groups=new Map(),series=new Map();let undated=0;
     for(const row of rows){
@@ -282,18 +292,26 @@
     if(!spec.splitBy&&!series.size)series.set('all',null);
     if(series.size*measures.length>24)fail('This would create more than 24 series. Which categories or measures should I compare?');
     function aggregate(part,m){
-      const selected=part.filter(m.matches);if(m.metric==='count')return selected.length;
-      if(m.metric==='percentage')return rows.length?selected.length/rows.length*100:null;
+      const selected=part.filter(m.matches),count=selected.length;
+      if(m.metric==='count')return {value:count,count};
+      if(m.metric==='percentage')return {value:rows.length?count/rows.length*100:null,count};
       const values=selected.map(r=>r[m.field]).filter(v=>!blank(v));
-      if(m.metric==='count_distinct')return new Set(values.map(norm)).size;
+      if(m.metric==='count_distinct')return {value:new Set(values.map(norm)).size,count};
       const nums=values.filter(v=>(typeof v==='number'||typeof v==='string')&&Number.isFinite(Number(v))).map(Number);
-      if(!nums.length)return null;
-      if(m.metric==='min')return Math.min(...nums);if(m.metric==='max')return Math.max(...nums);
-      if(m.metric==='median'){nums.sort((a,b)=>a-b);const mid=Math.floor(nums.length/2);return nums.length%2?nums[mid]:(nums[mid-1]+nums[mid])/2;}
-      const total=nums.reduce((sum,v)=>sum+(m.type==='currency'?Math.round(v*100):v),0)/(m.type==='currency'?100:1);
-      return total/(m.metric==='average'?nums.length:1);
+      const numericCount=nums.length;
+      let value=null;
+      if(numericCount){
+        if(m.metric==='min')value=Math.min(...nums);
+        else if(m.metric==='max')value=Math.max(...nums);
+        else if(m.metric==='median'){nums.sort((a,b)=>a-b);const mid=Math.floor(numericCount/2);value=numericCount%2?nums[mid]:(nums[mid-1]+nums[mid])/2;}
+        else{
+          const total=nums.reduce((sum,v)=>sum+(m.type==='currency'?Math.round(v*100):v),0)/(m.type==='currency'?100:1);
+          value=total/(m.metric==='average'?numericCount:1);
+        }
+      }
+      return {value,count,numericCount};
     }
-    let data=[...groups.values()].map(g=>({...g,value:aggregate(g.rows,measures[0])}));
+    let data=[...groups.values()].map(g=>({...g,value:aggregate(g.rows,measures[0]).value}));
     const compare=(a,b)=>typeof a.raw==='number'&&typeof b.raw==='number'?a.raw-b.raw:a.label.localeCompare(b.label,undefined,{numeric:true,sensitivity:'base'});
     data.sort((a,b)=>spec.sort.startsWith('label')?compare(a,b)*(spec.sort==='label_desc'?-1:1):a.value==null?b.value==null?compare(a,b):1:b.value==null?-1:(a.value-b.value)*(spec.sort==='value_desc'?-1:1)||compare(a,b));
     const totalGroups=data.length;if(spec.limit)data=data.slice(0,spec.limit);
@@ -301,7 +319,7 @@
     const datasets=[],table=[];
     for(const [key,seriesLabel]of series)for(const m of measures){
       const label=seriesLabel===null?m.label:`${seriesLabel} / ${m.label}`;
-      const values=data.map(g=>{const part=g.parts.get(key)||[],value=aggregate(part,m);table.push({group:g.label,series:label,value,count:part.filter(m.matches).length,type:m.type});return value;});
+      const values=data.map(g=>{const cell=aggregate(g.parts.get(key)||[],m);table.push({group:g.label,series:label,...cell,type:m.type});return cell.value;});
       if(spec.chart==='stage'&&values.some(v=>v!==null&&v<0))fail('A stage chart cannot represent negative values. Would you like a bar chart instead?');
       datasets.push({label,values,type:m.type});
     }
@@ -314,7 +332,7 @@
       const actual=datasets.filter((_,i)=>i%measures.length===index).flatMap(d=>d.values).reduce((sum,value)=>sum+(value??0),0);
       if(expected!==null&&Math.abs(actual-expected)>1e-7)fail('The percentage groups do not reconcile to their shared population. No report was changed.');
     }
-    return {labels:data.map(g=>g.label),datasets,table,rows,count:rows.length,representedIds:represented.map(r=>r.id),summaries:measures.map(m=>({label:m.label,metric:m.metric,field:m.field,type:m.type,value:aggregate(represented,m),count:represented.filter(m.matches).length})),undated,totalGroups,shownGroups:data.length,description:describe(spec,core,custom),title:spec.title.trim()||measures.map(m=>m.label).join(' / ')+(spec.groupBy?' by '+defs.get(spec.groupBy).name:'')};
+    return {labels:data.map(g=>g.label),datasets,table,rows,count:rows.length,representedIds:represented.map(r=>r.id),summaries:measures.map(m=>({label:m.label,metric:m.metric,field:m.field,type:m.type,...aggregate(represented,m)})),undated,totalGroups,shownGroups:data.length,description:describe(spec,core,custom),title:spec.title.trim()||measures.map(m=>m.label).join(' / ')+(spec.groupBy?' by '+defs.get(spec.groupBy).name:'')};
   }
   function describe(spec,core,custom=[]){
     const fields=core.fieldsFor(custom),groups=g=>describeConditions(g,fields);
@@ -341,5 +359,5 @@
     }
     return next;
   }
-  return {execute,responseSchema,refinementSchema,filteringSchema,filteringRefinement,readActionSchemas,queryRecords,kpiReport,auditRecords,describeAudit,refine,refineTableFilter,tableMatches,tableFilterDescription,describe,selections,metrics,buckets,operators,names};
+  return {execute,commonMeasureWhere,responseSchema,refinementSchema,filteringSchema,filteringRefinement,readActionSchemas,queryRecords,kpiReport,auditRecords,describeAudit,refine,refineTableFilter,tableMatches,tableFilterDescription,describe,selections,metrics,buckets,operators,names};
 });
