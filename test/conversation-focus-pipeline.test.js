@@ -250,6 +250,7 @@ function modelWireHarness(){
     businessCompiler:require('../lib/business-compiler'),agentPersona:require('../lib/agent-persona'),
     actionJournalContext:require('../lib/action-journal-context'),dateCalendar:require('../lib/date-context'),
     clarificationContext:require('../lib/clarification-context'),csvImportCore:require('../public/csv-import'),
+    modelResponse:require('../lib/model-response'),
     RequestError:BackendError,OPENAI_API_KEY:'offline-fixture',AI_MODELS:{simple:'offline',complex:'offline'},cloudBackend:false,
     structuredClone,AbortController,setTimeout,clearTimeout,recordModelAttempt:async()=>{},
     fetch:async(url,options)=>{bodies.push(JSON.parse(options.body));throw stop;}});

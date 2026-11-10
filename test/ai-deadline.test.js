@@ -302,7 +302,8 @@ test('HTTP 200 incomplete planner response falls back once with the unchanged sn
   const {done,res}=await h.request({userCommand:'Hello. Do not change anything.'});
   h.clock.advance(30000);first.resolve(incompleteData);await done;
   assert.equal(res.status,200);assert.equal(res.body.ai.reason,'incomplete_response_fallback');
-  assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.4-mini','gpt-5.2','gpt-5.4-mini']);
+  assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),['gpt-5.4-mini','gpt-5.2','gpt-5.2']);
+  assert.deepEqual(h.requests.map(r=>isReview(r.options)),[false,false,true]);
   const [before,after]=h.requests.map(r=>JSON.parse(r.options.body));
   assert.deepEqual(before.input,after.input);assert.deepEqual(before.text,after.text);
   assert.deepEqual(h.clock.delays,[80000,50000,50000]);
@@ -328,14 +329,20 @@ test('reviewer can use the single completion fallback but cannot reuse a planner
     let planners=0;
     const h=harness('supabase',async(url,options)=>{
       const body=JSON.parse(options.body);
-      const data=isReview(options)?body.model==='gpt-5.2'?{output_text:JSON.stringify(conversationReview)}:incompleteData:
+      // Once the planner consumes fallback, review starts on complex. Make that
+      // review incomplete too, so the test still proves no second fallback.
+      const data=isReview(options)?!plannerFails&&body.model==='gpt-5.2'?{output_text:JSON.stringify(conversationReview)}:incompleteData:
         plannerFails&&++planners===1?incompleteData:modelData;
       return {ok:true,json:async()=>data};
     });
     const {done,res}=await h.request();await done;
     assert.equal(res.status,plannerFails?502:200);
     assert.deepEqual(h.calls,['reserve',plannerFails?'release':'commit']);
-    assert.equal(h.requests.filter(r=>JSON.parse(r.options.body).model==='gpt-5.2').length,1);
+    assert.deepEqual(h.requests.map(r=>JSON.parse(r.options.body).model),
+      plannerFails?['gpt-5.4-mini','gpt-5.2','gpt-5.2']:['gpt-5.4-mini','gpt-5.4-mini','gpt-5.2']);
+    assert.deepEqual(h.requests.map(r=>isReview(r.options)),plannerFails?[false,false,true]:[false,true,true]);
+    assert.equal(h.meter.used,plannerFails?0:1);assert.equal(h.clock.timers.size,0);
+    if(plannerFails){assert.equal(res.body.crmAction,undefined);assert.equal(res.body.assistantMessage,undefined);}
   }
 });
 test('failed completion telemetry cannot be reported as success',async()=>{
@@ -345,6 +352,6 @@ test('failed completion telemetry cannot be reported as success',async()=>{
   await h.plan({userCommand:'Hello',pipeline:{records:[],primaryField:'account'},
     _modelAttempts:{next:0},_recordTelemetry:async event=>events.push(event)});
   assert.deepEqual(events.map(e=>[e.model,e.outcome]),[
-    ['gpt-5.4-mini','failed'],['gpt-5.2','succeeded'],['gpt-5.4-mini','succeeded']
+    ['gpt-5.4-mini','failed'],['gpt-5.2','succeeded'],['gpt-5.2','succeeded']
   ]);
 });

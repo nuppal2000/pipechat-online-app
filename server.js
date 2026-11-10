@@ -792,6 +792,7 @@ function parseModelResponse(response,data,model){
   }
 }
 async function runStructuredReview(contract,startedAt,payload,model=AI_MODELS.simple){
+  model=modelResponse.reviewModel(payload,model,AI_MODELS);
   const controller=new AbortController();let timer;
   const deadline=new Promise((resolve,reject)=>{timer=setTimeout(()=>{reject(new RequestError('The completeness review timed out. No changes were prepared.',502));controller.abort();},Math.max(1,80000-(Date.now()-startedAt)));});
   try{

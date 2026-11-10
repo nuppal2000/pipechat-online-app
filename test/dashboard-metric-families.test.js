@@ -151,7 +151,10 @@ test('saved-fact source mapping does not displace nested chart metrics or add la
     {op:'dashboard',id:'charts',label:'Stage comparison',plan:action([add('counts',spec(['count'])),add('averages',spec(['average']))])}
   ]);
   const pipeline={...w,currentDate:today},result={crmAction:a},computed=Review.evidence({pipeline},result);
-  assert.deepEqual(computed.recordReadEvidence,[{stepId:'saved_fact',source:'current_fields',selection:'selected',outputs:['fields'],recordIds:[1]}]);
+  assert.deepEqual(computed.recordReadEvidence,[{stepId:'saved_fact',source:'current_fields',selection:'selected',outputs:['fields'],recordIds:[1],
+    outputDefinitions:[{kind:'fields',field:'f_notes'}],
+    selectionChain:[{selectionId:'selected',source:'all',where:[[F.where('f_deal','equals','Deal 1')]],relatedTasks:null,
+      orderBy:null,direction:'asc',limit:null,ranking:null,matchedCount:1,recordIds:[1]}]}]);
   const ids=['charts/graph:counts','charts/graph:averages'];
   const contract=Review.schemaFor(a,{pipeline}),stepIds=contract.properties.requirements.items.properties.stepIds;
   assert(ids.every(id=>stepIds.items.enum.includes(id)));
