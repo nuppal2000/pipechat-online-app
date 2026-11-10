@@ -19,10 +19,21 @@
     if(families.size>1)bad('These measures have independent units even when stored as numbers. Use separate dashboard_plan add operations with distinct graph IDs, one metric family per graph, keeping the requested scope, groups and filters. Do not substitute KPI cards for requested graphs.');
     return spec;
   }
+  const savedCardsRule='When a temporary dashboard request explicitly requires leaving saved KPI cards unchanged, use one workspace_plan dashboard step containing the complete dashboard_plan. Its computed.constraintEvidence proves the unchanged saved-card definitions separately from the temporary graphs. Include no saved-card operation or record write. An ordinary chart request needs no such wrapper.';
   function schemas(core,custom=[]){
     const spec=R.responseSchema(core,custom).anyOf[1],refine=R.refinementSchema(core,custom),p=refine.properties;
     spec.description=chartMeasureRule;
     spec.properties.measures.description=chartMeasureRule;
+    const base=spec.properties.measures.items.properties,fields=core.definitions(custom);
+    const measureShape=(metrics,field)=>obj({...base,metric:{type:'string',enum:metrics},field});
+    const fieldIds=defs=>({type:'string',enum:defs.map(f=>f.id)});
+    const numeric=fields.filter(f=>['number','currency'].includes(f.type));
+    // Match execute(): counting rows takes no field; counting distinct values does.
+    spec.properties.measures.items={anyOf:[
+      measureShape(['count','percentage'],{type:'null'}),
+      ...(fields.length?[measureShape(['count_distinct'],fieldIds(fields))]:[]),
+      ...(numeric.length?[measureShape(['sum','average','median','min','max'],fieldIds(numeric))]:[])
+    ]};
     const changes={...p.changes,minItems:0,description:chartMeasureRule};
     const measure={type:'integer',minimum:0,maximum:5};
     const reference={anyOf:[obj({elementId:id,measure,stat:{type:'string',enum:['records','aggregate','maximum','minimum_nonzero']}}),obj({elementId:id,measure,stat:{type:'string',enum:['group']},group:{type:'string',maxLength:300},series:{type:['string','null'],maxLength:300}})]};
@@ -259,5 +270,5 @@
     const answer=analyze(questions,views);
     return {board:next,views,answer,preservation:preservation(before,next,{prefix:options.preservationPrefix??''})};
   }
-  return {empty,validate,preservation,validateChartMeasures,schemas,evaluate,apply,analyze,context,format,numericDetail,planningInstructions,reviewInstructions};
+  return {empty,validate,preservation,validateChartMeasures,schemas,evaluate,apply,analyze,context,format,numericDetail,planningInstructions:planningInstructions+' '+savedCardsRule,reviewInstructions};
 });
