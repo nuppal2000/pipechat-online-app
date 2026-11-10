@@ -1,7 +1,7 @@
 'use strict';
 
 const test=require('node:test'),assert=require('node:assert/strict');
-const {schema,supports,evidenceIds}=require('../lib/read-output-contract');
+const {schema,supports,evidenceIds,displayEvidence}=require('../lib/read-output-contract');
 const spec=(metric='sum',field=metric==='count'||metric==='percentage'?null:'amount')=>({version:1,title:'Report',chart:'bar',
   scope:'all',groupBy:'owner',bucket:'none',splitBy:null,where:[],sort:'label_asc',limit:null,measures:[{label:'Measure',metric,field,where:[]}]});
 const pipeline=(...elements)=>({dashboard:{board:{version:1,elements:elements.map(([id,value])=>({id,spec:value,visibleIds:[]})),sharedFilters:[],activeId:elements[0]?.[0]??null}}});
@@ -21,12 +21,43 @@ const update=(ids,changes)=>({op:'update',ids,mode:'add_filter',where:[],replace
 const root=(action,required,p)=>supports(action,['root'],required,{pipeline:p});
 
 test('exports a bounded array schema and treats only explicit empty requirements as noncomputed',()=>{
-  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes','separate_graphs','dependencies','unchanged_graphs','separate_widgets']);
-  assert.equal(schema.type,'array');assert.equal(schema.maxItems,17);
+  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes','separate_graphs','dependencies','unchanged_graphs','separate_widgets','scalar_kpi']);
+  assert.equal(schema.type,'array');assert.equal(schema.maxItems,schema.items.enum.length);
   assert.equal(supports(null,[],[]),true);assert.equal(supports({action:'undo_action'},['root'],[]),true);
   for(const required of [undefined,null,'count',{},['unknown'],['count','count'],Array(12).fill('count'),new Array(1)]){
     assert.equal(supports(read('answer','count'),['root'],required),false);
   }
+});
+
+test('scalar_kpi requires exactly one displayed ungrouped, unsplit measure on the mapped final component',()=>{
+  const scalar={...spec('average'),chart:'kpi',groupBy:null},grouped={...scalar,groupBy:'owner'};
+  const stage=spec(),request=['average','scalar_kpi'];
+  for(const [overrides,qualifies] of [[{},true],[{groupBy:'owner',limit:1},false],[{splitBy:'owner'},false],
+    [{chart:'bar'},false],[{measures:[...scalar.measures,...spec('sum').measures]},false]]){
+    const candidate={...scalar,...overrides},a=dashboard([add('total',stage),add('mean',candidate)]);
+    const step={op:'dashboard',id:'charts',label:'Charts',plan:a},p=plan(step);
+    for(const [action,prefix] of [[a,''],[p,'charts/']]){
+      assert.equal(supports(action,[prefix+'graph:mean'],request),qualifies);
+      for(const ids of [[prefix+'graph:total'],['root'],['charts'],[prefix+'graph:total',prefix+'graph:mean']]){
+        assert.equal(supports(action,ids,['scalar_kpi']),false);
+      }
+    }
+    const display=displayEvidence(pipeline(['mean',candidate]).dashboard.board).elements[0];
+    assert.equal(display.outputs.includes('scalar_kpi'),qualifies);assert.equal(display.splitBy,candidate.splitBy);
+    assert.equal(root({action:'show_report',smartReport:candidate},request),qualifies);
+    assert.equal(supports(plan(report('mean',candidate,[],true)),['mean'],request),qualifies);
+  }
+  const a=dashboard([add('mean',scalar)]);
+  assert.equal(root({action:'show_kpi',measures:scalar.measures},request),false);
+  assert.equal(supports(analyze(value(reference('mean'))),['graph:mean'],request,pipeline(['mean',scalar])),false);
+  assert.equal(supports(plan(report('old',scalar,[],true),report('new',grouped,[],true)),['old'],request),false);
+  const change=update(['mean'],[{field:'groupBy',value:'owner'}]),undo=update(['mean'],[{field:'groupBy',value:null}]);
+  assert.equal(supports(dashboard([...a.operations,change]),['graph:mean'],request),false);
+  const p=pipeline(['mean',grouped]);
+  assert.equal(root({...undo,action:'refine_report'},request,p),true);
+  assert.equal(root({...change,action:'refine_report'},request,p),false);
+  assert.equal(root({...change,action:'refine_report'},['groups','average'],p),true);
+  assert.equal(root({action:'show_report',smartReport:grouped},['groups','average']),true);
 });
 
 test('workspace outputs use exact typed kinds from only the mapped steps',()=>{

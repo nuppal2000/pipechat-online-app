@@ -72,7 +72,7 @@ for(const [prefix,command] of [['QA1105',first],['North','For North deals show t
       [['stage',6,5,70000],['kpi',6,5,14000]]);
     assert.deepEqual(result.board.elements.map(e=>e.spec.where),[a.requestScope.where,a.requestScope.where]);
     assert.deepEqual(result.board.sharedFilters,[]);
-    const requirements=[req('Total by stage',['sum','groups'],['graph:stage_total']),req('KPI average',['average'],['graph:mean']),
+    const requirements=[req('Total by stage',['sum','groups'],['graph:stage_total']),req('KPI average',['average','scalar_kpi'],['graph:mean']),
       req('Separate chart and KPI',['separate_widgets'],['graph:stage_total','graph:mean'])];
     assert.deepEqual(checked(w,command,a,requirements).board,result.board);
     assert.equal(Read.supports(a,['graph:stage_total','graph:mean'],['separate_graphs']),false);
@@ -80,6 +80,55 @@ for(const [prefix,command] of [['QA1105',first],['North','For North deals show t
     assert.deepEqual({w,a},before);
   });
 }
+
+// Capture the actual indicator markup, not chat summaries or the disclosure table.
+function kpiVisual(view){
+  const root={PipeChatDashboard:Board};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(require.resolve('../public/report-ui'),'utf8'),root);
+  const visual={},button={setAttribute(){}},actions={prepend(){}};
+  const section={dataset:{},classList:{toggle(){}},querySelector:key=>key==='.dashboard-element-visual'?visual:key==='.dashboard-element-actions'?actions:button};
+  root.PipeChatReportsUI.drawBoard({views:[view],host:{dataset:{},append(){},querySelectorAll:()=>[section]},
+    document:{createElement:tag=>tag==='section'?section:{...button,dataset:{}}},esc:s=>String(s).replaceAll('<','&lt;'),icon:()=>''});
+  return Array.from(visual.innerHTML.matchAll(/<span>(.*?)<\/span><strong>(.*?)<\/strong>/g),m=>m.slice(1));
+}
+
+test('F04: rendered KPI is the cohort mean; six account cells cannot prove a scalar even with a correct chat answer',()=>{
+  const w=workspace(),values=[30000,20000,12000,8000,0,null];
+  values.forEach((v,i)=>{w.records[i].f_value=v;});
+  const prefix=cohort('QA1105'),a=plan(prefix,total('stage'),average()),good=apply(w,a);
+  assert.deepEqual(kpiVisual(good.views[1]),[['average','$14,000.00']]);
+  assert.match(good.answer,/\$14,000\.00 \(5 numeric values\)/);
+  assert.deepEqual(good.views[0].snapshot.table.map(r=>[r.group,r.value]),[['Lost',null],['Open',58000],['Won',12000]]);
+  const wrong=structuredClone(a);wrong.operations[1].spec.groupBy='f_deal';
+  const grouped=apply(w,wrong);
+  assert.equal(grouped.answer,good.answer);
+  assert.deepEqual(kpiVisual(grouped.views[1]),values.map((v,i)=>['QA1105 '+i+' / average',Board.format(v,'currency')]));
+  const requirement=req('One aggregate mean KPI',['scalar_kpi','average'],['graph:mean']);
+  const result={crmAction:wrong},computed=Review.evidence({pipeline:w,userCommand:first},result);
+  const rejected=Review.validateReview({requirements:[requirement],issues:[],clarificationQuestion:null},result,{pipeline:w,computed});
+  assert.equal(rejected.ok,false);assert.equal(rejected.mappingReasons.unsupported_required_output,1);
+  assert.match(rejected.mappingIssues[0],/missing from the referenced steps: scalar_kpi/);
+  assert.match(Review.compilerInstructions,/groupBy:null, splitBy:null/);
+});
+
+test('explicit owner KPI labels grouped and split-only buckets, including blank amounts and escaped labels',()=>{
+  const w=workspace();w.records[5].f_owner='<Cal>';
+  for(const split of [false,true]){
+    const op=average();op.spec[split?'splitBy':'groupBy']='f_owner';
+    const a=plan(cohort('QA1105'),op),{views}=apply(w,a);
+    assert.deepEqual(kpiVisual(views[0]).sort(),[['&lt;Cal> / average','Not set'],['Ada / average','$10,666.67'],['Ben / average','$19,000.00']]);
+    assert.equal(Read.supports(a,['graph:mean'],['groups','average']),true);
+    assert.equal(Read.supports(a,['graph:mean'],['scalar_kpi']),false);
+  }
+});
+
+test('ungrouped KPIs render one indicator per measure, distinguishing no numeric data from zero',()=>{
+  const w=workspace(),op=average();
+  op.spec.measures.push(count().spec.measures[0]);
+  const indicators=prefix=>kpiVisual(apply(w,plan(cohort(prefix),op)).views[0]);
+  assert.deepEqual(indicators('QA1105'),[['average','$14,000.00'],['count','6']]);
+  assert.deepEqual(indicators('Absent'),[['average','Not set'],['count','0']]);
+});
 
 test('F08: '+append,()=>{
   const w=workspace(),initial=apply(w,plan(cohort('QA1105'),total('stage'),average()));
@@ -215,7 +264,7 @@ test('F04 existing board: '+savedCardsCommand,()=>{
   const a=F.plan([{id:'charts',label:'Show temporary charts without changing saved cards',op:'dashboard',
     plan:plan(cohort('QA1105'),add('requested_total','bar','sum','f_stage'),average())}]);
   const ids=['charts/graph:requested_total','charts/graph:mean'];
-  const computed=checked(w,savedCardsCommand,a,[req('Stage total',['sum','groups'],[ids[0]]),req('Mean KPI',['average'],[ids[1]]),
+  const computed=checked(w,savedCardsCommand,a,[req('Stage total',['sum','groups'],[ids[0]]),req('Mean KPI',['average','scalar_kpi'],[ids[1]]),
     req('Separate temporary widgets',['separate_widgets'],ids),req('Leave all saved cards unchanged',['unchanged_kpis'],saved.map(k=>'unchanged:kpi:'+k.id),'constraint')],prior.board);
   assert.equal(computed.mutates,false);
   assert.deepEqual(computed.effects.map(e=>e.kind),['dashboard']);
@@ -226,9 +275,17 @@ test('F04 existing board: '+savedCardsCommand,()=>{
   assert.match(Review.compilerInstructions,/workspace_plan dashboard step.*unchanged saved-card definitions/);
   const direct=a.steps[0].plan, directIds=['graph:requested_total','graph:mean'];
   const verified=checked(w,savedCardsCommand,direct,[req('Stage total',['sum','groups'],[directIds[0]]),
-    req('Mean KPI',['average'],[directIds[1]]),req('Separate temporary widgets',['separate_widgets'],directIds),
+    req('Mean KPI',['average','scalar_kpi'],[directIds[1]]),req('Separate temporary widgets',['separate_widgets'],directIds),
     req('Leave all saved cards unchanged',['unchanged_kpis'],saved.map(k=>'unchanged:kpi:'+k.id),'constraint')],prior.board);
   assert.deepEqual(verified.board.elements.slice(0,2),prior.board.elements);
+  for(const [evidence,prefix] of [[verified,''],[computed,a.steps[0].id+'/']]){
+    const charts=evidence.displayEvidence.elements;
+    const stage=charts.find(c=>c.stepId===prefix+directIds[0]),scalar=charts.find(c=>c.stepId===prefix+directIds[1]);
+    assert(stage.outputs.includes('sum')&&stage.outputs.includes('groups')&&!stage.outputs.includes('average'));
+    assert(scalar.outputs.includes('average')&&!scalar.outputs.includes('sum'));
+    assert.deepEqual(charts.filter(c=>c.outputs.includes('scalar_kpi')).map(c=>c.stepId),[scalar.stepId]);
+    assert.equal(scalar.chart,'kpi');assert.match(evidence.displayEvidence.layoutRule,/separate_widgets/);
+  }
 });
 
 test('F08 existing board: '+ownerCountCommand,()=>{
