@@ -23,13 +23,14 @@
   function validateReferences(kpi,core,customFields=[]){
     kpi=Schema.validateKpis([kpi])[0];
     const defs=core.definitions(customFields),get=id=>defs.find(f=>f.id===id);
-    if(['count','percentage'].includes(kpi.metric)?kpi.field!==null:!['number','currency'].includes(get(kpi.field)?.type))throw new Error('Totals and averages need a numeric column; counts and percentages have no numeric field.');
+    if(['count','percentage'].includes(kpi.metric)?kpi.field!==null:!['number','currency'].includes(get(kpi.field)?.type))throw new Error('Totals, averages and medians need a numeric column; counts and percentages have no numeric field.');
     for(const c of [...kpi.conditions,...(kpi.where||[]).flat(),...(kpi.denominatorWhere||[]).flat()]){
       const f=get(c.field);if(!f)throw new Error('A KPI references a missing column.');
       if(['is_blank','is_not_blank'].includes(c.operator)){if(c.value!==null)throw new Error('Blank checks need no value.');continue;}
-      if(['before_today','older_than_days'].includes(c.operator)){
-        if(f.type!=='date'&&!(core.role('followup')===f.id&&f.type==='text'))throw new Error('Stale-date conditions need a date column.');
-        if(c.operator==='before_today'&&c.value!==null||c.operator==='older_than_days'&&(!Number.isInteger(c.value)||c.value<0||c.value>36500))throw new Error('Choose a valid number of stale days.');
+      if(['is_dated','before_today','older_than_days'].includes(c.operator)){
+        if(f.type!=='date'&&!(core.role('followup')===f.id&&f.type==='text'))throw new Error('Date conditions need a date column.');
+        if(c.operator!=='older_than_days'&&c.value!==null)throw new Error('This date check needs no value.');
+        if(c.operator==='older_than_days'&&(!Number.isInteger(c.value)||c.value<0||c.value>36500))throw new Error('Choose a valid number of stale days.');
       }else if(['gt','gte','lt','lte'].includes(c.operator)){
         if(!['number','currency','date'].includes(f.type)||f.type==='date'&&!core.date(c.value)||f.type!=='date'&&(typeof c.value!=='number'||!Number.isFinite(c.value)))throw new Error('Choose a valid comparison value for this column.');
       }else if(c.operator==='starts_with'){
@@ -55,6 +56,7 @@
       const actual=core.normalize(value),expected=core.normalize(c.value);
       if(['equals','not_equals'].includes(c.operator)){const match=expected==='today'&&(f.type==='date'||core.role('followup')===f.id)?actual==='today'||value===today:actual===expected;return c.operator==='equals'?match:!match;}
       if(blank)return false;
+      if(c.operator==='is_dated')return Boolean(core.date(value))||(f.type==='text'&&core.role('followup')===f.id&&actual==='today');
       if(c.operator==='starts_with')return actual.startsWith(expected);
       if(['before_today','older_than_days'].includes(c.operator)){const d=core.date(value);return Boolean(d&&d.getTime()<now.getTime()-(c.operator==='older_than_days'?c.value:0)*86400000);}
       const a=f.type==='date'?core.date(value)?.getTime():Number(value),b=f.type==='date'?core.date(c.value)?.getTime():c.value;
@@ -69,6 +71,10 @@
     if(kpi.metric==='percentage')return {value:population.length?rows.length/population.length*100:null,type:'percentage',count:rows.length,numeratorCount:rows.length,denominatorCount:population.length};
     const type=defs.get(kpi.field)?.type;
     const values=rows.map(r=>r[kpi.field]).filter(v=>(typeof v==='number'||typeof v==='string'&&v.trim()!=='')&&Number.isFinite(Number(v)));
+    if(kpi.metric==='median'){
+      const sorted=values.map(Number).sort((a,b)=>a-b),n=sorted.length,mid=Math.floor(n/2);
+      return {value:!n?null:n%2?sorted[mid]:(sorted[mid-1]+sorted[mid])/2,type,count:rows.length,numericCount:n};
+    }
     const total=values.reduce((sum,v)=>sum+(type==='currency'?Math.round(Number(v)*100):Number(v)),0)/(type==='currency'?100:1);
     return {value:kpi.metric==='count'?rows.length:values.length?total/(kpi.metric==='average'?values.length:1):null,type:kpi.metric==='count'?'number':type,count:rows.length,...(kpi.metric==='count'?{}:{numericCount:values.length})};
   }
@@ -83,11 +89,43 @@
     const number=value=>new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(value);
     const displayValue=result.value===null?'Not set':result.type==='currency'?'$'+number(result.value):number(result.value)+(result.type==='percentage'?'%':'');
     const counts=kpi.metric==='percentage'?`${result.numeratorCount} / ${result.denominatorCount} records${result.denominatorCount?'':' (zero denominator)'}`:`${result.count} matching records${result.numericCount===undefined?'':`; ${result.numericCount} numeric values`}`;
-    return {...result,displayValue,definition,summary:`${kpi.title}: ${displayValue}. ${counts}. ${definition}`};
+    const selection=kpi.metric==='percentage'?{populationWhere:kpi.denominatorWhere,withinPopulationWhere:where,...percentageCoverage(kpi)}:null;
+    return {...result,metric:kpi.metric,field:kpi.field,...(selection?{selection}:{}),displayValue,definition,summary:`${kpi.title}: ${displayValue}. ${counts}. ${definition}`};
+  }
+  // A structural proof, not a conclusion drawn from today's rows. In DNF, if
+  // every population branch entails a numerator branch, no member can fail it.
+  function percentageCoverage({denominatorWhere,where}){
+    const key=c=>JSON.stringify([c.field,c.operator,['equals','not_equals','starts_with'].includes(c.operator)?Core.normalize(c.value):c.value]);
+    const branches=where.map(group=>group.map(key));
+    const implied=denominatorWhere.map(group=>{
+      const required=new Set(group.map(key));
+      return branches.map(branch=>branch.every(c=>required.has(c)));
+    });
+    const populationCoverageProven=!where.length||implied.length>0&&implied.every(matches=>matches.some(Boolean));
+    return {populationCoverageProven,shadowedAlternatives:populationCoverageProven?branches.flatMap((_,i)=>implied.some(matches=>matches[i])?[]:[i]):[]};
+  }
+  function proposedKpi(input,id,existing){
+    const {selection,...flat}=input;
+    if(Object.hasOwn(input,'selection')){
+      if(input.metric!=='percentage'||!selection||typeof selection!=='object'||Array.isArray(selection)||
+        Object.keys(selection).some(k=>!['populationWhere','withinPopulationWhere','relationship'].includes(k))||
+        !['refine','entire_population'].includes(selection.relationship)||Object.hasOwn(flat,'where')||Object.hasOwn(flat,'denominatorWhere'))
+        throw new Error('Specify one percentage population and a selection within it.');
+      flat.denominatorWhere=selection.populationWhere;flat.where=selection.withinPopulationWhere;
+    }
+    const card=Schema.validateKpis([{...flat,id}])[0];
+    if(card.metric==='percentage'){
+      const {populationCoverageProven,shadowedAlternatives}=percentageCoverage(card);
+      const sameScope=existing?.metric==='percentage'&&JSON.stringify([card.where,card.denominatorWhere])===JSON.stringify([existing.where,existing.denominatorWhere]);
+      if(selection?.relationship==='entire_population'&&!populationCoverageProven)throw new Error('The predicates do not establish that the numerator includes the entire population.');
+      if(populationCoverageProven&&(selection?.relationship==='refine'||!selection&&!sameScope&&shadowedAlternatives.length))
+        throw new Error('The numerator already includes the entire denominator; it does not refine the population. Put only the requested subset in withinPopulationWhere. For an intentional whole-population union, preserve its branches and specify entire_population.');
+    }
+    return card;
   }
   function configure(schema,customFields,id,input){
     const existing=kpis(schema,customFields).find(k=>k.id===id);if(!existing)throw new Error('Which dashboard KPI should I change?');
-    const after=Schema.validateKpis([{...input,id}])[0];validateReferences(after,Core.create(schema),customFields);
+    const after=proposedKpi(input,id,existing);validateReferences(after,Core.create(schema),customFields);
     const next=copy(schema||Schema.legacySchema());next.kpis=[...(next.kpis||[]).filter(k=>k.id!==id),after];
     return {tableSchema:Schema.validate(next),before:existing,after};
   }
@@ -95,7 +133,7 @@
     const cards=kpis(schema,customFields),next=copy(schema||Schema.legacySchema());
     if(cards.length>=120)throw new Error('A dashboard supports up to 120 KPI cards.');
     if(!/^kpi_user_[a-z0-9_]{1,91}$/.test(id)||defaults(schema,customFields).some(k=>k.id===id)||(next.kpis||[]).some(k=>k.id===id)||(next.hiddenKpis||[]).includes(id))throw new Error('This KPI identifier is already in use or invalid.');
-    const after=Schema.validateKpis([{...input,id}])[0];validateReferences(after,Core.create(schema),customFields);
+    const after=proposedKpi(input,id);validateReferences(after,Core.create(schema),customFields);
     if(cards.some(k=>Core.normalize(k.title)===Core.normalize(after.title)))throw new Error('A dashboard KPI already has that name. Choose a different name or ask to update it.');
     next.kpis=[...(next.kpis||[]),after];
     return {tableSchema:Schema.validate(next),before:null,after};
@@ -106,6 +144,17 @@
     // Default cards are regenerated from fields, so retain their explicit removal.
     if(defaults(schema,customFields).some(k=>k.id===id))next.hiddenKpis=[...new Set([...(next.hiddenKpis||[]),id])];
     return {tableSchema:Schema.validate(next),before,after:null};
+  }
+  function addKpis(schema,customFields,ids,inputs){
+    if(!Array.isArray(inputs)||inputs.length<2||inputs.length>12||!Array.isArray(ids)||ids.length!==inputs.length)throw new Error('Propose two to twelve saved KPI cards together with distinct IDs.');
+    let tableSchema=schema;
+    const after=inputs.map((input,i)=>{
+      const change=addKpi(tableSchema,customFields,ids[i],input);
+      if(!Object.hasOwn(change.after,'where'))throw new Error('Each new card in the batch needs an explicit population.');
+      tableSchema=change.tableSchema;
+      return change.after;
+    });
+    return {tableSchema,before:null,after};
   }
   function editColumn(records,schema,customFields,id,{name,options,targetType}={}){
     const core=Core.create(schema),defs=core.definitions(customFields),old=defs.find(f=>f.id===id);
@@ -154,5 +203,5 @@
     kpis(nextSchema,nextFields);
     return {records:next,tableSchema:nextSchema,customFields:nextFields,before:old,after:field,issues,dropped};
   }
-  return {defaults,kpis,calculate,summarize,configure,addKpi,deleteKpi,editColumn,validateReferences};
+  return {defaults,kpis,calculate,summarize,configure,addKpi,addKpis,deleteKpi,editColumn,validateReferences};
 });

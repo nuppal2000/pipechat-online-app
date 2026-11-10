@@ -67,6 +67,25 @@ test('objective 11 UI: local focus survives redraw and clears when its graph dis
   await page.evaluate(()=>drawBoard([]));assert.equal(await page.locator('#board').textContent(),'No graphs.');assert.equal((await boardState(page)).focus,null);
 });
 
+test('adding a comparison graph exits local focus and displays blanks separately from zero',async t=>{
+  const w=F.workspace(),spec=F.spec('average',{groupBy:'f_deal'}),action={action:'dashboard_plan',
+    requestScope:{scope:'all',where:[]},operations:[{op:'add',id:'owner_average',spec}],questions:[]};
+  const added=D.apply(null,action,w.records,C.create(w.tableSchema),w.customFields,F.options).views[0];
+  const page=await boardPage(t);
+  await page.evaluate(()=>drawBoard(app.views.slice(0,2)));
+  await page.locator('[data-element-id="volume"] [data-focus-report]').click();
+  assert.equal(await page.locator('[data-element-id]:visible').count(),1);
+  await page.evaluate(view=>drawBoard([...app.views.slice(0,2),view]),added);
+  assert.equal(await page.locator('[data-element-id]:visible').count(),3);
+  const graph=page.locator('[data-element-id="owner_average"]');
+  assert.equal(await graph.locator('[data-focus-report]').getAttribute('aria-pressed'),'false');
+  await graph.locator('summary').click();
+  assert.deepEqual(await graph.locator('tr').filter({hasText:'Blank amount'}).locator('td').allTextContents(),
+    ['Blank amount','average','Not set','1 (0 numeric values)']);
+  assert.deepEqual(await graph.locator('tr').filter({hasText:'Alpha'}).locator('td').allTextContents(),
+    ['Alpha','average','$0.00','1']);
+});
+
 test('objective 11 UI: comparison uses two columns on large screens, one on mobile, with real stage doughnuts',async t=>{
   const page=await boardPage(t);
   const geometry=()=>page.locator('[data-element-id]').evaluateAll(elements=>elements.map(el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,right:r.right};}));

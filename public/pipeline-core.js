@@ -13,11 +13,12 @@
   const operators = ['equals', 'contains', 'is_blank', 'gt', 'gte', 'lt', 'lte', 'month_equals'];
   const normalize = value => String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/\s+/g, ' ');
   const clone = value => JSON.parse(JSON.stringify(value));
+  const customFieldTypes = Object.freeze(['text','choice','date','number']);
   function validateCustomFields(input = []) {
     if (!Array.isArray(input) || input.length > 20) throw new Error('A CRM supports up to 20 custom fields.');
     const ids = new Set(), names = new Set(Object.values(fields).map(normalize));
     return input.map(field => {
-      if (!field || typeof field.id !== 'string' || !/^cf_[a-z0-9_]{1,60}$/.test(field.id) || ids.has(field.id) || Object.hasOwn(fields,field.id) || !['text','choice','date'].includes(field.type)) throw new Error('Invalid custom field definition.');
+      if (!field || typeof field.id !== 'string' || !/^cf_[a-z0-9_]{1,60}$/.test(field.id) || ids.has(field.id) || Object.hasOwn(fields,field.id) || !customFieldTypes.includes(field.type)) throw new Error('Invalid custom field definition.');
       if (typeof field.name !== 'string') throw new Error('Enter a field name.');
       const name = field.name.trim(), key = normalize(name);
       if (!name || name.length > 60 || /[\x00-\x1f\x7f]/.test(name)) throw new Error('Field names must contain 1 to 60 readable characters.');
@@ -63,12 +64,12 @@
   function validateValue(field, value, customFields = []) {
     const labels=fieldsFor(customFields);
     if (!Object.hasOwn(labels, field)) throw new Error('This table does not contain that field.');
-    if(schema){
+    if(schema||customFields.some(f=>f.id===field&&f.type==='number')){
       const def=definitions(customFields).find(f=>f.id===field);
       if(value==null||value==='')return ['number','currency'].includes(def.type)?null:'';
       if(['number','currency'].includes(def.type)){
         if(!['number','string'].includes(typeof value)||String(value).trim()===''||!Number.isFinite(Number(value))||Math.abs(Number(value))>1e12)throw new Error('Enter a valid number between -1 trillion and 1 trillion.');
-        if(schema.legacy&&field==='value'&&Number(value)<0)throw new Error('Value must not be negative.');
+        if(schema?.legacy&&field==='value'&&Number(value)<0)throw new Error('Value must not be negative.');
         return def.type==='currency'?Math.round(Number(value)*100)/100:Number(value);
       }
       if(typeof value!=='string'||value.length>12000)throw new Error('Enter text of at most 12,000 characters.');
@@ -108,14 +109,14 @@
     const field = fieldName(filter.field,customFields);
     if (![...Object.keys(fieldsFor(customFields)), 'health', 'activity'].includes(field) || !operators.includes(filter.operator)) throw new Error('That filter is not supported.');
     const value = filter.value;
-    if(schema){
+    if(schema||customFields.some(f=>f.id===field&&f.type==='number')){
       const def=definitions(customFields).find(f=>f.id===field);
       if(!def)throw new Error('Unknown filter field.');
       if(filter.operator==='is_blank')return row=>row[field]==null||typeof row[field]==='string'&&!row[field].trim();
       let expected=value;
       if(def.type==='date'&&normalize(value)==='today'){const d=new Date();expected=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
       if(filter.operator==='equals'){
-        if(schema.legacy&&field==='follow'&&normalize(expected)==='today'){const d=new Date(),today=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;return row=>normalize(row[field])==='today'||row[field]===today;}
+        if(schema?.legacy&&field==='follow'&&normalize(expected)==='today'){const d=new Date(),today=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;return row=>normalize(row[field])==='today'||row[field]===today;}
         expected=validateStoredValue(field,expected,customFields);return row=>normalize(row[field])===normalize(expected);
       }
       if(filter.operator==='contains'&&normalize(value))return row=>normalize(row[field]).includes(normalize(value));
@@ -286,7 +287,7 @@
     return result;
   }
   function report(records, spec, customFields = []) {
-    if(schema||customFields.some(f=>f.id===spec?.groupBy))return contextualReport(records,spec,customFields);
+    if(schema||customFields.some(f=>f.id===spec?.groupBy||f.id===spec?.field&&f.type==='number'))return contextualReport(records,spec,customFields);
     if (!spec || !['sum','count','average'].includes(spec.metric) || !['owner','account','stage','close_month','none'].includes(spec.groupBy) || !['bar','line','stage','kpi'].includes(spec.chart)) throw new Error('Choose a supported metric, grouping, and chart.');
     if (spec.metric !== 'count' && spec.field !== 'value') throw new Error('Sum and average reports use the value field.');
     const selections = [['owners','owner'],['accounts','account']].map(([key,field]) => {
@@ -478,5 +479,5 @@
     for(const s of selections)if(s.names)result[s.key==='owners'?'missingOwners':'missingAccounts']=[...s.names].filter(([key])=>!rows.some(row=>normalize(row[s.field])===key)).map(([,name])=>name);
     return result;
   }
-  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,deletion,additions,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,renameKpiChoiceOption,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
+  return {fields,stages,operators,normalize,fieldName,date,validateValue,validateStoredValue,customFieldTypes,validateCustomFields,fieldsFor,customValues,predicate,candidates,targets,deletion,additions,plan,apply,report,share,clone,definitions,role,tableValues,reportOptions,reconcileReport,contextualReport,sortRecords,moveRecord,deleteColumn,renameKpiChoiceOption,create:input=>{const validated=schemaApi.validate(input);return validated?.status==='ready'?factory(validated,schemaApi):factory(null,schemaApi);}};
 });

@@ -20,7 +20,9 @@ test('new AI actions retain strict schema and per-request KPI/field IDs without 
   for(const name of ['fromPosition','toPosition','orderScope','sortDirection'])assert(action.required.includes(name));
   assert.deepEqual([...action.properties.orderScope.enum],['visible','all',null]);
   assert(action.properties.kpiId.enum.includes('kpi_value'));assert(action.required.includes('dropdownOptions'));assert(action.required.includes('kpi'));
-  assert.deepEqual([...action.properties.targetType.enum],['choice','date','text',null]);assert(action.required.includes('targetType'));
+  assert.deepEqual(new Set(action.properties.targetType.enum),new Set(['text','choice','date','number',null]));assert(action.required.includes('targetType'));
+  const addField=request.properties.crmAction.anyOf.find(b=>b.properties?.action.enum.includes('workspace_plan')).properties.steps.items.anyOf.find(b=>b.properties.op.enum.includes('add_field'));
+  assert(addField.properties.type.enum.includes('number'));
   assertStrictSchema(request);
   const other={...schema,fields:schema.fields.map(f=>f.id==='value'?{...f,id:'f_score',name:'Score',type:'number'}:f)};
   const second=context.getSchema([],other).properties.crmAction.anyOf[1];assert(second.properties.kpiId.enum.includes('kpi_f_score'));assert(!second.properties.kpiId.enum.includes('kpi_value'));assert(action.properties.kpiId.enum.includes('kpi_value'));
@@ -154,7 +156,7 @@ test('model action union stays strict and within supported actions including bus
       assert(branch.required.includes('action'));assert(branch.properties.action.enum.length>0);
     }
     assert.equal(new Set(names).size,names.length,'Action discriminators must not overlap');
-    assert.deepEqual([...names].sort(),supported.filter(name=>!blocked.has(name)).sort());
+    assert.deepEqual([...names].sort(),[...supported.filter(name=>!blocked.has(name)),'scoped_table_request'].sort());
     for(const name of [...businessNames,'undo_action'])assert(names.includes(name),name);
     for(const expected of [...context.businessActions.actionSchemas(),...context.businessCompiler.schemas()]){
       assert.deepEqual(branches.find(branch=>branch.properties?.action.enum[0]===expected.properties.action.enum[0]),expected);
@@ -264,18 +266,24 @@ test('live KPI schemas preserve legacy conditions and explicit twelve-group nume
     assert.equal(variants.length,4);assert.equal(variants[0].type,'null');assertStrictSchema(action.properties.kpi);
     const [legacy,scoped,percentage]=variants.slice(1);
     assert.deepEqual([...legacy.required],['title','metric','field','conditions']);
-    assert.deepEqual([...legacy.properties.metric.enum],['count','sum','average']);
+    assert.deepEqual([...legacy.properties.metric.enum],['count','sum','average','median']);
     assert.equal(legacy.properties.conditions.maxItems,10);
     assert(!legacy.properties.where);assert(!legacy.properties.denominatorWhere);
-    assert.deepEqual([...scoped.properties.metric.enum],['count','sum','average']);
+    assert.deepEqual([...scoped.properties.metric.enum],['count','sum','average','median']);
     assert(!scoped.properties.denominatorWhere);
     assert.deepEqual([...percentage.properties.metric.enum],['percentage']);assert.equal(percentage.properties.field.type,'null');
-    assert(percentage.required.includes('where'));assert(percentage.required.includes('denominatorWhere'));
+    assert(percentage.required.includes('selection'));assert(!percentage.properties.where);assert(!percentage.properties.denominatorWhere);
+    const selection=percentage.properties.selection;
+    assert.deepEqual([...selection.required],['populationWhere','withinPopulationWhere','relationship']);
+    assert.deepEqual([...selection.properties.relationship.enum],['refine','entire_population']);
+    const batch=modelAction('add_kpis',table);assertStrictSchema(batch);
+    assert.deepEqual([...batch.required],['action','kpis']);assert.equal(batch.properties.kpis.minItems,2);assert.equal(batch.properties.kpis.maxItems,12);
+    assert.deepEqual(JSON.parse(JSON.stringify(batch.properties.kpis.items.anyOf)),JSON.parse(JSON.stringify([scoped,percentage])));
     for(const branch of [scoped,percentage]){
       assert.equal(branch.properties.title.maxLength,120);
-      assert.equal(branch.properties.conditions.maxItems,0);assert(branch.required.includes('where'));
-      for(const key of ['where',...(branch===percentage?['denominatorWhere']:[])]){
-        const where=branch.properties[key];assert.equal(where.type,'array');assert.equal(where.maxItems,12);assert.equal(where.minItems??0,0);
+      assert.equal(branch.properties.conditions.maxItems,0);
+      for(const where of branch===percentage?[selection.properties.populationWhere,selection.properties.withinPopulationWhere]:[branch.properties.where]){
+        assert.equal(where.type,'array');assert.equal(where.maxItems,12);assert.equal(where.minItems??0,0);
         assert.equal(where.items.type,'array');assert.equal(where.items.minItems,1);assert.equal(where.items.maxItems,20);
         const condition=where.items.items;
         assert.deepEqual([...condition.required],['field','operator','value']);assert.equal(condition.additionalProperties,false);

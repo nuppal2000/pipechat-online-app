@@ -230,7 +230,7 @@
     try {
       const value=C.validateStoredValue(d.field,d.field==='value'?d.raw.replace(/[$,]/g,'').trim():d.raw,S.customFields);
       if(record[d.field]===value){discardFailedEdit();$('saveStatus').textContent='Edit already saved';return;}
-      const proposal=C.plan(S.records,{action:'update_record',ids:[d.id],field:d.field,value},S.customFields);
+      const proposal=C.plan(S.records,{action:'update_record',ids:[d.id],field:d.field,value:value??''},S.customFields);
       await persist(C.apply(S.records,proposal,S.user.name||S.user.email,new Date(),S.customFields),`${labels()[d.field]} updated`,{failedEdit:d});
     }catch(error){d.message=error.message;renderTrust();}
   }
@@ -238,7 +238,7 @@
   const stageClass = value => `stage-${C.normalize(value).replace(/[^a-z0-9]+/g,'-')}`;
   const rowName = record => String(record[C.role('primary')]??'').trim() || `Unnamed record #${record.id}`;
   const candidateRecord = candidate => S.records.find(record=>record.id===candidate.id)||candidate;
-  const display = (field,value) => tailored()?value==null||value===''?'Not set':C.definitions(S.customFields).find(f=>f.id===field)?.type==='currency'?currency(value):String(value):field==='value'?currency(value)||'Not set':field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value||'Not set';
+  const display = (field,value) => tailored()?value==null||value===''?'Not set':C.definitions(S.customFields).find(f=>f.id===field)?.type==='currency'?currency(value):String(value):field==='value'?currency(value)||'Not set':field==='close' && C.date(value)?C.date(value).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}):value==null||value===''?'Not set':String(value);
   const stageOptions = selected => `<option value="" ${!selected?'selected':''}>Not set</option>`+C.stages.map(stage=>`<option ${stage===selected?'selected':''}>${esc(stage)}</option>`).join('');
   function say(text, role='assistant', error=false, executionReceipt=false) {
     if(restoringChat||quietTurnReply&&role==='assistant'&&!executionReceipt)return;
@@ -555,6 +555,7 @@
     if(!open){$('reviewChatForm').hidden=true;$('reviewChatInput').value='';if(wasOpen)$('chatInput').focus({preventScroll:true});}
     notificationsUI?.draw();
   }
+  const isKpiProposal=kind=>['add-kpi','add-kpis','configure-kpi','delete-kpi'].includes(kind);
   function renderTrust() {
     workflowUI?.draw();
     saveChatState();
@@ -609,12 +610,13 @@
       $('trustTitle').textContent=row?'Move record':'Move column';$('trustStatus').textContent='No changes made yet. Review and confirm.';
       panel.innerHTML=`<h3>${esc(row?rowName(change.record):change.field.name)}</h3><div class="field-diff"><span>${row?'Row':'Column'} position</span><div class="diff-values"><span class="diff-before">${change.fromPosition}</span>${icon('ArrowRight')}<span class="diff-after">${change.toPosition}</span></div></div><p class="proposal-intro">${row?change.scope==='all'?'Positions refer to the complete saved table. All records will be shown after confirmation.':'Positions refer to the current visible rows. Hidden rows keep their places.':'The entire column moves; its values stay attached to the same records.'}</p>${row&&S.sort?'<p class="proposal-intro">The current sort will be cleared to show the new manual order.</p>':''}<p>Cell values stay unchanged.</p><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm move</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;return;
     }
-    if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(S.pending?.kind)){
-      const p=S.pending,kpi=p.kind.endsWith('-kpi'),change=p.change;
-      $('trustTitle').textContent=kpi?({ 'configure-kpi':'Update dashboard KPI','add-kpi':'Add dashboard KPI','delete-kpi':'Delete dashboard KPI'})[p.kind]:p.kind==='rename-field'?'Rename column':'Convert to '+({choice:'dropdown',date:'date',text:'text'})[change.after.type];
+    if(['rename-field','convert-field','configure-kpi','add-kpi','add-kpis','delete-kpi'].includes(S.pending?.kind)){
+      const p=S.pending,kpi=isKpiProposal(p.kind),change=p.change;
+      $('trustTitle').textContent=kpi?({ 'configure-kpi':'Update dashboard KPI','add-kpi':'Add dashboard KPI','add-kpis':'Add dashboard KPIs','delete-kpi':'Delete dashboard KPI'})[p.kind]:p.kind==='rename-field'?'Rename column':'Convert to '+({choice:'dropdown',date:'date',text:'text'})[change.after.type];
       $('trustStatus').textContent='No changes made yet. Review and confirm.';
-      const describe=k=>k?window.PipeChatCustomize.summarize(k,Object.hasOwn(k,'where')?S.records:visible(),S.tableSchema,S.customFields,localDate()).summary:p.kind==='add-kpi'?'New card; existing KPI cards will be kept.':'This KPI card will be removed. Other KPI cards will be kept.';
-      panel.innerHTML=kpi?`<div class="field-diff"><span>Current</span><p>${esc(describe(change.before))}</p></div><div class="field-diff"><span>Proposed</span><p>${esc(describe(change.after))}</p></div><p>Row data stays unchanged.</p>`:`<h3>${esc(change.before.name)}</h3>${p.kind==='rename-field'?`<p>${esc(change.before.name)} ${icon('ArrowRight')} ${esc(change.after.name)}</p><p>Only the header changes. Column values and row data stay unchanged.</p>`:`${change.after.type==='choice'?`<p>Dropdown options: ${change.after.options.map(esc).join(', ')}</p><p>${change.issues.length} unmatched ${change.issues.length===1?'value will':'values will'} be left blank.</p>`:`<p>${change.after.type==='date'?'Calendar date field. All nonblank dates will be preserved in YYYY-MM-DD format.':'Text field. Existing dropdown selections will be preserved as text.'}</p>`}${change.before.role&&change.before.role!=='none'&&change.before.role!==change.after.role?`<p>This column will no longer have the ${esc(change.before.role)} role.</p>`:''}${change.dropped.length?`<p>Incompatible KPI overrides removed: ${change.dropped.map(esc).join(', ')}. Dashboard defaults will be recalculated.</p>`:''}<div class="conversion-issues">${change.issues.map(issue=>`<p>Row #${issue.id} (${esc(issue.record)}): <q>${esc(issue.value)}</q> is not one of the dropdown options and will be left blank.</p>`).join('')}</div>`}`;
+      const describe=k=>k?window.PipeChatCustomize.summarize(k,Object.hasOwn(k,'where')?S.records:visible(),S.tableSchema,S.customFields,localDate()).summary:p.kind.startsWith('add-kpi')?'New card; existing KPI cards will be kept.':'This KPI card will be removed. Other KPI cards will be kept.';
+      const proposed=kpi?[].concat(change.after).map(k=>`<p>${esc(describe(k))}</p>`).join(''):'';
+      panel.innerHTML=kpi?`<div class="field-diff"><span>Current</span><p>${esc(describe(change.before))}</p></div><div class="field-diff"><span>Proposed</span>${proposed}</div><p>Row data stays unchanged.</p>`:`<h3>${esc(change.before.name)}</h3>${p.kind==='rename-field'?`<p>${esc(change.before.name)} ${icon('ArrowRight')} ${esc(change.after.name)}</p><p>Only the header changes. Column values and row data stay unchanged.</p>`:`${change.after.type==='choice'?`<p>Dropdown options: ${change.after.options.map(esc).join(', ')}</p><p>${change.issues.length} unmatched ${change.issues.length===1?'value will':'values will'} be left blank.</p>`:`<p>${change.after.type==='date'?'Calendar date field. All nonblank dates will be preserved in YYYY-MM-DD format.':'Text field. Existing dropdown selections will be preserved as text.'}</p>`}${change.before.role&&change.before.role!=='none'&&change.before.role!==change.after.role?`<p>This column will no longer have the ${esc(change.before.role)} role.</p>`:''}${change.dropped.length?`<p>Incompatible KPI overrides removed: ${change.dropped.map(esc).join(', ')}. Dashboard defaults will be recalculated.</p>`:''}<div class="conversion-issues">${change.issues.map(issue=>`<p>Row #${issue.id} (${esc(issue.record)}): <q>${esc(issue.value)}</q> is not one of the dropdown options and will be left blank.</p>`).join('')}</div>`}`;
       panel.innerHTML+=`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm changes</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;return;
     }
     if(S.pending?.kind==='delete-field'){
@@ -625,7 +627,7 @@
     if(S.pending?.kind==='add-field'){
       $('trustTitle').textContent=S.pending.suggested?'Proposed new field':'Add field';$('trustStatus').textContent='No column added yet. Review and confirm.';
       const field=S.pending.field;
-      panel.innerHTML=`<h3>${esc(field.name)}</h3><p class="proposal-intro">${({choice:'Dropdown',date:'Date',text:'Text'})[field.type]} field / ${S.records.length} existing records</p>${field.type==='choice'?`<p>Dropdown options: ${field.options.map(esc).join(', ')}</p>`:''}<p class="subtle">Every record will have a blank cell in this new column. Existing values stay unchanged.</p><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':'Confirm new field'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
+      panel.innerHTML=`<h3>${esc(field.name)}</h3><p class="proposal-intro">${({choice:'Dropdown',date:'Date',text:'Text',number:'Number'})[field.type]} field / ${S.records.length} existing records</p>${field.type==='choice'?`<p>Dropdown options: ${field.options.map(esc).join(', ')}</p>`:''}<p class="subtle">Every record will have a blank cell in this new column. Existing values stay unchanged.</p><div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>${S.saving?'Saving...':'Confirm new field'}</button><button class="secondary" data-cancel ${S.saving?'disabled':''}>Cancel</button></div>`;
       if(S.pending.suggested)panel.insertAdjacentHTML('afterbegin',`<p class="proposal-intro">${esc(S.pending.reason)}</p>`);
       return;
     }
@@ -785,7 +787,7 @@
     clearDraft();say('Proposal download prepared. No CRM records were changed and nothing was sent externally.');
   }
   function prepare(action, originalCommand, canonicalAnswer=null) {
-    if(!['workspace_plan','add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo','configure_kpi','add_kpi','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
+    if(!['workspace_plan','add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo','configure_kpi','add_kpi','add_kpis','delete_kpi'].includes(action.action)&&S.tab!=='table'){S.tab='table';S.settingsOpen=false;render();}
     let proposal;
     if(action.action==='workspace_plan'){
       try{proposal=window.PipeChatPlan.prepare({records:S.records,customFields:S.customFields,tableSchema:S.tableSchema,todoCards:S.todoCards},action,{today:localDate(),nonce:crypto.randomUUID().replaceAll('-',''),visibleIds:visible().map(r=>r.id),focus:S.focus,dashboard:dashboardBase(),timezone:Intl.DateTimeFormat().resolvedOptions().timeZone});}
@@ -826,10 +828,11 @@
       try{change=window.PipeChatCustomize.editColumn(S.records,S.tableSchema,S.customFields,id,action.action==='rename_field'?{name:action.newFieldName}:{options:action.dropdownOptions,targetType:action.targetType});}
       catch(error){if(!error.clarification)throw error;S.pending=null;S.clarification={originalCommand,question:error.message,field:id,previousAction:action};S.sourceAction=C.clone(action);say(error.message);renderTrust();return;}
       proposal={kind:action.action==='rename_field'?'rename-field':'convert-field',change,count:S.records.length,createdAt:Date.now(),revision:S.revision};
-    }else if(['configure_kpi','add_kpi','delete_kpi'].includes(action.action)){
+    }else if(['configure_kpi','add_kpi','add_kpis','delete_kpi'].includes(action.action)){
       const customize=window.PipeChatCustomize;
-      const change=action.action==='add_kpi'?customize.addKpi(S.tableSchema,S.customFields,'kpi_user_'+crypto.randomUUID().replaceAll('-',''),action.kpi):action.action==='delete_kpi'?customize.deleteKpi(S.tableSchema,S.customFields,action.kpiId):customize.configure(S.tableSchema,S.customFields,action.kpiId,action.kpi);
-      proposal={kind:action.action.replace('_','-'),change,count:0,createdAt:Date.now(),revision:S.revision};S.tab='dashboard';
+      const newId=()=>'kpi_user_'+crypto.randomUUID().replaceAll('-','');
+      const change=action.action==='add_kpis'?customize.addKpis(S.tableSchema,S.customFields,action.kpis.map(newId),action.kpis):action.action==='add_kpi'?customize.addKpi(S.tableSchema,S.customFields,newId(),action.kpi):action.action==='delete_kpi'?customize.deleteKpi(S.tableSchema,S.customFields,action.kpiId):customize.configure(S.tableSchema,S.customFields,action.kpiId,action.kpi);
+      proposal={kind:action.action.replace('_','-'),change,count:0,createdAt:Date.now(),revision:S.revision,generation:S.generation};S.tab='dashboard';
     }else if(action.action==='delete_field'){
       const id=C.fieldName(action.field||action.newFieldName,S.customFields),field=C.definitions(S.customFields).find(f=>f.id===id);
       if(!field)throw new Error('This column does not exist.');
@@ -840,7 +843,7 @@
     }
     else if(['add_field','propose_field'].includes(action.action)){
       const type=action.targetType??(action.dropdownOptions!=null?'choice':'text');
-      if(!['text','choice','date'].includes(type))throw new Error('Choose a text, dropdown or date field.');
+      if(!C.customFieldTypes.includes(type))throw new Error('Choose a text, number, dropdown or date field.');
       if(type==='choice'&&(!Array.isArray(action.dropdownOptions)||!action.dropdownOptions.length)){
         S.pending=null;S.sourceAction=C.clone({...action,targetType:'choice'});S.clarification={originalCommand:S.clarification?.originalCommand||originalCommand,question:'What options would you like the dropdown menu to have?',previousAction:S.sourceAction};
         say(S.clarification.question);renderTrust();focusTrust();return;
@@ -864,8 +867,8 @@
       }
     } else throw new Error('This request is not an editable table action.');
     if(proposal.clarification){S.pending=null;S.sourceAction=C.clone(action);S.clarification={...proposal.clarification,originalCommand:S.clarification?.originalCommand||originalCommand};say(proposal.clarification.question||'I found more than one matching record. Choose the intended record below; I have kept the rest of your request.');}
-    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(['move-record','move-field'].includes(proposal.kind)?`Review the move to ${proposal.kind==='move-record'?'row':'column'} ${proposal.change.toPosition} before confirming. Cell values will stay unchanged.`:proposal.kind==='todo'?'Review the task change before confirming. The linked CRM record will stay unchanged.':proposal.kind.endsWith('-kpi')?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
-    if(S.tab==='todo'||proposal?.kind?.endsWith('-kpi'))render();else renderTrust();focusTrust();
+    else {S.pending=proposal;S.sourceAction=C.clone(action);S.clarification=null;say(['move-record','move-field'].includes(proposal.kind)?`Review the move to ${proposal.kind==='move-record'?'row':'column'} ${proposal.change.toPosition} before confirming. Cell values will stay unchanged.`:proposal.kind==='todo'?'Review the task change before confirming. The linked CRM record will stay unchanged.':isKpiProposal(proposal.kind)?'Review the dashboard KPI change before confirming. Table data will stay unchanged.':proposal.kind==='rename-field'?'Review the new column name before confirming. Cell values will stay unchanged.':proposal.kind==='convert-field'?`Review the conversion to ${proposal.change.after.type==='choice'?'dropdown':proposal.change.after.type} before confirming.${proposal.change.issues.length?' '+proposal.change.issues.length+' unmatched values will be left blank.':''}`:proposal.kind==='delete-field'?`Review removal of the ${proposal.field.name} column and its values before confirming.`:proposal.kind==='add-field'?`The ${proposal.field.name} column is ready for review. Confirm to add it with blank cells.`:`${proposal.count} ${proposal.count===1?'record is':'records are'} ready for review. ${proposal.kind==='delete'?'Confirm the deletion':'Confirm the changes'} when the preview looks right.`);}
+    if(S.tab==='todo'||isKpiProposal(proposal?.kind))render();else renderTrust();focusTrust();
   }
   function chooseCandidate(id) {
     const q=S.clarification;if(!q?.candidates?.some(c=>c.id===id))return;
@@ -990,10 +993,10 @@
         if(await persistTodo(p.cards,p.moves?`${p.count} tasks moved`:p.additions?`${p.count} tasks added`:p.after?p.before?'task updated':'task added':'task deleted'))say(p.moves?`Saved. ${p.count} tasks moved. CRM records are unchanged.`:p.additions?`Saved. ${p.count} tasks added. Linked CRM records are unchanged.`:'Saved. The Tasks board is updated; the linked CRM record is unchanged.');
         return;
       }
-      if(['rename-field','convert-field','configure-kpi','add-kpi','delete-kpi'].includes(p.kind)){
-        if(p.revision!==S.revision)throw new Error('The table changed. Prepare this preview again.');
-        const change=p.change,kpi=p.kind.endsWith('-kpi');
-        const label=kpi?({'configure-kpi':'Dashboard KPI updated','add-kpi':'Dashboard KPI added','delete-kpi':'Dashboard KPI deleted'})[p.kind]:p.kind==='rename-field'?'Column renamed':'Column converted to '+({choice:'dropdown',date:'date',text:'text'})[change.after.type];
+      if(['rename-field','convert-field','configure-kpi','add-kpi','add-kpis','delete-kpi'].includes(p.kind)){
+        if(p.revision!==S.revision||isKpiProposal(p.kind)&&p.generation!==S.generation)throw new Error('The table changed. Prepare this preview again.');
+        const change=p.change,kpi=isKpiProposal(p.kind);
+        const label=kpi?({'configure-kpi':'Dashboard KPI updated','add-kpi':'Dashboard KPI added','add-kpis':'Dashboard KPIs added','delete-kpi':'Dashboard KPI deleted'})[p.kind]:p.kind==='rename-field'?'Column renamed':'Column converted to '+({choice:'dropdown',date:'date',text:'text'})[change.after.type];
         if(await persist(kpi?S.records:change.records,label,{customFields:kpi?S.customFields:change.customFields,tableSchema:change.tableSchema})){
           say(label+'.'+(p.kind==='convert-field'&&change.issues.length?' '+change.issues.length+' unmatched values were left blank. '+change.issues.slice(0,20).map(i=>`Row #${i.id}: "${String(i.value).slice(0,200)}" was not one of the dropdown options.`).join(' ')+(change.issues.length>20?' First 20 listed here; the full list was shown before confirmation.':''):''));
         }
@@ -1006,7 +1009,8 @@
       if(p.kind==='add-field'){
         if(p.revision!==S.revision||JSON.stringify(p.beforeFields)!==JSON.stringify(S.customFields))throw new Error('The table changed. Prepare the new field again.');
         const customFields=C.validateCustomFields([...S.customFields,p.field]);
-        const next=S.records.map(record=>({...record,[p.field.id]:''}));
+        const blank=C.validateStoredValue(p.field.id,'',customFields);
+        const next=S.records.map(record=>({...record,[p.field.id]:blank}));
         if(await persist(next,`${p.field.name} field added`,{customFields})){S.tab='table';render();say(`Saved. The ${p.field.name} column is ready, with blank cells for every record.`);}
         return;
       }
@@ -1059,6 +1063,7 @@
     }finally{if(generation===S.generation){S.saving=false;render();}}
   }
   async function manualEdit(el) {
+    if(el.validity?.badInput){el.reportValidity();return false;}
     return editRecord(Number(el.closest('[data-id]')?.dataset.id),el.dataset.field,el.value);
   }
   async function editRecord(id,field,input) {
@@ -1066,8 +1071,8 @@
     const failedEdit={id:record.id,account:rowName(record),field,raw:input,before:record[field],reviewed:false};
     try{
       const raw=field==='value'?input.replace(/[$,]/g,'').trim():input;
-      const value=C.validateStoredValue(field,raw,S.customFields);if(value===(record[field]??'')){renderTable(visible());return true;}
-      const proposal=C.plan(S.records,{action:'update_record',ids:[record.id],field,value},S.customFields);
+      const value=C.validateStoredValue(field,raw,S.customFields);if(value===record[field]){renderTable(visible());return true;}
+      const proposal=C.plan(S.records,{action:'update_record',ids:[record.id],field,value:value??''},S.customFields);
       const next=C.apply(S.records,proposal,S.user.name||S.user.email,new Date(),S.customFields);
       const hadDraft=Boolean(S.pending||S.clarification);
       const saved=await persist(next,`${labels()[field]} updated`,{failedEdit});
@@ -1082,7 +1087,7 @@
       $('trustTitle').textContent='New '+S.tableSchema.recordLabel;
       $('trustBody').innerHTML=`<form id="dealEditor" class="editor-form">${C.definitions(S.customFields).map(f=>`<label>${esc(f.name)}${fieldInput(f,'',true)}</label>`).join('')}<button class="primary" type="submit">Save record</button><button type="button" class="secondary" data-cancel>Cancel</button></form>`;return;
     }
-    $('trustBody').innerHTML=`<form id="dealEditor" class="editor-form"><label>Company<input name="account" required maxlength="500" autofocus></label><label>Stage<select name="stage">${stageOptions('Discovery')}</select></label><label>Value (USD)<input name="value" type="number" min="0" max="1000000000000" step="0.01" value="0" required></label><label>Close date<input name="close" type="date"></label><label>Owner<input name="owner" value="${esc(S.user.name)}"></label><label>Next step<input name="next"></label><label>Follow-up<input name="follow"></label><label>Notes<textarea name="notes" rows="3"></textarea></label>${S.customFields.map(field=>`<label>${esc(field.name)}<input name="${field.id}" maxlength="12000"></label>`).join('')}<button type="submit" class="primary">Save deal</button><button type="button" class="secondary" data-cancel>Cancel</button></form>`;
+    $('trustBody').innerHTML=`<form id="dealEditor" class="editor-form"><label>Company<input name="account" required maxlength="500" autofocus></label><label>Stage<select name="stage">${stageOptions('Discovery')}</select></label><label>Value (USD)<input name="value" type="number" min="0" max="1000000000000" step="0.01" value="0" required></label><label>Close date<input name="close" type="date"></label><label>Owner<input name="owner" value="${esc(S.user.name)}"></label><label>Next step<input name="next"></label><label>Follow-up<input name="follow"></label><label>Notes<textarea name="notes" rows="3"></textarea></label>${S.customFields.map(field=>`<label>${esc(field.name)}${fieldInput(field,'',true)}</label>`).join('')}<button type="submit" class="primary">Save deal</button><button type="button" class="secondary" data-cancel>Cancel</button></form>`;
   }
   async function addManual(form) {
     if(S.saving)return;
@@ -1188,7 +1193,7 @@
       const views=window.PipeChatDashboard.evaluate(board,S.records,C,S.customFields,dashboardOptions());
       S.focus={kind:'table',ids:views[0].snapshot.recordIds};clearClarification();say(window.PipeChatDashboard.analyze([{kind:'summary',elementIds:['answer']}],views));return;
     }
-    if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','add_records','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
+    if(['move_record','move_field','rename_field','convert_field','configure_kpi','add_kpi','add_kpis','delete_kpi','add_field','propose_field','delete_field','update_record','bulk_update','update_records','add_record','add_records','delete_record','delete_records','import_records'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='sort_table'){
       const field=C.fieldName(action.field,S.customFields);
       if(action.sortDirection!=null&&(!['asc','desc'].includes(action.sortDirection)||!C.definitions(S.customFields).some(f=>f.id===field)))throw new Error('Which column should I sort, and in ascending or descending order?');
@@ -1697,6 +1702,10 @@
     });
   }
   function closeFieldDialog(){S.fieldDialog=null;if($('fieldDialog')?.open)$('fieldDialog').close();}
+  function syncNewFieldOptions(){
+    const choice=$('newFieldType').value==='choice';
+    $('newFieldOptionsRow').hidden=!choice;$('newFieldOptions').disabled=!choice;$('newFieldOptions').required=choice;
+  }
   function closeColumnMenu(){if($('columnMenu'))$('columnMenu').hidden=true;}
   function openColumnMenu(event){
     const header=event.target.closest('th[data-sort-field]');if(!header)return;
@@ -1711,6 +1720,7 @@
     const field=id?C.definitions(S.customFields).find(f=>f.id===id):null;
     if(['delete','rename'].includes(kind)&&!field)throw new Error('This column no longer exists.');
     S.fieldDialog={kind,field,action,revision:S.revision,generation:S.generation};
+    $('newFieldSettings').hidden=kind!=='add';$('newFieldType').value='text';$('newFieldOptions').value='';syncNewFieldOptions();
     const primary=field?.id===C.role('primary'),choices=primary?C.definitions(S.customFields).filter(f=>f.id!==id&&f.type==='text'):[];
     $('fieldDialogBody').innerHTML=kind==='add'?'<h2 id="fieldDialogTitle">Add field</h2><label>Field name<input id="newFieldName" name="fieldName" required maxlength="60" autocomplete="off"></label>':`<h2 id="fieldDialogTitle">Delete ${esc(field.name)}</h2><p>Are you sure you want to delete this entire field?</p>${primary?`<fieldset class="replacement-options"><legend>Replacement primary field</legend><label class="radio-option"><input type="radio" name="replacementMode" value="existing" ${choices.length?'checked':'disabled'}>Use an existing text field</label><select id="replacementField" aria-label="Replacement field" ${choices.length?'required':'disabled'}><option value="">Choose a field</option>${choices.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select><label class="radio-option"><input type="radio" name="replacementMode" value="new" ${choices.length?'':'checked'}>Create a new text field</label><input id="replacementName" aria-label="New primary field name" maxlength="60" ${choices.length?'disabled':'required'}></fieldset>`:''}`;
     if(kind==='rename')$('fieldDialogBody').innerHTML=`<h2 id="fieldDialogTitle">Rename column</h2><label>Column name<input id="renameFieldName" required maxlength="60" autocomplete="off" value="${esc(field.name)}"></label>`;
@@ -1723,7 +1733,8 @@
     event.preventDefault();const d=S.fieldDialog;if(!d)return;
     try{
       if(S.saving||S.busy||S.failedEdit||d.generation!==S.generation||d.revision!==S.revision)throw new Error('The workspace changed. Close this dialog and try again.');
-      let action=d.kind==='add'?{action:'add_field',newFieldName:$('newFieldName').value.trim()}:{action:'delete_field',field:d.field.id};
+      let action=d.kind==='add'?{action:'add_field',newFieldName:$('newFieldName').value.trim(),targetType:$('newFieldType').value}:{action:'delete_field',field:d.field.id};
+      if(d.kind==='add'&&action.targetType==='choice')action.dropdownOptions=$('newFieldOptions').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
       if(d.kind==='rename')action={action:'rename_field',field:d.field.id,newFieldName:$('renameFieldName').value.trim()};
       if(d.kind==='delete'&&d.field?.id===C.role('primary')){
         const mode=$('fieldDialogForm').elements.replacementMode.value;
@@ -1928,7 +1939,7 @@
     $('workflowDescription').oninput=()=>{clearSheetPreview();renderSetup();};$('buildAiBtn').onclick=buildTable;$('buildSheetBtn').onclick=()=>openSpreadsheet('setup');
     $('dealHeaders').onclick=event=>{if(Date.now()<suppressColumnClickUntil)return;const button=event.target.closest('[data-delete-field]');if(S.saving||S.failedEdit)return;if(button){if(S.busy)return;try{openFieldDialog('delete',button.dataset.deleteField);}catch(error){toast(error.message);}return;}const header=event.target.closest('[data-sort-field]');if(header){const field=header.dataset.sortField;S.sort={field,direction:S.sort?.field===field&&S.sort.direction==='asc'?'desc':'asc'};renderTable(visible());}};
     $('addFieldBtn').onclick=()=>{if(!S.busy)openFieldDialog('add');};
-    $('fieldDialogForm').onsubmit=submitFieldDialog;
+    $('fieldDialogForm').onsubmit=submitFieldDialog;$('newFieldType').onchange=syncNewFieldOptions;
     $('fieldDialogForm').onchange=event=>{if(event.target.name!=='replacementMode')return;const existing=event.target.value==='existing';$('replacementField').disabled=!existing;$('replacementField').required=existing;$('replacementName').disabled=existing;$('replacementName').required=!existing;};
     $('fieldDialogCancel').onclick=closeFieldDialog;$('fieldDialog').onclose=()=>{S.fieldDialog=null;};
     $('reportField').onchange=()=>{if(S.report.version===1){changeSmartReport('reportField',$('reportField').value);return;}S.report.field=$('reportField').value;renderReport(visible());};

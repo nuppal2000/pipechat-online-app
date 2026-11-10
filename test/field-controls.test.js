@@ -91,6 +91,8 @@ function harness(table=schema,records=[row]){
     return {ok:true,json:async()=>structuredClone(snapshot)};
   }};
   const source=fs.readFileSync(path.join(__dirname,'../public/pipechat.js'),'utf8').replace(/\r\n/g,'\n');
+  context.window.PipeChatPlan=require('../public/workspace-plan');
+  context.window.PipeChatDashboard=require('../public/dashboard-board');
   vm.runInNewContext(source.replace('  wire();\n  restoreSession();',`const realRender=render;render=()=>{};toast=()=>{};focusTrust=()=>{};updateUsage=()=>{};say=message=>window.messages.push(message);window.test={S,useSchema,send,prepare,confirmDraft,cancelDraft,undo,openFieldDialog,closeFieldDialog,submitFieldDialog,renderTable,renderTrust,realRender,visible};`),context);
   const h=context.window.test;h.useSchema(table);
   Object.assign(h.S,{user:{id:1,name:'QA',email:'qa@example.invalid'},loaded:true,records:structuredClone(records),updatedAt:'v1',usage:{remaining:10},health:{aiConfigured:true}});
@@ -104,6 +106,44 @@ test('manual Add field produces the same preview as chat and works at the usage 
   assert.match(h.node('trustBody').innerHTML,/Confirm new field/);await h.confirmDraft();
   assert.equal(h.S.customFields[0].name,'Source');assert.equal(h.S.records[0][h.S.customFields[0].id],'');assert.equal(h.calls.filter(c=>c.url==='/api/pipechat-ai').length,0);
   await h.undo();assert.equal(h.S.customFields.length,0);
+});
+
+test('manual Number and standalone fresh-chat numeric creation preview and save the same typed blank column',async()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8');
+  assert.match(html,/<select id="newFieldType">(?:(?!<\/select>)[\s\S])*?<option value="number">Number<\/option>/);
+  for(const [mode,name,command] of [
+    ['manual','Capacity',null],
+    ['chat','Probability percent','Add a number field called Probability percent.'],
+    ['chat','Estimated hours','Create a numeric column named Estimated hours.']
+  ]){
+    const h=harness();
+    if(mode==='manual'){
+      h.openFieldDialog('add');assert.equal(h.node('newFieldSettings').hidden,false);h.node('newFieldName').value=name;h.node('newFieldType').value='number';h.submit();
+    }else{
+      h.setAction({action:'add_field',newFieldName:name,targetType:'number',dropdownOptions:null});
+      await h.send(command);
+    }
+    assert.equal(h.S.pending?.field.type,'number');assert.match(h.node('trustBody').innerHTML,/Number field/);
+    assert.equal(h.S.customFields.length,0);assert(!h.calls.some(c=>c.url==='/api/crm-data'));
+    await h.confirmDraft();
+    const [field]=h.S.customFields;assert.equal(field.type,'number');assert.equal(field.name,name);
+    assert.equal(h.S.records[0][field.id],null);h.renderTable(h.S.records);
+    assert.match(h.node('dealRows').innerHTML,new RegExp('data-field="'+field.id+'"[^>]*type="number"'));
+  }
+});
+
+test('combined numeric request from a fresh chat sends one confirmed save with exact named rows and a blank for others',async()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),names=['QA1105 Cedar Consulting','QA1105 Cedar North','QA1105 Maple Retail'],values=[50,80,25];
+  const h=harness(schema,[...names,'Unrelated'].map((name,i)=>({...row,id:i+1,f_name:name})));
+  h.setAction(F.plan([{op:'add_field',id:'probability',label:'New numeric column',type:'number',name:'Probability percent',options:[]},
+    ...names.flatMap((name,i)=>[F.select('row_'+i,[[F.where('f_name','equals',name)]]),F.update('set_'+i,'row_'+i,'@probability',values[i])])]));
+  await h.send('Add a number field called Probability percent. Set it to 50 for QA1105 Cedar Consulting, 80 for QA1105 Cedar North, and 25 for QA1105 Maple Retail.');
+  assert.equal(h.S.pending?.kind,'workspace-plan');assert.equal(h.S.customFields.length,0);
+  assert.match(h.node('trustBody').innerHTML,/Confirm entire plan/);assert.equal(h.calls.length,1);
+  await h.confirmDraft();
+  assert.equal(h.S.pending,null);const writes=h.calls.filter(c=>c.url==='/api/crm-data');assert.equal(writes.length,1);
+  const saved=snapshotResult({...writes[0].body,updatedAt:'saved'}),[field]=saved.customFields;
+  assert.equal(field.type,'number');assert.deepEqual(saved.deals.map(r=>r[field.id]),[50,80,25,null]);
 });
 
 test('trash No changes nothing; Yes only creates a proposal; cancellation and stale previews do not save',async()=>{

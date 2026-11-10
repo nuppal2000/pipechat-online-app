@@ -28,7 +28,7 @@
     ids.splice(from,1);ids.splice(to,0,source);next.columnOrder=ids;
     return validate(next);
   }
-  const kpiOperators=['equals','not_equals','is_blank','is_not_blank','gt','gte','lt','lte','before_today','older_than_days','starts_with'];
+  const kpiOperators=['equals','not_equals','is_blank','is_not_blank','gt','gte','lt','lte','is_dated','before_today','older_than_days','starts_with'];
   const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
   function validateKpiCondition(c){
     if(!object(c)||Object.keys(c).some(key=>!['field','operator','value'].includes(key))||typeof c.field!=='string'||!/^[a-z][a-z0-9_]{0,64}$/.test(c.field)||!kpiOperators.includes(c.operator)||c.value!==null&&!(typeof c.value==='string'&&c.value.length<=12000||typeof c.value==='number'&&Number.isFinite(c.value)&&Math.abs(c.value)<=1e12))throw new Error('Invalid KPI condition.');
@@ -51,7 +51,7 @@
     if(!Array.isArray(input)||input.length>120)throw new Error('Invalid dashboard KPIs.');
     const ids=new Set();
     return input.map(k=>{
-      if(!object(k)||Object.keys(k).some(key=>!['id','title','metric','field','conditions','where','denominatorWhere'].includes(key))||typeof k.id!=='string'||!/^kpi_[a-z0-9_]{1,100}$/.test(k.id)||ids.has(k.id)||!['count','sum','average','percentage'].includes(k.metric)||k.field!==null&&(typeof k.field!=='string'||!/^[a-z][a-z0-9_]{0,64}$/.test(k.field)))throw new Error('Invalid dashboard KPI.');
+      if(!object(k)||Object.keys(k).some(key=>!['id','title','metric','field','conditions','where','denominatorWhere'].includes(key))||typeof k.id!=='string'||!/^kpi_[a-z0-9_]{1,100}$/.test(k.id)||ids.has(k.id)||!['count','sum','average','median','percentage'].includes(k.metric)||k.field!==null&&(typeof k.field!=='string'||!/^[a-z][a-z0-9_]{0,64}$/.test(k.field)))throw new Error('Invalid dashboard KPI.');
       ids.add(k.id);
       if(!Array.isArray(k.conditions)||k.conditions.length>10)throw new Error('A KPI supports up to ten conditions.');
       const grouped=Object.hasOwn(k,'where'),denominator=Object.hasOwn(k,'denominatorWhere');

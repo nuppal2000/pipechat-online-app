@@ -31,7 +31,7 @@ function harness(){
 test('custom definitions reject duplicates, aliases, reserved names, invalid types and oversized schemas',()=>{
   for(const name of ['Owner',' company ','Name','Status','__proto__','constructor','id','activity','   ','x'.repeat(61),'bad\nname'])assert.throws(()=>C.validateCustomFields([{...field,name}]));
   assert.throws(()=>C.validateCustomFields([field,{...field,id:'cf_other',name:' contact '}]));
-  assert.throws(()=>C.validateCustomFields([{...field,type:'number'}]));
+  assert.throws(()=>C.validateCustomFields([{...field,type:'formula'}]));
   assert.throws(()=>C.validateCustomFields([{...field,id:'owner'}]));
   assert.throws(()=>C.validateCustomFields(Array.from({length:21},(_,i)=>({...field,id:'cf_'+i,name:'Field '+i}))));
   assert.deepEqual(C.fieldsFor([]),C.fields);assert.equal(C.fields.contact,undefined);
@@ -64,6 +64,16 @@ test('empty CRM retains a created column and repeated or stale creation is rejec
   assert.throws(()=>h.prepare({action:'add_field',newFieldName:'CONTACT'},'duplicate'),/already exists/);
   h.prepare({action:'add_field',newFieldName:'Region'},'add');h.S.revision++;const count=h.calls.length;await h.confirmDraft();
   assert.equal(h.calls.length,count);assert.match(h.messages.at(-1),/table changed/);
+});
+test('inline numeric edits store numbers, reject invalid input without clearing, and support explicit clear',async()=>{
+  const h=harness();h.prepare({action:'add_field',newFieldName:'Units',targetType:'number'},'add');await h.confirmDraft();
+  const field=h.S.customFields[0].id,edit=(value,extra={})=>h.manualEdit({value,dataset:{field},closest:()=>({dataset:{id:'1'}}),...extra});
+  await edit('0');assert.equal(h.S.records[0][field],0);
+  let reported=false,writes=h.calls.length;
+  await edit('',{validity:{badInput:true},reportValidity(){reported=true;}});assert(reported);assert.equal(h.calls.length,writes);assert.equal(h.S.records[0][field],0);
+  await edit('-2.125');assert.equal(h.S.records[0][field],-2.125);
+  await edit('');assert.equal(h.S.records[0][field],null);assert.equal(h.S.failedEdit,null);
+  writes=h.calls.length;await edit('not numeric');assert.equal(h.calls.length,writes);assert.equal(h.S.failedEdit.raw,'not numeric');
 });
 test('custom inline edits work at the chat cap, preserve drafts on outage and retry explicitly',async()=>{
   const h=harness();h.prepare({action:'add_field',newFieldName:'Contact'},'add');await h.confirmDraft();
