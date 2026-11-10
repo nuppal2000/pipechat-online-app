@@ -30,3 +30,18 @@ test('collapse preference is account scoped and live status removes completed ta
   saved.S.todoCards[0].status='Done';saved.ui.draw();assert(!saved.node('notificationsBody').innerHTML.includes('data-complete-task'));
   saved.ui.clear();assert.equal(saved.node('notificationsBody').innerHTML,'');
 });
+test('stale overdue context is escaped and existing task open/completion actions keep their identities',()=>{
+  const h=harness();h.S.records[0].follow='';h.S.records[0].history=['2026-09-14T00:00:00Z | QA: Saved note.'];
+  h.S.todoCards[0].dueDate='2026-09-13';h.S.todoCards[0].status='In Progress';h.ui.draw();
+  const html=h.node('notificationsBody').innerHTML;
+  assert.match(html,/20 days; overdue task: Call &lt;img&gt; \(due 2026-09-13\)/);
+  assert(!html.includes('<img>'));assert(!html.includes('no dated reminder'));
+  assert.match(html,/Last activity: 2026-09-14/);assert.equal(h.node('notificationBadge').textContent,2);
+  h.click('[data-notification]',{notification:'stale:1'});assert.deepEqual(h.calls[0].slice(0,2),['record',1]);
+  h.click('[data-notification]',{notification:'task:todo_a'});assert.deepEqual(h.calls[1],['task','todo_a']);
+  h.click('[data-complete-task]',{completeTask:'task:todo_a'});assert.deepEqual(h.calls[2],['complete','todo_a']);
+  assert.equal(h.S.todoCards[0].status,'In Progress');
+  h.S.todoCards[0].status='Done';h.ui.draw();
+  assert.match(h.node('notificationsBody').innerHTML,/no dated reminder/);
+  assert(!h.node('notificationsBody').innerHTML.includes('data-complete-task'));assert.equal(h.node('notificationBadge').textContent,1);
+});

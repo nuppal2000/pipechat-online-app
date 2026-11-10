@@ -21,7 +21,7 @@ const update=(ids,changes)=>({op:'update',ids,mode:'add_filter',where:[],replace
 const root=(action,required,p)=>supports(action,['root'],required,{pipeline:p});
 
 test('exports a bounded array schema and treats only explicit empty requirements as noncomputed',()=>{
-  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes','separate_graphs','dependencies','unchanged_graphs','separate_widgets','scalar_kpi']);
+  assert.deepEqual(schema.items.enum,['count','names','fields','sum','average','median','distinct','min','max','groups','percentages','history','notes','separate_graphs','dependencies','unchanged_graphs','separate_widgets','scalar_kpi','difference','derived_sum']);
   assert.equal(schema.type,'array');assert.equal(schema.maxItems,schema.items.enum.length);
   assert.equal(supports(null,[],[]),true);assert.equal(supports({action:'undo_action'},['root'],[]),true);
   for(const required of [undefined,null,'count',{},['unknown'],['count','count'],Array(12).fill('count'),new Array(1)]){
@@ -69,6 +69,26 @@ test('workspace outputs use exact typed kinds from only the mapped steps',()=>{
   for(const ids of [[],['root'],['missing'],['first','missing'],['first','first'],Array(31).fill('first')])assert.equal(supports(action,ids,['count']),false);
   assert.equal(supports(plan({op:'select_records',id:'selected'}),['selected'],['names']),false);
   assert.equal(supports(plan(read('same','count'),read('same','sum')),['same'],['count']),false);
+});
+
+test('a requested difference needs computed subtraction, not two totals or a comparison title',()=>{
+  const p=pipeline(['owners',spec()]);
+  const left={...reference('owners','group'),group:'Aster',series:null};
+  const right={...reference('owners','group'),group:'Briar',series:null};
+  const totals=analyze(value(left),value(right));
+  assert.equal(root(totals,['sum'],p),true);
+  assert.equal(root(totals,['difference'],p),false);
+  const comparison=analyze(compare('difference',left,right));
+  assert.equal(root(comparison,['difference','sum'],p),true);
+  assert.equal(supports(comparison,['graph:owners'],['difference'],{pipeline:p}),true);
+  const readOnly=plan(report('owners',spec(),[compare('difference',left,right)]));
+  assert.equal(supports(readOnly,['owners'],['difference']),true);
+  assert.equal(supports(plan(read('one','sum'),read('two','sum')),['one','two'],['difference']),false);
+  const split=pipeline(['left',spec()],['right',spec()]);
+  const cross=analyze(compare('difference',reference('left'),reference('right')));
+  assert.equal(root(cross,['difference'],split),true);
+  assert.equal(supports(cross,['graph:left'],['difference'],{pipeline:split}),false);
+  assert.equal(supports(cross,['graph:left','graph:right'],['difference'],{pipeline:split}),false);
 });
 
 test('malformed direct outputs and prose claims never grant output capabilities',()=>{
