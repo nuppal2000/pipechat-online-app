@@ -1,6 +1,13 @@
 (function(root){
   'use strict';
   const R=root.PipeChatReports;
+  function kpiMarkup(spec,result,format,esc){
+    const grouped=spec.groupBy!==null||spec.splitBy!==null;
+    return (grouped?result.table:result.summaries).map(row=>{
+      const label=grouped?(spec.groupBy===null?row.series:row.group+' / '+row.series):row.label;
+      return `<div class="dashboard-kpi-result"><span>${esc(label)}</span><strong>${esc(format(row.value,row.type))}</strong></div>`;
+    }).join('')||'<p>No matching records.</p>';
+  }
   function draw({spec,result,core,custom,document,esc,Chart}){
     const $=id=>document.getElementById(id),defs=core.definitions(custom),first=spec.measures[0];
     const format=(v,type)=>v==null?'Not set':new Intl.NumberFormat('en-US',{maximumFractionDigits:4,...(type==='currency'?{style:'currency',currency:'USD',maximumFractionDigits:2}:{})}).format(v)+(type==='percent'?'%':'');
@@ -14,7 +21,7 @@
     $('reportRows').innerHTML=result.table.map(row=>`<tr><td>${esc(row.group)}</td><td>${esc(row.series)}: ${esc(format(row.value,row.type))}</td><td>${row.count}</td></tr>`).join('')||'<tr><td colspan="3">No matching records.</td></tr>';
     $('reportCaption').textContent=`${result.count} matching records. ${result.description}. Missing numeric values are excluded, not treated as zero.${result.undated?' '+result.undated+' undated records excluded from date groups.':''}${result.shownGroups<result.totalGroups?` Showing ${result.shownGroups} of ${result.totalGroups} groups.`:''}`;
     $('chartContainer').hidden=spec.chart==='kpi';$('reportKpis').hidden=spec.chart!=='kpi';
-    $('reportKpis').innerHTML=result.table.map(row=>`<div><span>${esc(row.group)} / ${esc(row.series)}</span><strong>${esc(format(row.value,row.type))}</strong></div>`).join('')||'<p>No matching records.</p>';
+    $('reportKpis').innerHTML=spec.chart==='kpi'?kpiMarkup(spec,result,format,esc):'';
     $('reportCanvas').setAttribute('aria-label',result.title+'. '+result.table.map(r=>`${r.group}, ${r.series}: ${format(r.value,r.type)}`).join('; '));
     if(spec.chart==='kpi'||!Chart)return null;
     const colors=['#7465cb','#238c78','#b37c21','#cb6179','#417bbe','#78923a','#996ca4','#50757a'];
@@ -58,7 +65,7 @@
       section.querySelector('.dashboard-element-actions').prepend(focusButton);
       host.append(section);
       const visual=section.querySelector('.dashboard-element-visual');
-      if(v.spec.chart==='kpi')visual.innerHTML=s.table.map(r=>`<div class="dashboard-kpi-result"><span>${esc(r.series)}</span><strong>${esc(root.PipeChatDashboard.format(r.value,r.type))}</strong></div>`).join('');
+      if(v.spec.chart==='kpi')visual.innerHTML=kpiMarkup(v.spec,s,root.PipeChatDashboard.format,esc);
       else{
         const canvas=document.createElement('canvas');canvas.setAttribute('role','img');canvas.setAttribute('aria-label',s.title+'. '+s.table.map(r=>`${r.group}, ${r.series}: ${root.PipeChatDashboard.format(r.value,r.type)}`).join('; '));visual.append(canvas);
         visual.style.height=(v.spec.chart==='bar'?Math.min(12000,Math.max(260,v.result.labels.length*Math.max(30,v.result.datasets.length*16)+65)):320)+'px';
