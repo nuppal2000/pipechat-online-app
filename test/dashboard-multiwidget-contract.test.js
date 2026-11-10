@@ -7,7 +7,7 @@ const Review=require('../lib/action-review'),Conversation=require('../lib/conver
 const Customize=require('../public/workspace-customization');
 const F=require('./fixtures/workspace-plans.cjs');
 const today='2026-10-23';
-const retainedKpiIds=['kpi_records','kpi_f_value','kpi_followup','kpi_owner','kpi_user_retained'].map(id=>'unchanged:kpi:'+id);
+const retainedKpiIds=[...['kpi_records','kpi_f_value','kpi_followup','kpi_owner','kpi_user_retained'].map(id=>'unchanged:kpi:'+id),'unchanged:kpis'];
 const spec=(metric,extra={})=>({version:1,title:metric+' by stage',chart:'bar',scope:'all',groupBy:'f_stage',
   bucket:'none',splitBy:null,where:[],sort:'label_asc',limit:null,
   measures:[{label:metric,metric,field:metric==='count'?null:'f_value',where:[]}],...extra});

@@ -12,6 +12,7 @@ const reportEngine = require('./public/report-engine.js');
 const dashboardBoard = require('./public/dashboard-board.js');
 const workspacePlan = require('./public/workspace-plan.js');
 const actionReview = require('./lib/action-review.js');
+const citationRepair = require('./lib/plan-citation-repair.js');
 const agentPersona = require('./lib/agent-persona.js');
 const {localStore:localAgentProfileStore} = require('./lib/agent-profile-store.js');
 const actionJournalContext = require('./lib/action-journal-context.js');
@@ -1021,14 +1022,24 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   // Planner extras never carry authority for a computed answer or its provenance.
   delete grounded.computedAnswer;delete grounded.answerPresentation;
   if(grounded===result&&actionReview.needsReview(payload,result)){
-    let review,coverage,stage='evidence';
+    let review,coverage,stage='evidence',citationRepairUsed=false;
     try{
       const computed=actionReview.evidence(payload,result);
       grounded.lifecycle=computed.lifecycle;
       stage='review';
-      review=await reviewCompiledAction({userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed},startedAt,payload);
+      const reviewInput={userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed};
+      review=await reviewCompiledAction(reviewInput,startedAt,payload);
       stage='mapping';
       coverage=actionReview.validateReview(review,result,{pipeline,computed});
+      if(Date.now()-startedAt<55000&&citationRepair.eligible(result.crmAction,review,coverage,computed)){
+        citationRepairUsed=true;
+        const repaired=await reviewCompiledAction({...reviewInput,citationRepair:{requirements:review.requirements,
+          issues:coverage.mappingIssues,instruction:'The compiled plan and computed data have not changed. Preserve the exact requirement descriptions, evidence kinds, order and requested outputs. For satisfied outcomes repair only their stepIds using the typed evidence for the actual plan (displayEvidence, numericAssignmentEvidence or constraintEvidence). If an output is genuinely absent, mark it unsatisfied; never approve by removing it.'}},startedAt,payload,AI_MODELS.complex);
+        if(citationRepair.sameObligations(review,repaired)){
+          const verified=actionReview.validateReview(repaired,result,{pipeline,computed});
+          if(verified.ok){review=repaired;coverage=verified;}
+        }
+      }
       if(coverage.ok){
         canonicalAnswer=coverage.answer?.text??actionReview.renderAnswer(payload,result,computed);
         if(coverage.answer)answerPresentation={mode:'extractive',snapshotId:coverage.answer.snapshotId,workspaceVersion:coverage.answer.workspaceVersion};
@@ -1042,7 +1053,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
       review={issues:[error.name==='TimeoutError'?'The request reached its time limit.':error.message],requirements:[],clarificationQuestion:null};coverage={ok:false};
     }
     if(!coverage.ok){
-      if(!payload._reviewAttempt&&Date.now()-startedAt<55000&&!review.clarificationQuestion){
+      if(!payload._reviewAttempt&&!citationRepairUsed&&Date.now()-startedAt<55000&&!review.clarificationQuestion){
         return planPipeChatAction({...payload,_reviewAttempt:1,_reviewFeedback:review},{tier:'complex',model:AI_MODELS.complex,reason:'completeness_repair'},startedAt);
       }
       if(review.clarificationQuestion){return {assistantMessage:review.clarificationQuestion,crmAction:{action:'clarify',question:review.clarificationQuestion},memoryNote:null,ai:{...selectedRoute,workspaceVersion:pipeline.workspaceVersion}};}
