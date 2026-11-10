@@ -102,6 +102,63 @@ function identityFixture(command,names=['QA26 Saffron Studio','Control Alex01','
     records:names.map((name,i)=>({id:i+1,name})),todoView:[]}};
 }
 
+test('F02: named numeric mappings survive identity grounding and leave unmentioned rows blank',()=>{
+  const command='Create a numeric column named QA confidence. Give QA1105 Maple Retail 12.5 and QA1105 Elm Design 0 in that column; leave the other rows blank.';
+  const names=['Control Other A','QA1105 Elm Design','Control Other B','QA1105 Maple Retail'];
+  const w=require('./fixtures/workspace-plans.cjs').workspace();
+  w.records=w.records.slice(0,4).map((row,i)=>({...row,f_deal:names[i]}));
+  const p=G.prepare({userCommand:command},{...w,deals:w.records},{},null);
+  const before=structuredClone(w);
+  const action=require('../lib/scoped-table-request').compile({action:'scoped_table_request',title:'QA confidence',source:'all',where:[],
+    operation:{kind:'add_named_numbers',name:'QA confidence',entries:[{recordName:names[3],value:12.5},{recordName:names[1],value:0}]}});
+  const result={crmAction:action};
+  assert.deepEqual(G.identityContext(p).references.map(ref=>ref.candidates.map(row=>row.id)),[[2],[4]]);
+  assert.equal(G.guardIdentity(p,result),result);
+  const preview=require('../public/workspace-plan').prepare(w,action,{nonce:'f02',today:'2026-11-10'});
+  const [field]=preview.addedFields;
+  assert.equal(field.name,'QA confidence');assert.equal(field.type,'number');
+  assert.deepEqual(preview.next.records.map(row=>row[field.id]),[null,0,null,12.5]);
+  assert.deepEqual(preview.patches.map(row=>row.id),[2,4]);assert.deepEqual(w,before);
+});
+
+test('group, prepositional and exclusion wording does not supply record identities',()=>{
+  const names=['Cedar Studio','Control Other A','Control Other B','Remaining','Remaining','The Rest','The Rest',
+    'Column North','Column South','Aside East','Aside West','Else East','Else West','From A','From B',
+    'Except A','Except B','Others A','Others B'];
+  for(const command of ['Update Cedar Studio; keep all other records unchanged.',
+    'Update Cedar Studio; make no assignment for the remaining accounts.',
+    'Update Cedar Studio; leave the rest alone.','Update Cedar Studio in that column and leave everything else unchanged.',
+    'Aside from Cedar Studio, leave the remaining rows blank.',
+    'Leave all rows other than Cedar Studio unchanged.','Update all rows except Cedar Studio.',
+    'Update Cedar Studio; keep the value blank for others.']){
+    const p=identityFixture(command,names),result=renameResult();
+    assert.deepEqual(G.identityContext(p).references.map(ref=>ref.phrase),['cedar studio'],command);
+    assert.equal(G.guardIdentity(p,result),result,command);
+  }
+});
+
+test('a real selector still needs clarification alongside group wording or after an exclusion',()=>{
+  const names=['Control Other A','Control Other B','Cedar Studio','Other Rows Studio East','Other Rows Studio West'];
+  for(const [command,phrase] of [
+    ['Update Control Other; leave the other rows blank.','control other'],
+    ['Update Other; leave the other rows blank.','other'],
+    ['Update Other; keep all other records unchanged.','other'],
+    ['Update all rows other than Other.','other'],
+    ['Update all records except for Other.','other'],
+    ['Update Other Rows Studio; leave the remaining rows unchanged.','other rows studio'],
+    ['Update records named "Other Rows".','other rows']
+  ]){
+    const p=identityFixture(command,names),question=G.guardIdentity(p,renameResult()).crmAction.question;
+    assert.ok(question?.startsWith('Which record did you mean by "'+phrase+'"?'),command+': '+question);
+  }
+});
+
+test('population wording can still be a literal saved task title',()=>{
+  const p=identityFixture('Move The Rest to tomorrow.');
+  p.pipeline.todoView=[{id:'todo_rest',title:'The Rest',nextAction:'',recordId:null}];
+  assert.deepEqual(G.identityContext(p).taskReferences.map(ref=>ref.candidates.map(task=>task.id)),[['todo_rest']]);
+});
+
 test('rename grounding resolves the exact saved source instead of the new name shared with other records',()=>{
   const p=identityFixture('Rename QA26 Saffron Studio to Control Saffron Studio. Keep every other value unchanged.'),before=structuredClone(p),result=renameResult();
   assert.deepEqual(G.identityContext(p).references,[{phrase:'qa26 saffron studio',candidates:[{id:1,name:'QA26 Saffron Studio'}],selection:'single_record'}]);
