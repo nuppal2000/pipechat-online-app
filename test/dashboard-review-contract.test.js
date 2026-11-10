@@ -14,9 +14,9 @@ function fixture(action=plan(stage,mean),prior){
 }
 const envelope=requirements=>({requirements,issues:[],clarificationQuestion:null,answerIntent:'canonical',answerSelection:null});
 const req=(shape,stepIds,requiredOutputs,evidenceKind='computed_read')=>({...shape,description:'user obligation',evidenceKind,stepIds,requiredOutputs,satisfied:true});
-const element=op=>{
-  const {chart,groupBy,splitBy,bucket,scope,limit,measures}=op.spec;
-  return req({element:{chart,groupBy,splitBy,bucket,scope,where,limit,measures:measures.map(({metric,field,where})=>({metric,field,where}))}},
+const element=(op,cohort='cohort_1')=>{
+  const {chart,groupBy,measures}=op.spec;
+  return req({[graph(op.id)]:{requestedCohort:cohort}},
     [graph(op.id)],[measures[0].metric,...(groupBy?['groups']:chart==='kpi'?['scalar_kpi']:[])]);
 };
 const layout=(ops,mixed)=>req({[mixed?'widgetLayout':'plottedLayout']:ops.map(o=>o.spec.chart)},ops.map(o=>graph(o.id)),[mixed?'separate_widgets':'separate_graphs']);
@@ -52,18 +52,42 @@ test('unmet outcomes can describe absent or unsupported user intent without citi
   assert(!accepts(f.schema,envelope([])));assert(!accepts(f.schema,envelope([{...element(mean),stepIds:[]}])));
   assert(!f.check([preserve(['unchanged:kpis'],'unchanged_kpis')]));
 });
-test('element matches typed intent, not planner title, record count, another component or repaired intent',()=>{
-  for(const change of [r=>r.element.scope='visible',r=>r.element.where=[],r=>r.element.where=[[F.where('f_owner','equals','QA1105')]],
-    r=>r.element.measures[0].field='f_deal',r=>r.element.measures[0].metric='sum',r=>r.element.groupBy='f_owner',
-    r=>r.element.chart='line',r=>r.stepIds=[graph('stage')],r=>r.stepIds=[],r=>r.element.limit=1]){
+test('witnesses expose only their own metric and shape and compare independently chosen cohorts',()=>{
+  const {schema}=fixture(),item=schema.properties.requirements.items;
+  for(const [id,expected] of [['stage',['sum','groups','names']],['mean',['average','scalar_kpi']]]){
+    const k=graph(id),b=item.anyOf.find(b=>b.properties[k]);
+    assert.deepEqual(b.properties.stepIds.items.enum,[k]);assert.deepEqual(b.properties.requiredOutputs.items.enum.sort(),expected.sort());
+    assert.deepEqual(b.properties[k].required,['requestedCohort']);
+    assert.deepEqual(b.properties[k].properties.requestedCohort.enum,['all_records','cohort_1','not_available']);
+    assert.match(b.description,/f_value/);assert.match(b.description,/f_deal.*starts with "QA1105"/);
+    if(id==='stage')assert.match(b.description,/group by "Deal Stage" \[f_stage\]/);else assert.match(b.description,/kpi; average .*group by none/);
+  }
+  assert.match(item.description,/all_records = all table records \(unfiltered\)/);
+  const k=graph('mean');
+  for(const change of [r=>r[k].requestedCohort='all_records',r=>r[k].requestedCohort='not_available',r=>r[k].requestedCohort='invented',
+    r=>r[k].where=where,r=>r.requiredOutputs=['sum','groups'],r=>r.requiredOutputs=['count'],r=>r.stepIds=[graph('stage')],r=>r.stepIds=[],
+    r=>{r['graph:made_up']=r[k];delete r[k];}]){
     const f=fixture(),rs=structuredClone(mixed());change(rs[1]);assert(!f.check(rs));
-    if(rs[1].stepIds[0]==='graph:mean')assert(!f.check(mixed()),'citation repair cannot rewrite requested component properties');
+    if(rs[1].stepIds[0]===k)assert(!f.check(mixed()),'citation repair cannot rewrite the requested cohort, witness or outputs');
   }
   const wrongPlan=plan(stage,mean);wrongPlan.operations[1].spec.where=[[F.where('f_owner','equals','Someone')]];
   assert(!fixture(wrongPlan).check(mixed()));
 });
+test('an unfiltered widget cannot borrow a prefix from its sibling; a missing predicate routes to unmet',()=>{
+  const a=plan(stage,mean);a.requestScope=null;a.operations[0].spec.measures[0].where=where;
+  const f=fixture(a),rs=mixed();
+  assert(accepts(f.schema,envelope(rs)),'the reviewer may state the requested prefix even on the wrong witness');
+  assert(!f.check(rs),'matching average shape does not prove the requested population');
+  rs[1]=element(mean,'all_records');
+  assert(fixture(a).check(rs),'different requested populations can be cited independently');
+  rs[1]=element(mean,'not_available');assert(!fixture(a).check(rs));
+  const bare=plan(stage,mean);bare.requestScope=null;
+  const noPrefix=fixture(bare),opts=noPrefix.schema.properties.requirements.items.anyOf[0].properties[graph('stage')].properties.requestedCohort.enum;
+  assert.deepEqual(opts,['all_records','not_available']);
+  assert(!accepts(noPrefix.schema,envelope(mixed())));assert(!noPrefix.check(mixed()));
+});
 test('one complete layout of three plots or two retained widgets and the new owner plot',()=>{
-  const count=add('count','bar','count','f_owner'),three=[count,stage,owner],requests=[...three.map(element),layout(three,false)];
+  const count=add('count','bar','count','f_owner'),three=[count,stage,owner],requests=[...three.map(op=>element(op)),layout(three,false)];
   const f=fixture(plan(...three));assert(accepts(f.schema,envelope(requests)));assert(f.check(requests));
   const prior=fixture().context.computed.board,inc=()=>fixture(plan(owner),prior);
   const kept=preserve(['unchanged:graph:stage','unchanged:graph:mean'],'unchanged_graphs');

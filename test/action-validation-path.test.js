@@ -232,11 +232,16 @@ test('F04v sends the strict element/layout union and accepts its actual mixed re
   const result={assistantMessage:'Showing both.',memoryNote:null,crmAction:{action:'dashboard_plan',requestScope:{scope:'all',where},operations,questions:[]}};
   const h=harness(()=>result,(input,body)=>{
     const item=body.text.format.schema.properties.requirements.items;
+    assert.equal(input.pipeline,undefined,'the composition reviewer does not need raw CRM rows');
+    assert.equal(input.proposalMessage,undefined,'planner prose is not display evidence');
+    assert(input.fields.some(f=>f.id==='f_value'));assert.equal(input.userCommand,payload.userCommand);
+    assert.equal(input.computed.board.elements.length,2);
     assert.equal(body.text.format.strict,true);assert(!item.properties);
-    assert(item.anyOf.some(b=>b.properties.element));assert(item.anyOf.some(b=>b.properties.widgetLayout));
+    assert(item.anyOf.some(b=>b.properties['graph:mean']));assert(item.anyOf.some(b=>b.properties.widgetLayout));
     assert(!item.anyOf.some(b=>b.properties.plottedLayout));assert(input.allowedStepIds.includes('unchanged:kpis'));
     const claim=(shape,stepIds,requiredOutputs,evidenceKind='computed_read')=>({...shape,...requirement('Requested outcome',evidenceKind,true,stepIds),requiredOutputs});
-    return {...review([claim({element:requested[0]},['graph:stage_total'],['sum','groups']),claim({element:requested[1]},['graph:mean'],['average','scalar_kpi']),
+    return {...review([claim({'graph:stage_total':{requestedCohort:'cohort_1'}},['graph:stage_total'],['sum','groups']),
+      claim({'graph:mean':{requestedCohort:'cohort_1'}},['graph:mean'],['average','scalar_kpi']),
       claim({widgetLayout:['plot','kpi']},['graph:stage_total','graph:mean'],['separate_widgets']),
       claim({preserve:'verified_constraint'},['unchanged:kpis'],['unchanged_kpis'],'constraint')]),answerIntent:'canonical',answerSelection:null};
   });
