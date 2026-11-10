@@ -180,6 +180,92 @@
   const labels=()=>C.fieldsFor(S.customFields);
   const failedEditKey='pipechat.failed-edit.v1';
   S.failedEdit=null;
+  const inlineDrafts=new Map(),inlineCells=new WeakMap();
+  let inlineCommit=null,inlinePreviousStatus=null;
+  function inlineDirty(){
+    for(const [key,draft] of inlineDrafts)if(draft.generation!==S.generation)inlineDrafts.delete(key);
+    return inlineDrafts.size>0;
+  }
+  function inlineStatus(){
+    if(S.failedEdit){$('saveStatus').textContent='Unsaved edit retained';$('saveStatus').classList.add('failed');}
+    else if(inlineDirty()||inlineCommit?.generation===S.generation){
+      if(!inlinePreviousStatus||!['Unsaved changes','Saving...'].includes($('saveStatus').textContent)){
+        inlinePreviousStatus={text:$('saveStatus').textContent,failed:Boolean($('saveStatus').classList.contains?.('failed'))};
+      }
+      $('saveStatus').textContent=S.saving?'Saving...':'Unsaved changes';
+      $('saveStatus').classList.remove('failed');
+    }else{
+      if($('saveStatus').textContent==='Unsaved changes'&&inlinePreviousStatus){
+        $('saveStatus').textContent=inlinePreviousStatus.text;$('saveStatus').classList.toggle('failed',inlinePreviousStatus.failed);
+      }
+      inlinePreviousStatus=null;
+    }
+  }
+  function bindInlineCell(el){
+    if(!el?.dataset?.field||inlineCells.has(el))return inlineCells.get(el);
+    const id=Number(el.closest('[data-id]')?.dataset.id),field=el.dataset.field,record=S.records.find(row=>row.id===id);
+    if(!record||!Object.hasOwn(labels(),field))return null;
+    const binding={id,field,account:rowName(record),before:record[field],generation:S.generation,
+      baseline:el.defaultValue??String(record[field]??''),done:false};
+    // Selects have no defaultValue; their current rendered selection is the baseline.
+    if(el.tagName==='SELECT')binding.baseline=el.value;
+    inlineCells.set(el,binding);return binding;
+  }
+  function trackInlineEdit(el){
+    const binding=bindInlineCell(el);
+    if(!binding||binding.done||binding.generation!==S.generation)return null;
+    const key=binding.id+':'+binding.field,raw=el.value,invalid=Boolean(el.validity?.badInput);
+    if(raw===binding.baseline&&!invalid){inlineDrafts.delete(key);inlineStatus();return null;}
+    const previous=inlineDrafts.get(key);
+    const draft={...binding,key,raw,invalid,el,commitRequested:previous?.commitRequested||false};
+    inlineDrafts.set(key,draft);inlineStatus();return draft;
+  }
+  function captureInlineEdits(){
+    $('dealRows').querySelectorAll?.('[data-field]').forEach(el=>trackInlineEdit(el));
+  }
+  function holdInlineTable(){
+    captureInlineEdits();
+    if(!inlineDirty()&&inlineCommit?.generation!==S.generation)return false;
+    // Keep the native control (and selection/IME/invalid input) alive until commit.
+    $('dealRows').querySelectorAll?.('input,select,textarea,button').forEach(el=>el.disabled=S.saving||Boolean(S.failedEdit));
+    inlineStatus();return true;
+  }
+  function bindInlineTable(){
+    $('dealRows').querySelectorAll?.('[data-field]').forEach(el=>bindInlineCell(el));
+  }
+  async function commitInlineEdits(){
+    if(inlineCommit||S.saving||S.failedEdit||!S.loaded)return false;
+    const draft=[...inlineDrafts.values()].find(d=>d.generation===S.generation&&d.commitRequested&&!d.invalid);
+    if(!draft)return false;
+    inlineDrafts.delete(draft.key);inlineCommit=draft;
+    const binding=inlineCells.get(draft.el);if(binding)binding.done=true;
+    let saved=false;
+    try{
+      const row=S.records.find(r=>r.id===draft.id);
+      if(!row||row[draft.field]!==draft.before){
+        S.failedEdit={...draft,el:undefined,reviewed:false,message:'This cell changed while you were editing. Reload the latest data and review your draft.'};
+        keepFailedEdit();inlineStatus();
+      }else saved=await editRecord(draft.id,draft.field,draft.raw);
+    }finally{
+      if(inlineCommit===draft)inlineCommit=null;
+      if(draft.generation===S.generation){render();if(!S.failedEdit)await commitInlineEdits();}
+    }
+    return saved;
+  }
+  function warnUnsaved(event){
+    captureInlineEdits();
+    if(S.saving||S.busy||conversation?.dirty||inlineDirty()||(S.failedEdit&&!S.failedEditStored)){event.preventDefault();event.returnValue='';}
+  }
+  function wireInlineEditing(){
+    const host=$('dealRows');
+    host.addEventListener('focusin',event=>{bindInlineCell(event.target);resizeTextCell(event.target,true);if(event.target.hasAttribute('data-expand-text'))event.target.scrollIntoView({block:'nearest',inline:'nearest'});});
+    host.addEventListener('input',event=>{trackInlineEdit(event.target);resizeTextCell(event.target,true);});
+    // Read after the browser's default paste/cut action, including fallback event sequences.
+    for(const type of ['paste','cut'])host.addEventListener(type,event=>setTimeout(()=>trackInlineEdit(event.target),0));
+    host.addEventListener('change',event=>{if(event.target.dataset.field)manualEdit(event.target);});
+    host.addEventListener('blur',event=>{if(event.target.dataset.field)manualEdit(event.target);},true);
+    host.addEventListener('focusout',event=>{resizeTextCell(event.target,false);if(event.target.dataset.field)manualEdit(event.target);});
+  }
   function keepFailedEdit() {
     S.failedEditStored=false;
     try {
@@ -231,7 +317,7 @@
       const value=C.validateStoredValue(d.field,d.field==='value'?d.raw.replace(/[$,]/g,'').trim():d.raw,S.customFields);
       if(record[d.field]===value){discardFailedEdit();$('saveStatus').textContent='Edit already saved';return;}
       const proposal=C.plan(S.records,{action:'update_record',ids:[d.id],field:d.field,value:value??''},S.customFields);
-      await persist(C.apply(S.records,proposal,S.user.name||S.user.email,new Date(),S.customFields),`${labels()[d.field]} updated`,{failedEdit:d});
+      await persist(C.apply(S.records,proposal,S.user.name||S.user.email,new Date(),S.customFields),`${labels()[d.field]} updated`,{failedEdit:d,exactRecords:true,verifyHistory:true});
     }catch(error){d.message=error.message;renderTrust();}
   }
   const icons = (node=document) => node.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));
@@ -288,6 +374,7 @@
     $('aiModeLabel').classList.toggle('offline',locked||S.health?.aiConfigured===false);
   }
   function renderTable(rows) {
+    if(holdInlineTable())return;
     const legacyLayout=!tailored()||S.tableSchema.legacy&&JSON.stringify(S.tableSchema.fields)===JSON.stringify(Schema.legacySchema().fields);
     if(!legacyLayout){renderTailoredTable(rows);return;}
     const header=$('dealHeaders');
@@ -311,6 +398,7 @@
         ordered.forEach(f=>row.appendChild(cells[ids.indexOf(f.id)]));row.appendChild(cells.at(-1));
       }
     }
+    bindInlineTable();
   }
   function render() {
     if(!S.loaded)return;
@@ -346,7 +434,7 @@
     $('businessView').hidden=!['entities','share'].includes(S.tab);$('shareView').hidden=true;
     $('centerTitle').textContent=({table:tailored()?S.tableSchema.title:'Deals',todo:'Tasks',dashboard:'Dashboard',activity:'Activity',share:'Shared views',entities:'Entities and relationships',workflows:'Workflows'})[S.tab];
     $('viewFilters').hidden=['todo','activity','share','entities','workflows'].includes(S.tab);
-    $('filterStrip').hidden=S.tab==='todo'||!S.filter;
+    $('filterStrip').hidden=['todo','activity'].includes(S.tab)||!S.filter;
     $('shareBtn').hidden=S.tab==='todo';$('addTodoBtn').hidden=S.tab!=='todo';
     $('exportDashboardBtn').hidden=S.tab!=='dashboard';
     if(S.tab==='todo'){$('recordCount').textContent=`${S.todoCards.length} cards`;$('viewSummary').textContent=`${S.todoCards.length} cards`;$('clearSearchBtn').hidden=true;}
@@ -357,7 +445,7 @@
     ['importCsvBtn','addFieldBtn','addAccountBtn'].forEach(id=>$(id).hidden=S.tab!=='table');
     if(S.tab==='dashboard')renderReport(rows);
     if(S.tab==='activity')renderActivity();
-    renderTrust();updateUsage();
+    renderTrust();updateUsage();inlineStatus();
   }
   function setTab(tab) {S.tab=tab;S.settingsOpen=false;render();if(['entities','share'].includes(tab))loadBusinessView();if(tab==='workflows')loadWorkflows();}
   function clearBusinessSession(){
@@ -533,10 +621,13 @@
     $('activityFrom').value='';$('activityTo').value='';activityLimit=150;$('activityList').innerHTML='';$('activityCount').textContent='';$('activityMore').hidden=true;
   }
   function renderActivity() {
+    $('recordCount').textContent=`${S.records.length} records / all records`;
+    $('viewSummary').textContent='Global activity / all records';
+    $('filterStrip').hidden=true;
     const H=window.PipeChatInspector,names=new Map(S.records.map(r=>[r.id,rowName(r)]));let entries;
     try{entries=H.activity(S.records,{from:$('activityFrom').value,to:$('activityTo').value});}
     catch(error){$('activityCount').textContent='';$('activityMore').hidden=true;$('activityList').innerHTML=`<p class="error" role="alert">${esc(error.message)}</p>`;return;}
-    $('activityCount').textContent=`${entries.length} ${entries.length===1?'entry':'entries'}`;$('activityMore').hidden=entries.length<=activityLimit;
+    $('activityCount').textContent=`${entries.length} ${entries.length===1?'entry':'entries'} / all records`;$('activityMore').hidden=entries.length<=activityLimit;
     $('activityList').innerHTML=entries.slice(0,activityLimit).map(item=>`<div class="activity-item"><button class="record-link" data-inspect="${item.recordId}">${esc(names.get(item.recordId))}</button>${item.at?`<time datetime="${esc(item.at)}">${esc(new Date(item.at).toLocaleString())}</time>`:''}<p>${esc((item.type==='note'?'Note added. ':'')+H.displayText(item))}</p></div>`).join('')||'<p class="empty-table">No activity for these dates.</p>';
   }
   function focusTrust() {
@@ -909,6 +1000,8 @@
   }
   async function persist(next,label,{undo=true,failedEdit=null,customFields=S.customFields,tableSchema=S.tableSchema,exactRecords=false,todoCards=null,verifyHistory=false,importReceipt=null,schemaChanges=[]}={}) {
     if(S.saving||S.resetting||!S.loaded||(S.failedEdit&&failedEdit!==S.failedEdit))return false;
+    captureInlineEdits();
+    if(inlineDirty()&&!inlineCommit&&!failedEdit){inlineStatus();toast('Finish the unsaved table edit before saving another change.');return false;}
     S.saving=true;const before=C.clone(S.records), beforeFields=C.clone(S.customFields),beforeSchema=C.clone(S.tableSchema||(tableSchema?.legacy?window.PipeChatSchema.legacySchema():null)),generation=S.generation,oldPrimary=C.role('primary'),oldOwner=C.role('owner');
     const beforeCards=C.clone(S.todoCards);
     $('saveStatus').textContent='Saving...';$('saveStatus').classList.remove('failed');render();
@@ -919,13 +1012,14 @@
       if(importReceipt&&JSON.stringify(S.saveAttempt?.body?.importReceipt)===JSON.stringify(importReceipt)){body=C.clone(S.saveAttempt.body);next=body.deals;cards=body.todoCards;}
       let saved=await api('/api/crm-data',{method:'PUT',body:JSON.stringify({...body,actionMetadata:actionMetadata(body)})});
       if(generation!==S.generation)return false;
-      if(verifyHistory&&next.some(row=>JSON.stringify(saved.deals?.find(r=>r.id===row.id)?.history)!==JSON.stringify(row.history)))throw new Error('Storage did not confirm the note history. Reload before retrying.');
       const generated=new Set((saved.workflows||[]).flatMap(w=>w.executions.filter(e=>e.status==='succeeded').map(e=>e.taskId)));
       if(!cards.every(card=>(saved.todoCards||[]).some(c=>JSON.stringify(c)===JSON.stringify(card)))||(saved.todoCards||[]).some(card=>!cards.some(c=>c.id===card.id)&&!generated.has(card.id)))throw new Error('Storage did not confirm the Tasks board. Reload before retrying.');
       if(customFields.length&&JSON.stringify(saved.customFields)!==JSON.stringify(customFields))throw new Error('The storage service did not confirm the custom fields. Reload before trying again.');
       if(tableSchema&&JSON.stringify(saved.tableSchema)!==JSON.stringify(tableSchema))throw new Error('Storage did not confirm the table schema. Reload before retrying.');
-      if(exactRecords&&(!Array.isArray(saved.deals)||saved.deals.length!==next.length||next.some((row,i)=>row.id!==saved.deals[i]?.id||window.PipelineCore.create(tableSchema).definitions(customFields).some(f=>row[f.id]!==saved.deals[i]?.[f.id]))))throw new Error('Storage did not confirm the row order and every cell. Reload before retrying.');
       const receipt=saved.actionReceipt;if(saved.replayed)saved={...await api('/api/crm-data'),actionReceipt:receipt};
+      if(generation!==S.generation)return false;
+      if(verifyHistory&&next.some(row=>JSON.stringify(saved.deals?.find(r=>r.id===row.id)?.history)!==JSON.stringify(row.history)))throw new Error('Storage did not confirm the note history. Reload before retrying.');
+      if(exactRecords&&(!Array.isArray(saved.deals)||saved.deals.length!==next.length||next.some((row,i)=>row.id!==saved.deals[i]?.id||window.PipelineCore.create(tableSchema).definitions(customFields).some(f=>row[f.id]!==saved.deals[i]?.[f.id]))))throw new Error('Storage did not confirm the row order and every cell. Reload before retrying.');
       useSchema(saved.tableSchema);S.records=saved.deals;S.customFields=C.validateCustomFields(saved.customFields);S.updatedAt=saved.updatedAt;S.revision++;
       S.todoCards=window.PipeChatTodo.validate(saved.todoCards,S.records,S.tableSchema,S.customFields);
       S.todoSuggestions=[];
@@ -947,7 +1041,7 @@
       if(S.tableSchema?.status==='pending')$('setupStatus').textContent=`Table not saved: ${error.message}`;
       say(`The save was not confirmed: ${error.message}${failedEdit?' Your edit is retained in the recovery panel.':' Reload the latest data before trying again.'}`,'assistant',true);return false;
     }
-    finally{if(generation===S.generation){S.saving=false;render();}}
+    finally{if(generation===S.generation){S.saving=false;render();if(!inlineCommit)void commitInlineEdits();}}
   }
   async function confirmDraft() {
     const p=S.pending;if(!p||S.busy||S.saving||S.failedEdit||['editor','csv-import','import-duplicates'].includes(p.kind))return;
@@ -1063,8 +1157,12 @@
     }finally{if(generation===S.generation){S.saving=false;render();}}
   }
   async function manualEdit(el) {
+    if(S.failedEdit)return false;
+    const draft=trackInlineEdit(el);
     if(el.validity?.badInput){el.reportValidity();return false;}
-    return editRecord(Number(el.closest('[data-id]')?.dataset.id),el.dataset.field,el.value);
+    if(!draft)return true;
+    draft.commitRequested=true;
+    return commitInlineEdits();
   }
   async function editRecord(id,field,input) {
     const record=S.records.find(r=>r.id===id);if(!record||S.saving||S.failedEdit)return false;
@@ -1075,7 +1173,7 @@
       const proposal=C.plan(S.records,{action:'update_record',ids:[record.id],field,value:value??''},S.customFields);
       const next=C.apply(S.records,proposal,S.user.name||S.user.email,new Date(),S.customFields);
       const hadDraft=Boolean(S.pending||S.clarification);
-      const saved=await persist(next,`${labels()[field]} updated`,{failedEdit});
+      const saved=await persist(next,`${labels()[field]} updated`,{failedEdit,exactRecords:true,verifyHistory:true});
       if(saved&&hadDraft)say('The manual edit was saved. I cleared the earlier draft so it cannot overwrite your new value.');return saved;
     }catch(error){S.failedEdit={...failedEdit,message:error.message};keepFailedEdit();$('saveStatus').textContent='Unsaved edit retained';$('saveStatus').classList.add('failed');toast(error.message);render();}
     return false;
@@ -1564,6 +1662,7 @@
     ].map(([account,stage,value,close,rep,next,follow],i)=>newRecord({account,stage,value,close,owner:rep,next,follow},i+1));
   }
   async function loadWorkspace(user) {
+    inlineDrafts.clear();inlineCommit=null;
     S.saveAttempt=null;S.lastPlanId=null;S.ownBusinessWorkspaceId=null;
     conversation?.stop();conversation=null;restoredProposal=null;S.chatReady=false;
     clearActivity();
@@ -1648,7 +1747,8 @@
   }
   async function logout() {
     if(S.saving||S.resetting){toast('Wait for the current save to finish.');return;}
-    if(S.failedEdit&&!window.confirm('Sign out and discard the unsaved edit in this tab?'))return;
+    captureInlineEdits();
+    if((S.failedEdit||inlineDirty())&&!window.confirm('Sign out and discard the unsaved edit in this tab?'))return;
     S.saveAttempt=null;S.lastPlanId=null;
     try{await conversation?.flush();await api('/api/auth/logout',{method:'POST'});conversation?.stop();conversation=null;restoredProposal=null;S.generation++;S.failedEdit=null;keepFailedEdit();S.user=null;S.loaded=false;S.records=[];S.todoCards=[];S.todoSuggestions=[];todoUI?.clear();inspectorUI?.clear();notificationsUI?.clear();clearBusinessSession();S.customFields=[];S.history=[];S.pending=null;S.clarification=null;S.busy=false;S.undo=null;$('toast').hidden=true;$('chatFeed').innerHTML='';document.body.classList.add('auth-locked');$('authScreen').hidden=false;}catch(error){toast(error.message);}
   }
@@ -1767,6 +1867,7 @@
     $('dealHeaders').innerHTML=fields.map(fieldHeader).join('')+'<th scope="col"><span class="sr-only">Actions</span></th>';
     $('pipelineTable').style.minWidth=`${Math.max(660,fields.length*175+85)}px`;
     $('dealRows').innerHTML=rows.map(record=>`<tr data-id="${record.id}">${fields.map(f=>`<td>${f.id===C.role('primary')?primaryCell(record,f):fieldInput(f,record[f.id])}</td>`).join('')}<td><button class="icon-btn" data-delete="${record.id}" title="Delete record" aria-label="Delete ${esc(rowName(record))}" ${S.saving||S.failedEdit?'disabled':''}>${icon('Trash2')}</button></td></tr>`).join('')||`<tr><td colspan="${fields.length+1}" class="empty-table">No records yet.</td></tr>`;
+    bindInlineTable();
   }
   function syncShareFields(){
     const box=document.querySelector('.field-checks');if(!box)return;
@@ -1857,13 +1958,32 @@
     chart=new Chart($('reportCanvas'),{type:S.report.chart==='line'?'line':S.report.chart==='stage'?'doughnut':'bar',data:{labels:result.data.map(item=>item.label),datasets:[{label:title,data:result.data.map(item=>item.value),backgroundColor:colors,borderColor:'#287e76',borderWidth:1}]},options:{responsive:true,maintainAspectRatio:false,animation:false,indexAxis:S.report.chart==='bar'?'y':'x',plugins:{legend:{display:S.report.chart==='stage'}},...(S.report.chart!=='stage'?{scales:{x:{beginAtZero:true},y:{beginAtZero:true,ticks:{autoSkip:false}}}}:{})}});
     $('reportCanvas').setAttribute('aria-label',$('reportTitle').textContent);
   }
+  function pipelineScopeDescription(){
+    return [S.scope==='mine'?'My records':S.scope==='open'?'Open records':'All records',
+      S.search?'Search: '+S.search:'',S.filter?filterDescription(S.filter):''].filter(Boolean).join('; ');
+  }
+  function dashboardExportFilters(){
+    const filters=['Pipeline table context: '+pipelineScopeDescription()];
+    if(S.report.version===1)filters.push('Active graph: '+window.PipeChatReports.describe(S.report,C,S.customFields));
+    else{
+      if(S.report.filter)filters.push('Graph filter: '+filterDescription(S.report.filter));
+      if(S.report.owners)filters.push('Graph owners: '+S.report.owners.join(', '));
+      if(S.report.accounts)filters.push('Graph records: '+S.report.accounts.join(', '));
+      if(S.report.from||S.report.to)filters.push(`Graph dates: ${S.report.from||'Any'} to ${S.report.to||'Any'}`);
+    }
+    return filters;
+  }
   function renderDashboardKpis(rows){
     const customize=window.PipeChatCustomize;
     const cards=customize.kpis(S.tableSchema,S.customFields);
     document.querySelector('.metrics').innerHTML=cards.map(k=>{
-      const result=customize.calculate(k,Object.hasOwn(k,'where')?S.records:rows,S.tableSchema,S.customFields,localDate());
+      const explicit=Object.hasOwn(k,'where'),population=explicit?S.records:rows;
+      const result=customize.summarize(k,population,S.tableSchema,S.customFields,localDate());
+      const scope=(explicit?'All authorized table records':'Current pipeline view: '+pipelineScopeDescription())+'. '+result.definition;
+      const counts=[['count',result.count],['numeric-count',result.numericCount],['numerator-count',result.numeratorCount],['denominator-count',result.denominatorCount]]
+        .filter(([,value])=>value!==undefined).map(([key,value])=>` data-kpi-${key}="${esc(value)}"`).join('');
       const value=result.value==null?'Not set':result.type==='currency'?currency(result.value):new Intl.NumberFormat('en-US',{maximumFractionDigits:result.type==='percentage'?2:4}).format(result.value)+(result.type==='percentage'?'%':'');
-      return `<div data-kpi-id="${k.id}"><span>${esc(k.title)}</span><strong>${esc(value)}</strong></div>`;
+      return `<div data-kpi-id="${esc(k.id)}" data-kpi-metric="${esc(k.metric)}" data-kpi-scope="${esc(scope)}" data-kpi-population="${explicit?'all_authorized_records':'visible_records'}" data-kpi-population-count="${population.length}"${counts}><span>${esc(k.title)}</span><strong>${esc(value)}</strong></div>`;
     }).join('');
   }
   function wire() {
@@ -1872,14 +1992,7 @@
       if(!S.loaded||S.tab!=='dashboard'||exportDashboard.disabled||S.reportError)return;
       const generation=S.generation;exportDashboard.disabled=true;exportDashboard.setAttribute('aria-busy','true');
       try{
-        const filters=[document.querySelector('[data-scope].active')?.textContent||'All records'];
-        if(S.search)filters.push('Search: '+S.search);
-        for(const f of [S.filter,S.report.filter])if(f)filters.push('Filter: '+filterDescription(f));
-        if(S.report.owners)filters.push('Owners: '+S.report.owners.join(', '));
-        if(S.report.accounts)filters.push('Records: '+S.report.accounts.join(', '));
-        if(S.report.from||S.report.to)filters.push(`Dates: ${S.report.from||'Any'} to ${S.report.to||'Any'}`);
-        if(S.report.version===1){filters.splice(0,filters.length,window.PipeChatReports.describe(S.report,C,S.customFields));filters.push('Top KPI cards: '+(document.querySelector('[data-scope].active')?.textContent||'All records')+(S.search?' / search: '+S.search:'')+(S.filter?' / '+filterDescription(S.filter):''));}
-        const snapshot=window.PipeChatDashboardPDF.capture(document,filters);
+        const snapshot=window.PipeChatDashboardPDF.capture(document,dashboardExportFilters());
         if(await window.PipeChatDashboardPDF.download(snapshot,()=>S.generation===generation&&Boolean(S.user)))toast('Dashboard PDF exported.');
       }catch(error){if(S.generation===generation)toast('Could not export dashboard: '+error.message);}
       finally{exportDashboard.disabled=false;exportDashboard.removeAttribute('aria-busy');}
@@ -1962,10 +2075,7 @@
     $('chatForm').onsubmit=event=>{event.preventDefault();send($('chatInput').value);};
     $('chatInput').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();send(event.target.value);}};
     document.querySelectorAll('[data-prompt]').forEach(button=>button.onclick=()=>send(button.dataset.prompt));
-    $('dealRows').addEventListener('change',event=>{if(event.target.dataset.field)manualEdit(event.target);});
-    $('dealRows').addEventListener('focusin',event=>{resizeTextCell(event.target,true);if(event.target.hasAttribute('data-expand-text'))event.target.scrollIntoView({block:'nearest',inline:'nearest'});});
-    $('dealRows').addEventListener('input',event=>resizeTextCell(event.target,true));
-    $('dealRows').addEventListener('focusout',event=>resizeTextCell(event.target,false));
+    wireInlineEditing();
     $('dealRows').onclick=event=>{const detail=event.target.closest('[data-detail]'),del=event.target.closest('[data-delete]');if(S.saving||S.failedEdit)return;if(detail){S.expanded=S.expanded===Number(detail.dataset.detail)?null:Number(detail.dataset.detail);renderTable(visible());}if(del){prepare({action:'delete_record',ids:[Number(del.dataset.delete)]},'Manual delete');}};
     $('trustBody').onclick=event=>{if(event.target.closest('[data-review-failed]'))reviewFailedEdit();if(event.target.closest('[data-discard-failed]'))discardFailedEdit();if(S.failedEdit)return;if(handleImportClick(event))return;if(event.target.closest('[data-import-primary]')){chooseImportPrimary();return;}const duplicateChoice=event.target.closest('[data-import-duplicates]');if(duplicateChoice){chooseImportDuplicates(duplicateChoice.dataset.importDuplicates);return;}if(event.target.closest('[data-retry-import]')){analyzeCsvImport();return;}if(event.target.closest('[data-basic-import]')){basicCsvImport();return;}const candidate=event.target.closest('[data-candidate]');if(candidate)chooseCandidate(Number(candidate.dataset.candidate));if(event.target.closest('[data-confirm]'))confirmDraft();if(event.target.closest('[data-cancel]'))cancelDraft();};
     $('trustBody').onchange=handleImportChange;
@@ -1991,7 +2101,7 @@
     if($('chatRetryBtn'))$('chatRetryBtn').onclick=async()=>{try{if(turnAwaiting)await checkPendingTurn(true);else if(conversation?.ready)await conversation.flush();else await loadChat();}catch(error){if(error.status===409&&window.confirm('Chat changed in another tab. Reload saved chat and discard any unsaved messages or proposals in this tab?')){clearDraft();await loadChat();}else toast(error.message);}};
     if($('chatNewBtn'))$('chatNewBtn').onclick=()=>selectChat();
     if($('chatThreadSelect'))$('chatThreadSelect').onchange=event=>selectChat(event.target.value);
-    window.addEventListener('beforeunload',event=>{if(S.saving||S.busy||conversation?.dirty||(S.failedEdit&&!S.failedEditStored)){event.preventDefault();event.returnValue='';}});
+    window.addEventListener('beforeunload',warnUnsaved);
   }
   wire();
   restoreSession();

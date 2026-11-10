@@ -4,16 +4,45 @@
   'use strict';
   const palette=['#edf5f3','#f0edfa','#fff4df','#f9edf1'];
   const text=value=>String(value??'');
+  function savedKpi(k){
+    const invalid=()=>{throw new Error('Saved KPI evidence is unavailable or inconsistent; refresh the dashboard before exporting.');};
+    const count=value=>{
+      if(typeof value==='string'&&/^(0|[1-9]\d*)$/.test(value))value=Number(value);
+      if(!Number.isSafeInteger(value)||value<0)invalid();
+      return value;
+    };
+    if(!k||!['count','sum','average','median','percentage'].includes(k.metric)||
+      !['visible_records','all_authorized_records'].includes(k.population)||typeof k.scope!=='string'||!k.scope.trim())invalid();
+    const result={label:text(k.label),value:text(k.value),metric:k.metric,scope:k.scope,population:k.population,populationCount:count(k.populationCount),count:count(k.count)};
+    if(result.count>result.populationCount)invalid();
+    if(k.metric==='percentage'){
+      result.numeratorCount=count(k.numeratorCount);result.denominatorCount=count(k.denominatorCount);
+      if(result.numeratorCount!==result.count||result.numeratorCount>result.denominatorCount||result.denominatorCount>result.populationCount)invalid();
+    }else if(k.metric!=='count'){
+      result.numericCount=count(k.numericCount);
+      if(result.numericCount>result.count)invalid();
+    }
+    return result;
+  }
+  function kpiEvidence(k){
+    const population='Source population: '+(k.population==='visible_records'?'current pipeline view':'all authorized records')+' ('+k.populationCount+' records).';
+    const counts=k.metric==='percentage'?'Numerator: '+k.numeratorCount+' records; denominator: '+k.denominatorCount+' records'+(k.denominatorCount?'':'; zero denominator')+'.':
+      k.count+' matching records'+(k.numericCount===undefined?'':'; '+k.numericCount+' numeric values')+'.';
+    return [{text:population,style:'muted',margin:[0,5,0,3]},{text:k.scope,style:'muted',margin:[0,0,0,3]},{text:counts,style:'muted'}];
+  }
   function definition(snapshot){
     // All customer content is literal text, never a pdfmake node, URL or file path.
-    const kpis=(snapshot.kpis||[]).map(k=>({label:text(k.label),value:text(k.value)}));
+    const kpis=(snapshot.kpis||[]).map(savedKpi);
     const content=[{text:'PipeChat',fontSize:12,bold:true,color:'#287e76'},{text:text(snapshot.workspace)+' | Dashboard',style:'title'},
       {text:'Exported '+text(snapshot.exportedAt),style:'muted',margin:[0,0,0,8]},
       ...(snapshot.filters||[]).map(f=>({text:text(f),style:'muted',margin:[0,0,0,3]}))];
     if(kpis.length){
       const body=[];
-      for(let i=0;i<kpis.length;i+=3)body.push(Array.from({length:3},(_,j)=>kpis[i+j]?{fillColor:palette[(i+j)%palette.length],margin:[7,7,7,7],stack:[{text:kpis[i+j].label,fontSize:10,color:'#495366'},{text:kpis[i+j].value,fontSize:19,bold:true,margin:[0,4,0,0]}]}:{text:''}));
-      content.push({table:{widths:['*','*','*'],body},layout:'noBorders',margin:[0,12,0,14]});
+      for(let i=0;i<kpis.length;i+=3)body.push(Array.from({length:3},(_,j)=>kpis[i+j]?{fillColor:palette[(i+j)%palette.length],margin:[7,7,7,7],stack:[{text:kpis[i+j].label,fontSize:10,color:'#495366'},{text:kpis[i+j].value,fontSize:19,bold:true,margin:[0,4,0,0]},...kpiEvidence(kpis[i+j])]}:{text:''}));
+      // Keep ordinary cards and their evidence together. Long literal definitions
+      // remain breakable rather than being truncated or forced off the page.
+      const dontBreakRows=kpis.every(k=>[k.label,k.value,k.scope].join('\n').length<=800&&[k.label,k.value,k.scope].join('\n').split('\n').length<=10);
+      content.push({table:{widths:['*','*','*'],body,dontBreakRows},layout:'noBorders',margin:[0,12,0,14]});
     }
     for(const report of snapshot.reports||[snapshot]){
     const snapshot=report;
@@ -32,8 +61,17 @@
   function capture(doc,filters=[],now=new Date()){
     const $=id=>doc.getElementById(id),cards=selector=>Array.from(doc.querySelectorAll(selector),el=>({label:el.querySelector('span')?.textContent||'',value:el.querySelector('strong')?.textContent||''}));
     if($('dashboardView').hidden)throw new Error('Open the dashboard before exporting.');
-    if($('dashboardElements')&&!$('dashboardElements').hidden)return {workspace:$('workspaceTitle').textContent,exportedAt:now.toLocaleString(),filters:['Saved KPI cards use the pipeline scope; each temporary graph has its own labeled scope.'],kpis:cards('.metrics > div'),reports:Array.from(doc.querySelectorAll('.dashboard-element'),el=>({title:el.querySelector('h4').textContent,caption:Array.from(el.querySelectorAll('.dashboard-element-scope,.dashboard-shared-filter'),p=>p.textContent).join(' / '),chart:el.querySelector('canvas')?.toDataURL('image/png')||null,chartKpis:Array.from(el.querySelectorAll('.dashboard-kpi-result'),k=>({label:k.querySelector('span').textContent,value:k.querySelector('strong').textContent})),headings:Array.from(el.querySelectorAll('th'),th=>th.textContent),rows:Array.from(el.querySelectorAll('tbody tr'),tr=>Array.from(tr.cells,td=>td.textContent))}))};
-    return {workspace:$('workspaceTitle').textContent,title:$('reportTitle').textContent,exportedAt:now.toLocaleString(),filters:[...filters],kpis:cards('.metrics > div'),chart:$('chartContainer').hidden?null:$('reportCanvas').toDataURL('image/png'),chartKpis:$('reportKpis').hidden?[]:cards('#reportKpis > div'),caption:$('reportCaption').textContent,headings:Array.from(doc.querySelectorAll('.report-table th'),el=>el.textContent),rows:Array.from($('reportRows').querySelectorAll('tr'),tr=>Array.from(tr.cells,td=>td.textContent))};
+    // Read the evidence produced with each rendered value. Do not query records,
+    // infer scope from table filters, or recalculate from a report's rows here.
+    const kpis=Array.from(doc.querySelectorAll('.metrics > div'),el=>{
+      const data=el.dataset||{};
+      return savedKpi({label:el.querySelector('span')?.textContent||'',value:el.querySelector('strong')?.textContent||'',
+        scope:data.kpiScope,population:data.kpiPopulation,metric:data.kpiMetric,populationCount:data.kpiPopulationCount,count:data.kpiCount,
+        numericCount:data.kpiNumericCount,numeratorCount:data.kpiNumeratorCount,denominatorCount:data.kpiDenominatorCount});
+    });
+    const base={workspace:$('workspaceTitle').textContent,exportedAt:now.toLocaleString(),filters:[...filters],kpis};
+    if($('dashboardElements')&&!$('dashboardElements').hidden)return {...base,reports:Array.from(doc.querySelectorAll('.dashboard-element'),el=>({title:el.querySelector('h4').textContent,caption:Array.from(el.querySelectorAll('.dashboard-element-scope,.dashboard-shared-filter'),p=>p.textContent).join(' / '),chart:el.querySelector('canvas')?.toDataURL('image/png')||null,chartKpis:Array.from(el.querySelectorAll('.dashboard-kpi-result'),k=>({label:k.querySelector('span').textContent,value:k.querySelector('strong').textContent})),headings:Array.from(el.querySelectorAll('th'),th=>th.textContent),rows:Array.from(el.querySelectorAll('tbody tr'),tr=>Array.from(tr.cells,td=>td.textContent))}))};
+    return {...base,title:$('reportTitle').textContent,chart:$('chartContainer').hidden?null:$('reportCanvas').toDataURL('image/png'),chartKpis:$('reportKpis').hidden?[]:cards('#reportKpis > div'),caption:$('reportCaption').textContent,headings:Array.from(doc.querySelectorAll('.report-table th'),el=>el.textContent),rows:Array.from($('reportRows').querySelectorAll('tr'),tr=>Array.from(tr.cells,td=>td.textContent))};
   }
   let library;
   function load(doc){
