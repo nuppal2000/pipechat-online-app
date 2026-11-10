@@ -111,10 +111,14 @@ test('activity cannot borrow note outputs, and malformed source reads remain fai
   const activity={crmAction:F.plan([select,history({kind:'activity'})])};
   assert.equal(Review.validateReview(review(requirement({requiredOutputs:['notes']})),activity,{pipeline:payload.pipeline}).ok,false);
   assert(!Review.evidence(payload,activity).recordReadEvidence[0].outputs.includes('notes'));
-  for(const action of [{action:'workspace_plan'},{action:'workspace_plan',steps:[null]},F.plan([select,history({limit:501})])]){
+  for(const action of [{action:'workspace_plan'},...[null,{},[null],[{op:'dashboard',id:null}]].map(steps=>({action:'workspace_plan',steps})),F.plan([select,history({limit:501})])]){
     const schema=Review.schemaFor(action,{pipeline:payload.pipeline});
     assert.deepEqual(schema.properties.requirements.items.properties.stepIds.items.enum,[]);
-    assert.equal(Review.validateReview(review(requirement()),{crmAction:action},{pipeline:payload.pipeline}).ok,false);
+    for(const r of [requirement(),requirement({stepIds:[null,'null/graph:unknown']})]){
+      const rejected=Review.validateReview(review(r),{crmAction:action},{pipeline:payload.pipeline});
+      assert.equal(rejected.ok,false);
+      assert.equal(Review.validationDiagnostic({stage:'mapping',action,coverage:rejected,review:review(r)}).failedDashboardMappings,undefined);
+    }
   }
 });
 

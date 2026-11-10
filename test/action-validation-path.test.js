@@ -140,6 +140,21 @@ test('standalone read requirements still reject proposal commentary even when it
   assert.equal(checked.ok,false);assert.equal(checked.compiled,0);
 });
 
+test('a dashboard citation can be repaired without regenerating its graph or dropping a required metric',async()=>{
+  const payload=fixture();payload.userCommand='Display one temporary average deal value KPI.';
+  const spec={version:1,title:'Mean value',chart:'kpi',groupBy:null,scope:'all',bucket:'none',splitBy:null,
+    where:[],sort:'label_asc',limit:null,measures:[{metric:'average',label:'Mean',field:'f_value',where:[]}]};
+  const proposal={assistantMessage:'Showing mean deal value.',memoryNote:null,crmAction:{action:'dashboard_plan',
+    requestScope:{scope:'all',where:[]},operations:[{op:'add',id:'mean',spec}],questions:[]}};
+  const h=harness(()=>proposal,input=>({...review([{...requirement('One average readout','computed_read',true,
+    [input.citationRepair?'graph:mean':'root']),requiredOutputs:['average','scalar_kpi']}]),answerIntent:'canonical',answerSelection:null}));
+  const response=await h.plan(payload);
+  assert.deepEqual(copy(response.crmAction),proposal.crmAction);assert.equal(response.coverage.compiled,1);
+  assert.deepEqual(h.calls.map(c=>c.isReview),[false,true,true]);
+  assert.deepEqual(h.calls[1].input.computed,h.calls[2].input.computed);
+  assert.equal(h.calls[2].input.citationRepair.requirements[0].stepIds[0],'root');
+});
+
 test('undo turn persists and replays the canonical nine-record preview instead of approved stale model prose',async t=>{
   const directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),'pipechat-undo-answer-'));
   t.after(async()=>{assert.equal(path.dirname(directory),path.resolve(os.tmpdir()));assert(path.basename(directory).startsWith('pipechat-undo-answer-'));await fs.promises.rm(directory,{recursive:true,force:true});});
@@ -328,6 +343,8 @@ test('server passes the same preservation evidence through schema and validation
       const invariants=input.computed.preservation.evidenceIds;
       assert.deepEqual(invariants,['unchanged:graph:old_count','unchanged:graph:old_average']);
       assert(invariants.every(id=>input.allowedStepIds.includes(id)));
+      assert(input.allowedStepIds.includes('unchanged:kpis'));
+      assert(input.computed.constraintEvidence.some(p=>p.id==='unchanged:kpis'&&p.output==='unchanged_kpis'));
       const req=(description,stepIds,requiredOutputs)=>({...requirement(description,'computed_read',true,stepIds),requiredOutputs});
       return {...review([req('Keep count',invalid?[]:[invariants[0]],['unchanged_graphs']),req('Keep average',[invariants[1]],['unchanged_graphs']),
         req('Count by owner',['graph:new_count'],['count']),req('Average by owner',['graph:new_average'],['average']),
@@ -335,7 +352,9 @@ test('server passes the same preservation evidence through schema and validation
     });
     const response=await h.plan(payload);
     if(invalid){
-      assert.equal(response.outcome,'validation_failed');assert.equal(h.calls.length,4);
+      assert.equal(response.outcome,'validation_failed');assert.equal(response.crmAction,null);
+      assert.deepEqual(h.calls.map(c=>c.isReview),[false,true,true]);
+      assert(h.calls[2].input.citationRepair);assert.equal(h.logs.length,1);
       assert(h.logs.every(log=>log.counts.requested===5&&log.counts.compiled===3&&log.mappingReasons.missing_step_ids===1&&log.mappingReasons.unsupported_required_output===1));
     }else{assert.equal(response.coverage.compiled,5);assert.equal(h.calls.length,2);assert.deepEqual(h.logs,[]);}
   }
