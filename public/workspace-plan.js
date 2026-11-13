@@ -422,7 +422,14 @@
     }).join('');
     const cells=plan.patches.map(p=>section(`${p.name} (#${p.id})`,p.changes.map(diff).join(''))).join('');
     const cards=plan.addedCards.map(card=>section(Todo.project(card,plan.next.records,plan.next.tableSchema,plan.next.customFields).title,`<p>${esc(card.status)} / ${esc(card.nextAction)}</p><p>Due: ${text(card.dueDate)}</p>${card.notes?`<p>${esc(card.notes)}</p>`:''}`)).join('');
-    const edits=plan.taskPatches.map(p=>section(Todo.project(p.after,plan.next.records,plan.next.tableSchema,plan.next.customFields).title,['status','nextAction','notes','dueDate'].filter(field=>p.before[field]!==p.after[field]).map(field=>diff({field,before:p.before[field],after:p.after[field]})).join(''))).join('');
+    const taskLabels={status:'Board status',nextAction:'Task',notes:'Notes',dueDate:'Due date'};
+    const edits=plan.taskPatches.map(p=>{
+      const account=Todo.project(p.after,plan.next.records,plan.next.tableSchema,plan.next.customFields).title;
+      const identity=`<p>Task: ${text(p.before.nextAction)}</p>`;
+      const changes=Object.keys(taskLabels).filter(field=>p.before[field]!==p.after[field])
+        .map(field=>diff({field:taskLabels[field],before:p.before[field],after:p.after[field]})).join('');
+      return section(account,identity+changes);
+    }).join('');
     const goals=[...new Set(plan.goals.map(g=>g.stepIds.map(id=>summary(plan.review.find(s=>s.id===id))).join('; ')))];
     const unmapped=(plan.unmappedFacts||[]).length?'<h3>Facts needing a destination</h3>'+plan.unmappedFacts.map(f=>section(f.text,`<p>${esc(f.reason)}</p><blockquote>${esc(f.source)}</blockquote>`)).join(''):'';
     return `<h3>Complete workspace plan</h3><p>One confirmation: ${plan.addedFields.length} new columns, ${plan.patches.length} changed records, ${plan.addedCards.length} new tasks, ${plan.taskPatches.length} updated tasks.</p><h3>Requested outcomes</h3><ul>${goals.map(g=>`<li>${esc(g)}</li>`).join('')}</ul>${unmapped}<h3>Selection and steps</h3>${selections}${plan.calculations.length?'<h3>Calculations</h3>'+plan.calculations.map(c=>`<p>${esc(c)}</p>`).join(''):''}<h3>Table changes</h3>${cells||'<p>No cell changes.</p>'}<h3>Task additions</h3>${cards||'<p>No new cards.</p>'}${edits?'<h3>Task edits</h3>'+edits:''}${plan.answers.length?'<h3>Calculated answers</h3>'+plan.answers.map(a=>`<p class="preserve-lines">${esc(a)}</p>`).join(''):''}<div class="proposal-actions"><button class="primary" data-confirm ${saving?'disabled':''}>Confirm entire plan</button><button class="secondary" data-cancel ${saving?'disabled':''}>Cancel entire plan</button></div>`;
