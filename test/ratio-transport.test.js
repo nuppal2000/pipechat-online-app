@@ -32,7 +32,7 @@ test('compact transport schema shares strict aggregate types with independent in
   const extended=Ratio.extendResponseSchema(response,pipeline);
   assert.deepEqual(response,before);assert.deepEqual(extended.properties.crmAction.anyOf[1],transport);
   assert.deepEqual(Ratio.extendResponseSchema(extended,pipeline),extended,'Schema extension is idempotent');
-  assert.match(Ratio.compilerInstructions,/independent schema-only review/);
+  assert.match(Ratio.compilerInstructions,/independent request review/);
 });
 
 test('F03 transport compiles goal-complete answer-only fractions and still requires an independently checked intent',()=>{
@@ -130,4 +130,72 @@ test('transport generalizes to custom quantities and explicit visible scope, ret
   const zero=computed(action,pipeline);
   assert.match(Review.renderAnswer({pipeline},{crmAction:action},zero),/Not set \(Not set \/ 0 x 100\)/);
   assert.match(Review.renderAnswer({pipeline},{crmAction:action},zero),/1 numeric value\)/);
+});
+
+test('independent input contains only the complete current primary-name catalog, not other cells, histories or supplied catalogs',()=>{
+  const {pipeline}=fixture(),userCommand='Compare the shares for QA1110 deals.';
+  pipeline.records[0].f_notes='PRIVATE_CELL';pipeline.records[0].history=[{text:'PRIVATE_HISTORY'}];
+  pipeline.records[1].f_value=123456789;
+  const input=Ratio.input({pipeline,userCommand,primaryNames:[{name:'FORGED_NAME',matches:1}],
+    conversationHistory:['PRIVATE_CHAT'],crmAction:{title:'PRIVATE_PROPOSAL'}});
+  assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','primaryNames','userCommand']);
+  assert.deepEqual(input.primaryNames,pipeline.records.map(row=>({name:row.f_deal,matches:1})));
+  assert.equal(input.primaryField,'f_deal');
+  assert.doesNotMatch(JSON.stringify(input),/PRIVATE_CELL|PRIVATE_HISTORY|PRIVATE_CHAT|PRIVATE_PROPOSAL|FORGED_NAME|123456789/);
+  assert.match(Ratio.instructions,/full exact unique name/);assert.match(Ratio.instructions,/uses starts_with on primaryField/);
+  assert.match(Ratio.instructions,/not equals on a group token/);assert.match(Ratio.instructions,/not contains/);
+});
+
+test('catalog resolves the actual primary field and exposes normalized duplicate multiplicity without selecting an ambiguous individual',()=>{
+  const {pipeline,intent}=fixture();pipeline.tableSchema.fields.find(field=>field.id==='f_deal').id='f_identity';
+  pipeline.records=pipeline.records.slice(0,4).map((row,index)=>({...row,f_identity:['Caf\u00e9 Logistics','  CAFE  LOGISTICS  ',' ',null][index]}));
+  const input=Ratio.input({pipeline,userCommand:'Give the Won share for Cafe Logistics.'});
+  assert.equal(input.primaryField,'f_identity');
+  assert.deepEqual(input.primaryNames,[{name:'Caf\u00e9 Logistics',matches:2}]);
+  assert(!JSON.stringify(input.primaryNames).includes('QA1110'));
+  assert.match(Ratio.instructions,/multiple matches.*completeIntent false, ambiguity true and ratios \[\]/);
+  const ambiguous={completeIntent:false,otherRequestedWork:false,ambiguity:true,ratios:[]};
+  assert.equal(Ratio.assess(ambiguous,null,{pipeline}).complete,false);
+  assert.throws(()=>Ratio.prepare({...intent,...ambiguous},pipeline),/incomplete/);
+});
+
+test('catalog and total input enforce row and UTF-8 byte budgets without truncating names or hiding duplicates',()=>{
+  const {pipeline}=fixture(),payload={pipeline,userCommand:'x'},template=clone(pipeline.records[0]);
+  pipeline.records=Array.from({length:2000},(_,index)=>({...template,id:index+1}));
+  assert.deepEqual(Ratio.input(payload).primaryNames,[{name:template.f_deal,matches:2000}]);
+  pipeline.records.push({...template,id:2001});assert.equal(Ratio.input(payload),null);
+  pipeline.records=[template];
+  const overhead=Buffer.byteLength(JSON.stringify([{name:'',matches:1}]),'utf8');
+  template.f_deal='n'.repeat(12000-overhead);
+  assert.equal(Buffer.byteLength(JSON.stringify(Ratio.input(payload).primaryNames),'utf8'),12000);
+  template.f_deal+='n';assert.equal(Ratio.input(payload),null);
+  template.f_deal='\u754c'.repeat(4100);assert.equal(Ratio.input(payload),null,'Count UTF-8 bytes, not JS characters');
+  template.f_deal='A';
+  const base=Buffer.byteLength(JSON.stringify(Ratio.input(payload)),'utf8');
+  payload.userCommand='x'.repeat(24000-base+1);
+  assert.equal(Buffer.byteLength(JSON.stringify(Ratio.input(payload)),'utf8'),24000);
+  payload.userCommand+='x';assert.equal(Ratio.input(payload),null);
+  payload.userCommand='x';pipeline.records=[template,clone(template)];assert.equal(Ratio.input(payload),null,'Duplicate record IDs are not extra saved identities');
+  pipeline.records=[{...template,f_deal:42}];assert.equal(Ratio.input(payload),null);
+  delete pipeline.records;assert.equal(Ratio.input(payload),null,'Missing catalog is not an empty saved table');
+});
+
+test('blank status stays in the full record denominator, while known value excludes only missing amounts',()=>{
+  const {pipeline,intent}=fixture();pipeline.records[6].f_stage='';
+  pipeline.records[7].f_deal='Other QA1110 suffix';
+  const prepared=Ratio.prepare(intent,pipeline),answer=Review.renderAnswer({pipeline},{crmAction:prepared.action},prepared.computed);
+  assert.match(answer,/14\.29% \(1 \/ 7 x 100\)/);
+  assert.match(answer,/22\.9% \(\$15,000\.00 \/ \$65,500\.00 x 100\)/);
+  assert.match(answer,/6 numeric values/);
+  assert.match(Ratio.instructions,/including blank status/);assert.match(Ratio.instructions,/unless the user explicitly excludes/);
+  assert.match(Ratio.instructions,/Never infer status is_not_blank/);
+  assert.match(Ratio.compilerInstructions,/FULL RECORD DENOMINATOR/);
+  const narrowed=clone(prepared.action);narrowed.steps[0].spec.measures[1].where=[[F.where('f_stage','is_not_blank')]];
+  const narrowEvidence=computed(narrowed,pipeline);
+  assert.match(Review.renderAnswer({pipeline},{crmAction:narrowed},narrowEvidence),/16\.67% \(1 \/ 6 x 100\)/);
+  assert.equal(Ratio.assess(intent,narrowed,{pipeline,computed:narrowEvidence}).ok,false);
+  const explicit=clone(intent);explicit.ratios[0].denominator.where=[[F.where('f_stage','is_not_blank')]];
+  assert.equal(Ratio.assess(explicit,narrowed,{pipeline,computed:narrowEvidence}).ok,true,'An explicitly requested exclusion remains supported');
+  const substring=clone(prepared.action);substring.steps.forEach(step=>step.spec.where[0][0].operator='contains');
+  assert.equal(Ratio.assess(intent,substring,{pipeline,computed:computed(substring,pipeline)}).ok,false,'An incidental substring is not the requested prefix');
 });
