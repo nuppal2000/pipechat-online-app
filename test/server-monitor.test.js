@@ -101,7 +101,7 @@ test('HTTP monitoring and errors omit secrets; API no-store and origin protectio
     }
     assert.equal(logs.find(entry => entry.status === 404).route, 'other_api');
     const modelFailure=diagnostics().find(event=>event.event==='pipechat.ai_response');
-    assert.deepEqual(modelFailure,{event:'pipechat.ai_response',model:'gpt-5.4-mini',outcome:'failed',code:'http_error'});
+    assert.deepEqual(modelFailure,{event:'pipechat.ai_response',model:'gpt-5.4-mini',outcome:'failed',code:'http_error',httpStatus:429,providerCategory:'unknown'});
     assert(!output.includes('PRIVATE_'));
     assert(!output.includes('private-email-canary'));
     assert(!output.includes(cookie.split('=')[1]));

@@ -36,7 +36,8 @@ test('input is a bounded projection of user text, never the suggested solution o
     answers:[{question:'Planner suggestion',answer:'Keep the original field name.'}]},pipeline:{records:[{name:'secret',notes:'sensitive'}]},
     proposedField:'secret',compiled:native(first),computed:{numericAssignmentEvidence:['secret']},conversationHistory:['secret'],clarificationAnswer:{selectedMeaning:'secret'}};
   assert.deepEqual(N.input(payload),{userCommand:payload.userCommand,pendingClarification:{originalCommand:variant,answers:['Keep the original field name.']}});
-  for(const p of [{...payload,pendingAction:{steps:[]}}, {...payload,userCommand:' '},{...payload,pendingClarification:{answers:[]}},
+  assert.deepEqual(N.input({...payload,pendingAction:{steps:[],assistantMessage:'secret'}}),N.input(payload));
+  for(const p of [{...payload,pendingAction:{steps:[]},pendingClarification:null}, {...payload,userCommand:' '},{...payload,pendingClarification:{answers:[]}},
     {...payload,pendingClarification:{originalCommand:variant,answers:[{answer:{value:1}}]}},
     {...payload,userCommand:'x'.repeat(24000)}])assert.equal(N.input(p),null);
   assert.equal(N.schema.additionalProperties,false);assert.equal(N.schema.properties.assignments.items.additionalProperties,false);

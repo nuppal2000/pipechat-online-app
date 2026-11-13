@@ -44,13 +44,14 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
       if(name==='./lib/named-numeric-intent.js'){
         const numeric=localRequire(name);
         return {...numeric,eligible:action=>numeric.eligible(copy(action)),
+          candidateEligible:action=>numeric.candidateEligible(copy(action)),
           normalizeAction:(action,pipeline)=>numeric.normalizeAction(action==null?action:copy(action),copy(pipeline)),
           assess:(intent,action,context)=>numeric.assess(copy(intent),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
       }
       if(['./lib/conditional-classification-intent.js','./lib/derived-calculation-intent.js',
-        './lib/ratio-calculation-intent.js','./lib/task-query-intent.js'].includes(name)){
+        './lib/ratio-calculation-intent.js','./lib/task-query-intent.js','./lib/date-shift-intent.js'].includes(name)){
         const intent=localRequire(name);
-        return {...intent,eligible:action=>intent.eligible(copy(action)),assess:(value,action,context)=>
+        return {...intent,eligible:(action,pipeline)=>intent.eligible(copy(action),pipeline&&copy(pipeline)),assess:(value,action,context)=>
           intent.assess(copy(value),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
       }
       if(name==='./lib/dashboard-presentation-contract.js'){
@@ -69,7 +70,7 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
       const name=body.text.format.name,isReview=name==='pipechat_action_review';calls.push({name,body,input,isReview});
       let result;
       try{result=await (isReview?reviewer:name==='pipechat_named_numeric_intent'?numericReviewer:
-        ['pipechat_conditional_classification_intent','pipechat_derived_calculation_intent','pipechat_ratio_calculation_intent','pipechat_task_query_intent'].includes(name)?populationReviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
+        ['pipechat_conditional_classification_intent','pipechat_derived_calculation_intent','pipechat_ratio_calculation_intent','pipechat_task_query_intent','pipechat_date_shift_intent'].includes(name)?populationReviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
       // Existing semantic-review fixtures are answer-only unless a test explicitly
       // supplies the new presentation obligation or deliberately omits it.
       if(isReview&&body.text.format.schema.properties.presentationIntent&&!Object.hasOwn(result,'presentationIntent'))
@@ -85,6 +86,45 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
 }
 
 const plannerFormat='pipechat_response',numericFormat='pipechat_named_numeric_intent',genericFormat='pipechat_action_review';
+test('server exposes Activity filtering and compiles it before the ordinary read review',async()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),p=F.workspace();
+  p.currentDate='2026-11-13';p.currentView='dashboard';p.workspaceVersion='activity-test';
+  p.records[0].history=['2026-11-13T15:00:00Z | QA: Saved activity'];
+  const action={action:'activity_view_request',title:'Selected Activity',source:'all',
+    where:[[F.where('f_deal','equals',p.records[0].f_deal)]],kind:'all',from:'2026-11-13',to:'2026-11-13',limit:100};
+  const h=harness((_input,body)=>{
+    assert.match(body.instructions,/ACTIVITY VIEW/);
+    assert(body.text.format.schema.properties.crmAction.anyOf.some(s=>s.properties?.action?.enum?.includes('activity_view_request')));
+    return {assistantMessage:'Show saved Activity.',memoryNote:null,crmAction:action};
+  },input=>{
+    assert.equal(input.compiled.action,'workspace_plan');
+    return review([{...requirement('Render the selected Activity','computed_read',true,['activity_history']),requiredOutputs:['rendered_activity']}]);
+  });
+  const result=await h.plan({userCommand:'Filter the Activity view to '+p.records[0].f_deal+' on November 13, 2026.',pipeline:p});
+  assert.equal(result.crmAction.action,'workspace_plan');
+  assert.equal(result.crmAction.steps[1].showActivity,true);
+  assert.equal(h.calls.filter(c=>c.isReview).length,1);
+});
+test('server checks saved-date shift intent independently and returns only the full preview',async()=>{
+  const F=require('./fixtures/workspace-plans.cjs'),Scoped=require('../lib/scoped-table-request'),p=F.workspace();
+  p.currentDate='2026-11-13';p.workspaceVersion='date-check';
+  p.records=p.records.slice(0,3).map((row,i)=>({...row,f_deal:'Group '+i,f_follow:['2026-11-13','2026-11-16',null][i]}));
+  const payload={pipeline:p,userCommand:'Postpone every dated Group follow-up by two business days from its saved date, leaving undated records alone.'};
+  const where=[[F.where('f_deal','starts_with','Group')]];
+  const intent={completeIntent:true,source:'all',where,field:'f_follow',base:'saved_date',dateMode:'business_days',offset:2,blankPolicy:'skip',otherRequestedWork:false,ambiguity:false};
+  const action=Scoped.compile({action:'scoped_table_request',title:'Saved dates',source:'all',where,
+    operation:{kind:'shift_saved_dates',field:'f_follow',dateMode:'business_days',offset:2,blankPolicy:'skip'}});
+  const before=copy(p),h=harness(()=>({crmAction:action,assistantMessage:'Preview.'}),()=>assert.fail('The exact date proof needs no generic approval'),undefined,(input,body)=>{
+    assert.equal(body.text.format.name,'pipechat_date_shift_intent');
+    assert.equal(input.userCommand,payload.userCommand);assert.equal(input.records,undefined);return intent;
+  });
+  const result=await h.plan(payload);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_date_shift_intent']);
+  assert.deepEqual(copy(result.coverage),{requested:5,compiled:5});
+  assert.match(result.computedAnswer,/2026-11-17/);assert.match(result.computedAnswer,/2026-11-18/);
+  assert.equal(result.lifecycle.requiresConfirmation,true);assert.equal(result.lifecycle.writesApplied,0);
+  assert.deepEqual(p,before);
+});
 test('independent classification repairs a stale focus before allowing a full-cohort confirmation preview',async()=>{
   const F=require('./fixtures/workspace-plans.cjs'),p=F.workspace();
   p.records=p.records.slice(0,3);p.records[0].f_value=12000;p.records[1].f_value=30000;p.records[2].f_value=null;
@@ -169,13 +209,18 @@ test('named numeric intent receives only the user command and approves the exact
   assert.deepEqual(payload.pipeline,before);
 });
 
-test('named numeric intent blocks swapped values on both attempts without generic approval',async()=>{
+test('named numeric intent repairs swapped values from independent pairs before preparing a confirmation preview',async()=>{
   const payload=numericFixture(),before=copy(payload.pipeline);
   const h=harness(()=>numericProposal(0,12.75),()=>assert.fail('A mismatched complete intent cannot fall back to generic approval'),numericIntent);
   const response=await h.plan(payload);
-  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat,plannerFormat,numericFormat]);
-  assert.equal(response.outcome,'validation_failed');assert.equal(response.crmAction,null);assert.equal(response.computedAnswer,undefined);
-  assert.deepEqual(h.logs.map(l=>[l.attempt,l.stage,l.counts.requested,l.counts.compiled]),[[0,'mapping',3,0],[1,'mapping',3,0]]);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat]);
+  assert.equal(response.crmAction.action,'workspace_plan');
+  assert.equal(response.lifecycle.requiresConfirmation,true);assert.equal(response.lifecycle.writesApplied,0);
+  const {records,customFields,tableSchema,todoCards}=payload.pipeline;
+  const preview=require('../public/workspace-plan').prepare({records,customFields,tableSchema,todoCards},copy(response.crmAction),{nonce:'repaired',visibleIds:[2]});
+  const [column]=preview.addedFields;
+  assert.deepEqual(preview.next.records,records.map((row,i)=>({...row,[column.id]:[0,null,12.75][i]})));
+  assert.deepEqual(h.logs,[]);
   assert.deepEqual(payload.pipeline,before);
 });
 
@@ -263,24 +308,25 @@ test('paired-percentage server check returns both actual fractions without gener
   assert.equal(result.lifecycle.operation,'read');assert.deepEqual(payload.pipeline,before);
 });
 
-test('missing second percentage enters one bounded repair instead of gaining generic approval',async()=>{
+test('missing second percentage is locally recompiled from complete independent intent with fresh evidence',async()=>{
   const {payload,intent}=ratioFixture(),Ratio=require('../lib/ratio-calculation-intent');let attempt=0;
   const h=harness(input=>{
     if(attempt)assert.match(JSON.stringify(input.compilerRepair),/Every requested percentage|Expected percentage intent/);
     return {assistantMessage:'Calculated shares.',crmAction:Ratio.compile(attempt++?intent:{...intent,ratios:intent.ratios.slice(0,1)},payload.pipeline)};
   },()=>assert.fail('A supported percentage mismatch must not reach a generic approval'),undefined,()=>intent);
   const result=await h.plan(payload);
-  assert.equal(result.coverage.compiled,2);assert.equal(attempt,2);
-  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_ratio_calculation_intent',plannerFormat,'pipechat_ratio_calculation_intent']);
-  assert.equal(h.logs.length,1);assert.equal(h.logs[0].counts.compiled,0);
+  assert.equal(result.coverage.compiled,2);assert.equal(attempt,1);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_ratio_calculation_intent']);
+  assert.match(result.computedAnswer,/22\.9%/);assert.equal(result.lifecycle.operation,'read');
+  assert.equal(h.logs.length,0);
 });
 
-test('negative or malformed percentage verdict is never accepted by falling through',async()=>{
+test('partial negative or malformed percentage verdict is never accepted by falling through',async()=>{
   for(const malformed of [false,true]){
     const {payload,intent}=ratioFixture(),Ratio=require('../lib/ratio-calculation-intent');
     const wrong={...intent,ratios:intent.ratios.slice(0,1)};
     const h=harness(()=>({assistantMessage:'Partial answer.',crmAction:Ratio.compile(wrong,payload.pipeline)}),
-      ()=>assert.fail('No silent generic fallback'),undefined,()=>malformed?{}:intent);
+      ()=>assert.fail('No silent generic fallback'),undefined,()=>malformed?{}:{...intent,completeIntent:false,otherRequestedWork:true});
     const result=await h.plan(payload);
     assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);
     assert.equal(h.calls.length,4);assert(h.calls.every(c=>!c.isReview));
@@ -705,7 +751,8 @@ test('resolved plural preview maps lifecycle and unchanged outsiders to explicit
     assert(body.text.format.schema.properties.requirements.items.properties.evidenceKind.enum.includes('constraint'));
     return review([req('compiled_action','dates',[]),req('constraint','lifecycle:preview_only',['preview_only']),req('constraint','unchanged:records:outside:juniper',['unchanged_records'])]);
   });
-  const response=await h.plan(payload);assert.equal(response.coverage.compiled,3);assert.equal(h.calls.length,2);assert.deepEqual(h.logs,[]);
+  const response=await h.plan(payload);assert.equal(response.coverage.compiled,3);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_date_shift_intent',genericFormat]);assert.deepEqual(h.logs,[]);
   assert(p.records.every(row=>row.f_follow!=='2026-10-29'));
 });
 
