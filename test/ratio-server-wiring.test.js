@@ -163,6 +163,24 @@ function rawOperandPlan(intent){
     {id:'raw_value',op:'read_records',label:'Value operands',selection:'cohort',showTable:false,outputs:[{kind:'sum',field:'f_value'}]}]);
 }
 
+test('server normalizes independent full-cohort transport before compiling and checking both operands',async()=>{
+  const {payload,intent}=fixture();
+  intent.ratios.forEach(ratio=>{
+    ratio.population={source:'all'};
+    ratio.numerator.where=[[...copy(cohort[0]),...copy(won[0])]];
+    ratio.denominator.where=copy(cohort);
+  });
+  const h=harness(()=>proposal({action:'ratio_transport',ratios:copy(intent.ratios)}),()=>copy(intent));
+  const result=await h.plan(payload);
+  assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat]);
+  assert.match(result.computedAnswer,/14\.29% \(1 \/ 7 x 100\)/);
+  assert.match(result.computedAnswer,/22\.9% \(\$15,000\.00 \/ \$65,500\.00 x 100\)/);
+  assert.match(result.computedAnswer,/7 records represented/);
+  assert.deepEqual(result.crmAction.steps[0].spec.where,cohort);
+  assert.equal(result.lifecycle.writesApplied,0);
+  assert.equal(h.assessments[0].checked.ok,true);
+});
+
 function answerReview(action){
   return {requirements:action.steps.map(step=>({description:step.label,evidenceKind:'computed_read',
     stepIds:[step.id+'/percentage:0'],requiredOutputs:['percentages','numerator','denominator',step.spec.measures[0].metric],satisfied:true})),
