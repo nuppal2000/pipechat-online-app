@@ -185,7 +185,7 @@ test('Activity describes global history and keeps table selection on return, inc
   const filter=JSON.stringify(h.S.filter);h.render();
   assert.equal(h.node('recordCount').textContent,'2 records');assert.match(h.node('filterText').textContent,/2 selected records/);
   h.setTab('activity');assert.equal(h.node('recordCount').textContent,'3 records / all records');
-  assert.equal(h.node('viewSummary').textContent,'Global activity / all records');assert.equal(h.node('filterStrip').hidden,true);
+  assert.equal(h.node('viewSummary').textContent,'Activity / all records');assert.equal(h.node('filterStrip').hidden,true);
   assert.equal(h.node('activityCount').textContent,'3 entries / all records');assert.match(h.node('activityList').innerHTML,/Harbor/);
   h.node('activityFrom').value='2026-11-10';h.renderActivity();assert.equal(h.node('activityCount').textContent,'2 entries / all records');
   assert.doesNotMatch(h.node('activityList').innerHTML,/Harbor/);assert.equal(JSON.stringify(h.S.filter),filter);

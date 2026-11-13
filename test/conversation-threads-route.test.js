@@ -5,13 +5,19 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
   global.fetch = async (url,options) => {
     if (url !== 'https://api.openai.com/v1/responses') throw new Error('Offline fixture forbids external requests');
     const request = JSON.parse(options.body), input = JSON.parse(typeof request.input === 'string' ? request.input : request.input[0].content[0].text);
-    await fs.appendFile(process.env.CONVERSATION_CAPTURE,JSON.stringify({...input,_fixtureStage:request.text.format.name==='pipechat_action_review'?'review':'plan'})+'\n');
+    const contract=request.text.format.name,stage=contract==='pipechat_action_review'?'review':contract==='pipechat_response'?'plan':'intent';
+    await fs.appendFile(process.env.CONVERSATION_CAPTURE,JSON.stringify({...input,_fixtureStage:stage,_fixtureContract:contract})+'\n');
+    // These fixtures request ordinary statistics or conversation, not a bounded
+    // numeric-write, ratio, or task intent. Never answer an unexpected contract
+    // with a planner object and let it masquerade as an independent verdict.
+    if(stage==='intent')throw new Error('Unexpected offline intent contract: '+contract);
     await new Promise(resolve=>setTimeout(resolve,450));
     if (input.userCommand.includes('fixture failure')) throw new Error('PRIVATE_PROVIDER_EXCEPTION');
     if (input.userCommand.includes('fixture canonical')) {
       const F = require('./fixtures/workspace-plans.cjs');
-      const result = request.text.format.name === 'pipechat_action_review'
-        ? {requirements:[{description:'Compute requested record statistics',evidenceKind:'computed_read',stepIds:['statistics'],requiredOutputs:['count','sum','average'],satisfied:true}],issues:[],clarificationQuestion:null,answerIntent:'canonical',answerSelection:null}
+      const result = stage === 'review'
+        ? {requirements:[{description:'Compute requested record statistics',evidenceKind:'computed_read',stepIds:['statistics'],requiredOutputs:['count','sum','average'],satisfied:true}],issues:[],clarificationQuestion:null,answerIntent:'canonical',answerSelection:null,
+          ...(request.text.format.schema.properties.presentationIntent?{presentationIntent:{status:'not_requested',elements:[]}}:{})}
         : {assistantMessage:'I will calculate those numbers. Count: 99999.',memoryNote:null,crmAction:F.plan([
           F.select('population'),
           {op:'read_records',id:'statistics',label:'Saved amounts',selection:'population',showTable:false,
@@ -19,7 +25,7 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
         ])};
       return {ok:true,json:async()=>({usage:{input_tokens:20,output_tokens:10},output_text:JSON.stringify(result)})};
     }
-    const result=request.text.format.name==='pipechat_action_review'
+    const result=stage==='review'
       ? {requirements:[{description:'General discussion',evidenceKind:'conversation',stepIds:['root'],satisfied:true}],issues:[],clarificationQuestion:null}
       : {assistantMessage:'Saved reply: '+input.userCommand,crmAction:null,memoryNote:null};
     return {ok:true,json:async()=>({usage:{input_tokens:20,output_tokens:10},output_text:JSON.stringify(result)})};
@@ -122,6 +128,8 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
     assert.equal(reply.body.turn?.status,'succeeded',JSON.stringify(reply.body));
     const providerCalls=await f.providerCalls();
     assert.equal(providerCalls.filter(call=>call._fixtureStage==='review').length,1,'The exact typed statistics mapping passes its first review');
+    assert(providerCalls.every(call=>['pipechat_response','pipechat_action_review'].includes(call._fixtureContract)),
+      'Ordinary count/sum/average reads must not invoke unrelated independent intent contracts');
     assert(providerCalls.every(call=>!call.compilerRepair),'Normal structured-plan routing must not require a completeness repair');
     assert.match(reply.body.assistantMessage,/295,000\.00/);
     assert.match(reply.body.assistantMessage,/49,166\.67/);
@@ -132,6 +140,7 @@ if (process.env.PIPECHAT_TURN_FIXTURE === '1') {
     const replay=await f.api('/api/pipechat-ai','POST',r);
     assert.equal(replay.body.assistantMessage,reply.body.assistantMessage);
     assert.equal((await f.calls()).length,calls);
+    assert.equal((await f.providerCalls()).length,providerCalls.length,'Receipt replay dispatches neither planner, intent checker nor reviewer');
     assert.deepEqual((await f.api('/api/crm-data')).body,beforeRead);
   });
 

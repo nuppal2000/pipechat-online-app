@@ -168,7 +168,7 @@
   }
   S.customFields=[];
   S.todoCards=[];S.todoSuggestions=[];S.focus=null;let todoUI=null;
-  let inspectorUI=null,activityLimit=150;
+  let inspectorUI=null,activityLimit=150,activityRecordIds=null,activityHistoryKind='all';
   let businessUI=null,businessLoading=false,businessGeneration=-1,businessRequest=0;
   let notificationsUI=null;
   S.tableSchema=null;S.setupUseCase=null;S.schemaPreview=null;S.setupRecords=[];S.schemaPreviewRevision=null;S.sheetDraft=null;S.sheetTypeReview=[];S.sort=null;S.fieldDialog=null;
@@ -618,16 +618,21 @@
     renderReport(visible());
   }
   function clearActivity(){
+    activityRecordIds=null;activityHistoryKind='all';
     $('activityFrom').value='';$('activityTo').value='';activityLimit=150;$('activityList').innerHTML='';$('activityCount').textContent='';$('activityMore').hidden=true;
   }
   function renderActivity() {
-    $('recordCount').textContent=`${S.records.length} records / all records`;
-    $('viewSummary').textContent='Global activity / all records';
+    const records=activityRecordIds===null?S.records:S.records.filter(row=>activityRecordIds.includes(row.id));
+    const scope=activityRecordIds===null?'all records':`${records.length} selected records`;
+    $('recordCount').textContent=`${records.length} records / ${scope}`;
+    $('viewSummary').textContent=`Activity / ${scope}`;
+    $('activityRecordScope').hidden=activityRecordIds===null;
+    $('activityRecordNames').textContent=records.map(rowName).join(', ');
     $('filterStrip').hidden=true;
     const H=window.PipeChatInspector,names=new Map(S.records.map(r=>[r.id,rowName(r)]));let entries;
-    try{entries=H.activity(S.records,{from:$('activityFrom').value,to:$('activityTo').value});}
+    try{entries=H.activity(records,{from:$('activityFrom').value,to:$('activityTo').value,kind:activityHistoryKind});}
     catch(error){$('activityCount').textContent='';$('activityMore').hidden=true;$('activityList').innerHTML=`<p class="error" role="alert">${esc(error.message)}</p>`;return;}
-    $('activityCount').textContent=`${entries.length} ${entries.length===1?'entry':'entries'} / all records`;$('activityMore').hidden=entries.length<=activityLimit;
+    $('activityCount').textContent=`${entries.length} ${entries.length===1?'entry':'entries'} / ${scope}`;$('activityMore').hidden=entries.length<=activityLimit;
     $('activityList').innerHTML=entries.slice(0,activityLimit).map(item=>`<div class="activity-item"><button class="record-link" data-inspect="${item.recordId}">${esc(names.get(item.recordId))}</button>${item.at?`<time datetime="${esc(item.at)}">${esc(new Date(item.at).toLocaleString())}</time>`:''}<p>${esc((item.type==='note'?'Note added. ':'')+H.displayText(item))}</p></div>`).join('')||'<p class="empty-table">No activity for these dates.</p>';
   }
   function focusTrust() {
@@ -661,10 +666,7 @@
     }
     if(S.pending?.kind==='journal-undo'){
       const p=S.pending;$('trustTitle').textContent='Review undo';$('trustStatus').textContent='Only this saved action will be undone. Unrelated edits stay unchanged.';
-      const value=slot=>!slot.exists?'Removed':typeof slot.value==='object'?JSON.stringify(slot.value):String(slot.value??'Not set');
-      panel.innerHTML=p.proposal.changes.map(c=>c.path[2]==='history'
-        ?'<section class="proposal-record"><h3>Activity history</h3><p>Activity history for this saved change will be restored.</p></section>'
-        :`<section class="proposal-record"><h3>${esc(c.path[0]==='records'?rowName(S.records.find(r=>String(r.id)===c.path[1])||{})+' / '+(labels()[c.path[2]]||c.path[2]||'Record'):c.path.join(' / '))}</h3><div class="diff-values"><span class="diff-before">${esc(value(c.before))}</span>${icon('ArrowRight')}<span class="diff-after">${esc(value(c.after))}</span></div></section>`).join('')+`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm undo</button><button class="secondary" data-cancel>Cancel</button></div>`;return;
+      panel.innerHTML=window.PipeChatUndoReview.render(p.proposal,{records:S.records,todoCards:S.todoCards,tableSchema:S.tableSchema,customFields:S.customFields},esc,icon)+`<div class="proposal-actions"><button class="primary" data-confirm ${S.saving?'disabled':''}>Confirm undo</button><button class="secondary" data-cancel>Cancel</button></div>`;return;
     }
     if(S.pending?.kind==='workflow-save'){renderWorkflowReview();return;}
     if(S.pending?.kind==='business-plan'){
@@ -747,6 +749,10 @@
       if(effect.kind==='table'){
         S.focus={kind:'table',ids:[...effect.ids]};
         if(effect.show){S.filter={where:[],ids:[...effect.ids]};S.sort=null;S.scope='all';S.search='';$('dealSearch').value='';S.tab='table';}
+      }else if(effect.kind==='activity'){
+        activityRecordIds=[...effect.ids];activityHistoryKind=effect.historyKind;activityLimit=150;
+        $('activityFrom').value=effect.from||'';$('activityTo').value=effect.to||'';
+        S.focus={kind:'table',ids:[...effect.ids]};S.tab='activity';
       }else if(effect.kind==='dashboard'){
         if(effect.preserveView){S.dashboard=C.clone(effect.board);const active=S.dashboard.elements.find(e=>e.id===S.dashboard.activeId);if(active)S.report=C.clone(active.spec);dashboardViews=[];dashboardRevision=-1;}
         else setDashboard({board:effect.board,views:window.PipeChatDashboard.evaluate(effect.board,S.records,C,S.customFields,dashboardOptions())});
@@ -1267,9 +1273,9 @@
     if(action?.action==='propose_field'&&(S.pending||S.clarification||restoredProposal)){say('Let\'s finish or cancel the current request before considering a new field.');return;}
     if(!action){clearClarification();say(response.assistantMessage||'What would you like to work on?');return;}
     if(action.action==='query_todos'){
-      const matches=window.PipeChatTodoActions.select(S.todoCards,S.records,S.tableSchema,action.selection,S.focus);
-      S.focus=window.PipeChatTodoActions.remember(matches,crypto.randomUUID());
-      clearClarification();S.tab='todo';render();say(window.PipeChatTodoActions.describe(matches,S.records,S.tableSchema));return;
+      const result=window.PipeChatTodoActions.query(S.todoCards,S.records,S.tableSchema,action,S.focus,{customFields:S.customFields});
+      S.focus=result.result==='records'?{kind:'table',ids:result.linkedRecordIds}:window.PipeChatTodoActions.remember(result.cards,crypto.randomUUID());
+      clearClarification();S.tab='todo';render();say(result.answer);return;
     }
     if(['add_todo','add_todos','update_todo','update_todos','move_todos','delete_todo'].includes(action.action)){prepare(action,command);return;}
     if(action.action==='show_todo'){clearClarification();S.tab='todo';render();say('Your Tasks board is open.');return;}
@@ -2041,6 +2047,7 @@
     document.addEventListener('click',event=>{const target=event.target.closest('[data-inspect]');if(target)inspectorUI.open(Number(target.dataset.inspect),target);});
     for(const id of ['activityFrom','activityTo'])$(id).onchange=()=>{activityLimit=150;renderActivity();};
     $('activityResetDates').onclick=()=>{$('activityFrom').value='';$('activityTo').value='';activityLimit=150;renderActivity();};
+    $('activityClearRecords').onclick=()=>{activityRecordIds=null;activityHistoryKind='all';activityLimit=150;renderActivity();};
     $('activityMore').onclick=()=>{activityLimit+=150;renderActivity();};
     wireColumnDrag();$('dealHeaders').oncontextmenu=openColumnMenu;
     $('dealHeaders').onkeydown=event=>{if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey)openColumnMenu(event);};

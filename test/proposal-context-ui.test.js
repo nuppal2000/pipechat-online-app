@@ -31,7 +31,7 @@ function harness(override){
     if(url==='/api/workflows/retry')return {operation:'retry',action:{action:'retry_workflow_event',...body},actionId:crypto.randomUUID()};
     throw new Error('Unexpected API call: '+url);
   };
-  const window={PipelineCore:Core,PipeChatSchema:Schema,PipeChatTodo:Todo,PipeChatIcons:{},PipeChatPlan:Plan,PipeChatReports:Reports,PipeChatDashboard:Dashboard,PipeChatWorkflowUI:require('../public/workflow-ui')};
+  const window={PipelineCore:Core,PipeChatSchema:Schema,PipeChatTodo:Todo,PipeChatIcons:{},PipeChatPlan:Plan,PipeChatReports:Reports,PipeChatDashboard:Dashboard,PipeChatWorkflowUI:require('../public/workflow-ui'),PipeChatUndoReview:require('../public/undo-review')};
   const startup='  wire();\n  restoreSession();';assert(source.includes(startup));
   vm.runInNewContext(source.replace(startup,`const actualTrust=renderTrust;render=()=>{};renderTrust=()=>{};syncWorkspacePanes=()=>{};focusTrust=()=>{};toast=()=>{};updateUsage=()=>{};paintMessage=()=>{};say=text=>messages.push(text);api=handler;
     window.test={S,useSchema,handleAction,prepareWorkflow,chatState,saveChatState,clearDraft,reviewRestoredProposal,acceptTurnResponse,actualTrust,aiPayload,
@@ -175,8 +175,9 @@ test('undo summarizes generic history paths without exposing activity values or 
     ]};
     const before=JSON.stringify(proposal);h.S.pending={kind:'journal-undo',proposal};h.actualTrust();
     const html=h.node('trustBody').innerHTML;
-    assert.match(html,/Priority/);assert.match(html,/class="diff-before">Medium</);assert.match(html,/class="diff-after">High</);
-    assert.match(html,/Activity history for this saved change will be restored\./);
+    assert.match(html,/Priority/);assert.match(html,/class="diff-before"><span[^>]*>Medium</);assert.match(html,/class="diff-after"><span[^>]*>High</);
+    assert.match(html,/Saved history content and its ordering will be restored with this record\./);
+    assert.match(html,/1 history entry/);assert.match(html,/0 history entries/);
     assert.doesNotMatch(html,/private@example\.test|2026-10-10|Priority changed|\[\]/);
     assert.match(html,/data-confirm\s*>Confirm undo/);assert.match(html,/data-cancel>Cancel/);
     assert.equal(JSON.stringify(h.S.pending.proposal),before);assert.equal(h.calls.length,0);

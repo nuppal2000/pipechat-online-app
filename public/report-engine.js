@@ -29,7 +29,7 @@
     const p=responseSchema(core,custom).anyOf[1].properties,ids=core.definitions(custom).map(f=>f.id);
     return [
       object({action:{type:'string',enum:['query_records'],description:'Show individual records in Pipeline, not a chart. A fresh search starts from the full table and combines filtering and optional sorting in one read-only action.'},where:p.where,orderBy:{type:['string','null'],enum:[...ids,null]},direction:{type:['string','null'],enum:['asc','desc',null]}}),
-      object({action:{type:'string',enum:['show_kpi'],description:'Temporary numerical answer, never a saved dashboard card. Use for show, count, total, average and one-off KPI questions.'},title:p.title,scope:p.scope,where:p.where,measures:p.measures}),
+      object({action:{type:'string',enum:['show_kpi'],description:'Answer-only numerical read; despite its legacy name this does NOT render a KPI widget or navigate to Dashboard. Use for a numerical question without a requested visual. To display a statistic as a KPI use dashboard_plan with a temporary chart:kpi element. Only an explicit persistent-card request permits saved KPI configuration.'},title:p.title,scope:p.scope,where:p.where,measures:p.measures}),
       object({action:{type:'string',enum:['audit_records'],description:'Read-only counts and affected record names for each requested group. The app evaluates every group independently against the complete scoped table; never count from sampled rows or generate names in assistantMessage.'},scope:p.scope,where:p.where,groups:{type:'array',minItems:1,maxItems:20,items:object({label:{type:'string',minLength:1,maxLength:120},where:{...p.where,minItems:1}})}})
     ];
   }

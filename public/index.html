@@ -42,6 +42,7 @@
   <script defer src="/notifications.js"></script>
   <script defer src="/notifications-ui.js"></script>
   <link rel="stylesheet" href="/notifications.css">
+  <script defer src="/undo-review.js"></script>
   <script defer src="/pipechat.js?v=2"></script>
 </head>
 <body class="auth-locked">
@@ -120,7 +121,7 @@
           <div id="singleReportOutput"><div id="chartContainer" class="chart-container"><canvas id="reportCanvas" role="img" aria-label="Pipeline chart"></canvas></div><div id="reportKpis" class="report-kpis" hidden></div><p id="reportCaption" class="subtle"></p><div class="report-table-wrap"><table class="report-table"><thead><tr><th id="reportGroupHeading">Owner</th><th id="reportValueHeading">Value</th><th>Deals</th></tr></thead><tbody id="reportRows"></tbody></table></div></div>
           <div id="dashboardElements" class="dashboard-elements" hidden></div>
         </section>
-        <section id="activityView" class="activity-view" hidden><div class="activity-filters"><label>From<input id="activityFrom" type="date" aria-label="Activity from date"></label><label>To<input id="activityTo" type="date" aria-label="Activity to date"></label><button id="activityResetDates" type="button" class="icon-btn" title="Reset dates" aria-label="Reset activity dates"><i data-icon="RotateCcw"></i></button></div><span id="activityCount" class="inspector-count" role="status"></span><div id="activityList"></div><button id="activityMore" class="secondary" type="button" hidden>Load older entries</button></section>
+        <section id="activityView" class="activity-view" hidden><div class="activity-filters"><label>From<input id="activityFrom" type="date" aria-label="Activity from date"></label><label>To<input id="activityTo" type="date" aria-label="Activity to date"></label><button id="activityResetDates" type="button" class="icon-btn" title="Reset dates" aria-label="Reset activity dates"><i data-icon="RotateCcw"></i></button></div><div id="activityRecordScope" class="activity-filters" hidden><span id="activityRecordNames"></span><button id="activityClearRecords" type="button" class="icon-btn" title="Show all records" aria-label="Clear activity record filter"><i data-icon="X"></i></button></div><span id="activityCount" class="inspector-count" role="status"></span><div id="activityList"></div><button id="activityMore" class="secondary" type="button" hidden>Load older entries</button></section>
         <section id="businessView" hidden><label>Workspace<select id="businessWorkspace" aria-label="Entity workspace"></select></label><p id="businessStatus" role="status"></p><div id="businessContent"></div></section>
         <section id="workflowsView" class="activity-view" hidden><div id="workflowList"></div></section>
         <section id="shareView" class="share-view" hidden>
