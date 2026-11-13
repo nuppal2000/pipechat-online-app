@@ -25,6 +25,9 @@ test('compact transport schema shares strict aggregate types with independent in
   assert.equal(transport.properties.ratios.minItems,1);assert.equal(transport.properties.ratios.maxItems,6);
   assert.deepEqual(transport.properties.ratios.items,intent.properties.ratios.items);
   const operands=transport.properties.ratios.items.properties;
+  assert.deepEqual(operands.population.required,['source']);
+  assert.equal(operands.population.additionalProperties,false);
+  assert.equal(operands.population.properties.where,undefined,'A model cannot inject a shared numerator filter');
   assert.deepEqual(operands.numerator.anyOf[0].properties.metric.enum,['count']);
   assert.deepEqual(operands.denominator.anyOf[1].properties.field.enum,['f_value']);
   assert(!JSON.stringify(transport).includes('QA1110'));
@@ -33,6 +36,44 @@ test('compact transport schema shares strict aggregate types with independent in
   assert.deepEqual(response,before);assert.deepEqual(extended.properties.crmAction.anyOf[1],transport);
   assert.deepEqual(Ratio.extendResponseSchema(extended,pipeline),extended,'Schema extension is idempotent');
   assert.match(Ratio.compilerInstructions,/independent request review/);
+});
+
+test('independent complete cohorts retain the denominator and coverage for different record and value shares',()=>{
+  const {pipeline,intent}=fixture(),base=F.where('f_deal','starts_with','Cohort'),stage=F.where('f_stage','equals','Qualified');
+  pipeline.records=pipeline.records.slice(0,5).map((row,index)=>({...row,
+    f_deal:index<4?'Cohort '+index:'Outside',f_stage:index<2?'Qualified':null,
+    f_value:[11000,2400,0,null,90000][index]}));
+  intent.ratios.forEach(ratio=>{
+    ratio.population={source:'all'};
+    ratio.numerator.where=[[base,stage]];ratio.denominator.where=[[base]];
+  });
+  const before=clone(intent),normalized=Ratio.normalizeIntent(intent);
+  assert.deepEqual(intent,before,'Normalization must not mutate the supplied plan');
+  assert.deepEqual(normalized.ratios[0].population.where,[[base]]);
+  assert.deepEqual(normalized.ratios[0].numerator.where,[[base,stage]]);
+  const action=Ratio.normalizeAction({action:'ratio_transport',ratios:intent.ratios},pipeline);
+  const evidence=computed(action,pipeline),answer=Review.renderAnswer({pipeline},{crmAction:action},evidence);
+  assert.match(answer,/50% \(2 \/ 4 x 100\)/);
+  assert.match(answer,/100% \(\$13,400\.00 \/ \$13,400\.00 x 100\)/);
+  assert.match(answer,/4 records represented/);assert.doesNotMatch(answer,/5 records represented/);
+  assert.equal(Ratio.assess(normalized,action,{pipeline,computed:evidence}).ok,true);
+});
+
+test('common factoring respects every OR branch, unrestricted operands and legacy shared scope',()=>{
+  const {intent}=fixture(),base=F.where('f_deal','starts_with','Cohort'),stage=F.where('f_stage','equals','Qualified');
+  intent.ratios=[intent.ratios[0]];
+  const ratio=intent.ratios[0];ratio.population={source:'all'};
+  ratio.numerator.where=[[base,stage],[base,F.where('f_stage','equals','Closed Won')]];
+  ratio.denominator.where=[[base]];
+  assert.deepEqual(Ratio.normalizeIntent(intent).ratios[0].population.where,[[base]]);
+  ratio.denominator.where.push([F.where('f_deal','equals','Outside')]);
+  assert.deepEqual(Ratio.normalizeIntent(intent).ratios[0].population.where,[],'One OR branch without the prefix prevents factoring');
+  ratio.denominator.where=[];
+  assert.deepEqual(Ratio.normalizeIntent(intent).ratios[0].population.where,[],'Unrestricted denominator stays unrestricted');
+  ratio.population.where=[[stage]];
+  assert.deepEqual(Ratio.normalizeIntent(intent).ratios[0].population.where,[[stage]],'Legacy explicit scope is never silently rewritten');
+  delete ratio.population.where;ratio.denominator.where=[[]];
+  assert.throws(()=>Ratio.normalizeIntent(intent),/bounded complete cohort/);
 });
 
 test('F03 transport compiles goal-complete answer-only fractions and still requires an independently checked intent',()=>{
