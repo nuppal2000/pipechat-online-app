@@ -59,13 +59,13 @@ test('eligibility includes both percentage transports, nested plans and measure-
     assert.equal(Ratio.eligible(action),false,JSON.stringify(action));
 });
 
-test('original, explicit operands and numeric-count variants remain schema-only inputs with typed aggregate units',()=>{
+test('original, explicit operands and numeric-count variants use only schema and primary names with typed aggregate units',()=>{
   const p=pipeline();
   for(const userCommand of commands){
     const input=Ratio.input({userCommand,pipeline:p,crmAction:dashboard(true),conversationHistory:['Private history']});
-    assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
+    assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','primaryNames','userCommand']);
     assert.equal(input.userCommand,userCommand);
-    assert(!JSON.stringify(input).includes('QA1110 Deal 1'));
+    assert.deepEqual(input.primaryNames,p.records.map(row=>({name:row.f_deal,matches:1})));
     assert(!JSON.stringify(input).includes('Private history'));
   }
   const operands=Ratio.schemaFor(p).properties.ratios.items.properties;

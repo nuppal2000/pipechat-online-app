@@ -299,8 +299,8 @@ test('paired-percentage server check returns both actual fractions without gener
   const h=harness(()=>({assistantMessage:'Provisional arithmetic is not authoritative.',crmAction:Ratio.compile(intent,payload.pipeline)}),
     ()=>assert.fail('Typed full-percentage proof should finish in one check'),undefined,(input,body)=>{
       assert.equal(body.text.format.name,'pipechat_ratio_calculation_intent');
-      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
-      assert(!JSON.stringify(input).includes('PRIVATE_UNRELATED_ACCOUNT'));return intent;
+      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','primaryNames','userCommand']);
+      assert.deepEqual(input.primaryNames,payload.pipeline.records.map(row=>({name:row.f_deal,matches:1})));return intent;
     });
   const result=await h.plan(payload);
   assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_ratio_calculation_intent']);

@@ -32,14 +32,14 @@ const check=(i,a=Ratio.compile(i,pipeline()),p=pipeline())=>Ratio.assess(i,a,pre
 const answer=(action,p=pipeline())=>Review.renderAnswer({pipeline:p},{crmAction:action},prepare(action,p).computed);
 const operands=['percentages','numerator','denominator'];
 
-test('both report phrasings and an unrelated-workflow variant use schema-only independent intent input',()=>{
+test('both report phrasings and an unrelated-workflow variant use only schema and primary names for independent intent',()=>{
   const p=pipeline();
   for(const command of commands){
     const input=Ratio.input({userCommand:command,pipeline:p,history:['private'],crmAction:Ratio.compile(intent(),p)});
     assert.equal(input.userCommand,command);
-    assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
+    assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','primaryNames','userCommand']);
     assert.equal(JSON.stringify(input).includes('private'),false);
-    assert.equal(JSON.stringify(input).includes('QA1110 Deal 1'),false);
+    assert.deepEqual(input.primaryNames,p.records.map(row=>({name:row.f_deal,matches:1})));
   }
   for(const extra of [{pendingAction:{}},{pendingClarification:{}},{userCommand:' '},{userCommand:'x'.repeat(24001)}])
     assert.equal(Ratio.input({pipeline:p,userCommand:commands[1],...extra}),null);

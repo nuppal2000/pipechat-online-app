@@ -16,7 +16,7 @@ function fixture(partial=false,userCommand=commands[0]){
   p.tableSchema.fields.find(field=>field.id==='f_value').name='Deal Value';
   const template=p.records[0];
   p.records=[15000,18000,22000,8500,2000,0,null].map((f_value,index)=>({...copy(template),id:index+1,
-    f_deal:'QA1110 Deal '+(index+1),f_stage:index?'Qualified':'Closed Won',f_value}));
+    f_deal:'QA1110 Deal '+(index+1),f_stage:index===6?'':index?'Qualified':'Closed Won',f_value}));
   p.records.push({...copy(template),id:8,f_deal:'PRIVATE_UNRELATED_RECORD',f_value:999999,f_stage:'Closed Won'});
   p.dashboard={board:{version:1,elements:[],sharedFilters:[],activeId:null}};
   const intent={completeIntent:!partial,otherRequestedWork:partial,ambiguity:false,
@@ -122,9 +122,10 @@ test('server locally repairs count-based value percentages into a freshly proved
     assert.equal(wrong.displayed[0].summaries[0].value,1/7*100);
     assert.equal(wrong.displayed[1].summaries[0].value,1/6*100);
     const h=harness(()=>proposal(candidate),(input,body)=>{
-      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
+      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','primaryNames','userCommand']);
+      assert.deepEqual(input.primaryNames,payload.pipeline.records.map(row=>({name:row.f_deal,matches:1})));
       assert.equal(input.userCommand,command);assert.equal(body.text.format.strict,true);
-      assert.doesNotMatch(JSON.stringify(input),/PRIVATE_PLANNER_PROSE|PRIVATE_UNRELATED_RECORD|QA1110 Deal 1/);
+      assert.doesNotMatch(JSON.stringify(input),/PRIVATE_PLANNER_PROSE|999999|Keep notes/);
       assert.equal(h.evidence.length,0,'Independent extraction precedes candidate execution');
       return intent;
     });
@@ -182,8 +183,9 @@ test('ordinary planner exposes compact ratio transport and normalizes it before 
       assert.equal(h.normalizations.length,1);assert.equal(h.evidence.length,0);
       assert.deepEqual(h.normalizations[0].action,transport);
       assert.equal(h.normalizations[0].normalized.action,'workspace_plan');
-      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
-      assert.doesNotMatch(JSON.stringify(input),/PRIVATE_PLANNER_PROSE|PRIVATE_UNRELATED_RECORD|QA1110 Deal 1|ratio_transport/);
+      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','primaryNames','userCommand']);
+      assert.deepEqual(input.primaryNames,payload.pipeline.records.map(row=>({name:row.f_deal,matches:1})));
+      assert.doesNotMatch(JSON.stringify(input),/PRIVATE_PLANNER_PROSE|999999|Keep notes|ratio_transport/);
       return intent;
     });
     const result=await h.plan(payload);
@@ -205,7 +207,7 @@ test('server repairs omitted percentage outputs before executing raw operands',a
     const {payload,intent}=fixture(false,command),before=copy(payload.pipeline),candidate=rawOperandPlan(intent);
     const h=harness(()=>proposal(candidate),input=>{
       assert.equal(input.userCommand,command);
-      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
+      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','primaryNames','userCommand']);
       assert.equal(h.evidence.length,0);
       return intent;
     });
