@@ -16,6 +16,9 @@ const citationRepair = require('./lib/plan-citation-repair.js');
 const numericIntent = require('./lib/named-numeric-intent.js');
 const classificationIntent = require('./lib/conditional-classification-intent.js');
 const derivedIntent = require('./lib/derived-calculation-intent.js');
+const ratioIntent = require('./lib/ratio-calculation-intent.js');
+const taskQueryIntent = require('./lib/task-query-intent.js');
+const dashboardPresentation = require('./lib/dashboard-presentation-contract.js');
 const agentPersona = require('./lib/agent-persona.js');
 const {localStore:localAgentProfileStore} = require('./lib/agent-profile-store.js');
 const actionJournalContext = require('./lib/action-journal-context.js');
@@ -454,7 +457,7 @@ function responseSchema(customFields,tableSchema,conversationFocus=null) {
   schema.properties.crmAction.anyOf.push(...viewActions.actionSchemas());
   schema.properties.crmAction.anyOf.push(...businessCompiler.schemas());
   schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['undo_action']},actionId:{type:'string'}},required:['action','actionId']});
-  schema.properties.crmAction.anyOf.push(...todoActions.actionSchemas(conversationFocus));
+  schema.properties.crmAction.anyOf.push(...todoActions.actionSchemas(conversationFocus,core,customFields));
   schema.properties.crmAction.anyOf.push(reportEngine.refinementSchema(core,customFields));
   schema.properties.crmAction.anyOf.push(reportEngine.filteringSchema(core,customFields));
   schema.properties.crmAction.anyOf.push(...reportEngine.readActionSchemas(core,customFields));
@@ -828,6 +831,7 @@ async function runStructuredReview(contract,startedAt,payload,model=AI_MODELS.si
 function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simple){
   const context={pipeline:input.pipeline,computed:input.computed};
   const schema=actionReview.schemaFor(input.compiled,context);
+  const presentation=input.compiled!=null&&dashboardPresentation.extendReviewSchema(schema,input.compiled,input.pipeline);
   const allowedStepIds=actionReview.allowedStepIdsFor(input.compiled,context);
   const components=schema.properties.requirements.items;
   if(input.compiled?.action==='dashboard_plan'&&components.anyOf){
@@ -844,9 +848,24 @@ function reviewCompiledAction(input,startedAt,payload,model=AI_MODELS.simple){
         conversationIntent:payload.conversationIntent,allowedStepIds}},startedAt,payload,model);
   }
   return runStructuredReview({name:'pipechat_action_review',schema,
-    instructions:actionReview.instructions+'\n'+conversationIntent.instructions+'\n'+agentPersona.baseInstructions,
+    instructions:actionReview.instructions+'\n'+conversationIntent.instructions+'\n'+agentPersona.baseInstructions+
+      (presentation?'\n'+dashboardPresentation.reviewInstructions:''),
     input:{...input,conversationIntent:payload.conversationIntent,agentContext:payload._agentContext?.data,
       allowedStepIds}},startedAt,payload,model);
+}
+
+// Presentation is an additional obligation, never a substitute for semantic
+// validation. Inventory it in the existing review call, not a second AI call.
+function validateCompiledReview(review,result,context){
+  const coverage=actionReview.validateReview(review,result,context);
+  // Conversation-only output still receives the full semantic review. It has
+  // no executable display candidate requiring a supplemental widget inventory.
+  if(result.crmAction==null)return coverage;
+  const schema=actionReview.schemaFor(result.crmAction,context);
+  if(!dashboardPresentation.extendReviewSchema(schema,result.crmAction,context.pipeline))return coverage;
+  const presentation=dashboardPresentation.assess(review.presentationIntent,result.crmAction,context);
+  if(!presentation.applicable||presentation.ok)return coverage;
+  return {...coverage,ok:false,presentationFailed:true,mappingIssues:[...coverage.mappingIssues,...presentation.issues]};
 }
 
 async function planPipeChatAction(payload, selectedRoute = modelRouter.route(payload, AI_MODELS), startedAt = Date.now()) {
@@ -885,7 +904,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
       max_output_tokens: 16384,
       instructions: spreadsheetBuild ? spreadsheetTypes.instructions : tableBuild ? tableSchemaCore.instructions : csv ? csvCore.instructions : tableSchema?.status==='ready' ? [
         conversationInstructions,
-        todoInstructions,
+        todoInstructions,todoActions.queryInstructions,
         dateCalendar.instructions,
         clarificationContext.instructions,
         selectedRoute.reason==='clarification_repair'?clarificationContext.recoveryInstructions:'',
@@ -905,7 +924,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
         'share_view opens the authenticated sharing controls only. The user must explicitly choose the registered recipient, access scope and role before granting access. The AI does not grant permissions or send invitations.'
       ].join('\n') : [
         conversationInstructions,
-        todoInstructions,
+        todoInstructions,todoActions.queryInstructions,
         dateCalendar.instructions,
         clarificationContext.instructions,
         selectedRoute.reason==='clarification_repair'?clarificationContext.recoveryInstructions:'',
@@ -1037,7 +1056,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   }
   if (!memoryUpdate) result.memoryNote = null;
   else if (typeof result.memoryNote !== 'string' || result.memoryNote.length > 3200) result.memoryNote = null;
-  try { result=actionLifecycle.normalizeResult(result); result.crmAction=scopedTable.compile(result.crmAction); }
+  try { result=actionLifecycle.normalizeResult(result); result.crmAction=numericIntent.normalizeAction(scopedTable.compile(result.crmAction),pipeline); }
   catch(error) {
     recordValidationFailure(payload,'response',null,null,result?.crmAction,error);
     if(!payload._responseAttempt&&Date.now()-startedAt<55000)return planPipeChatAction({...payload,_responseAttempt:1,_reviewFeedback:{issues:[error.message]}},{tier:'complex',model:AI_MODELS.complex,reason:'response_contract_repair'},startedAt);
@@ -1062,9 +1081,10 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
       const reviewInput={userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed};
       // Read intent without the candidate plan or its prose, then compare the
       // complete requested population against authenticated execution evidence.
-      for(const [name,checker] of [['conditional_classification',classificationIntent],['derived_calculation',derivedIntent]]){
+      for(const [name,checker] of [['conditional_classification',classificationIntent],['derived_calculation',derivedIntent],
+        ['ratio_calculation',ratioIntent],['task_query',taskQueryIntent],['named_numeric',numericIntent]]){
         if(coverage||!checker.eligible(result.crmAction))continue;
-        const input=checker.input(payload),schema=checker.schemaFor(pipeline);
+        const input=checker.input(payload),schema=checker.schemaFor?checker.schemaFor(pipeline):checker.schema;
         if(!input||!schema)continue;
         const intent=await runStructuredReview({name:'pipechat_'+name+'_intent',schema,
           instructions:checker.instructions,input},startedAt,payload);
@@ -1073,30 +1093,20 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
         const exact=assessment.complete===true&&assessment.ok===true;
         review={requirements:[],issues:exact?[]:assessment.issues?.length?assessment.issues:
           ['The complete requested population and operation must match the proposed plan. Preserve unknown values and include requested coverage.'],clarificationQuestion:null};
+        if(!exact&&assessment.expectedAction)review.expectedAction=assessment.expectedAction;
         coverage={ok:exact,requested:assessment.requested??1,compiled:exact?(assessment.compiled??assessment.requested??1):0,mappingIssues:[]};
-      }
-      const numericInput=numericIntent.eligible(result.crmAction)&&numericIntent.input(payload);
-      if(!coverage&&numericInput){
-        const intent=await runStructuredReview({name:'pipechat_named_numeric_intent',schema:numericIntent.schema,
-          instructions:numericIntent.instructions,input:numericInput},startedAt,payload);
-        if(intent?.completeIntent===true){
-          const exact=numericIntent.matches(intent,result.crmAction,{pipeline,computed});
-          const requested=1+(Array.isArray(intent.assignments)?intent.assignments.length:0);
-          review={requirements:[],issues:exact?[]:['The complete requested numeric column and named cell values must match the preview, with all other cells blank.'],clarificationQuestion:null};
-          coverage={ok:exact,requested,compiled:exact?requested:0,mappingIssues:[]};
-        }
       }
       if(!coverage){
         review=await reviewCompiledAction(reviewInput,startedAt,payload);
         stage='mapping';
-        coverage=actionReview.validateReview(review,result,{pipeline,computed});
+        coverage=validateCompiledReview(review,result,{pipeline,computed});
       }else stage='mapping';
-      if(Date.now()-startedAt<55000&&citationRepair.eligible(result.crmAction,review,coverage,computed)){
+      if(!coverage.presentationFailed&&Date.now()-startedAt<55000&&citationRepair.eligible(result.crmAction,review,coverage,computed)){
         citationRepairUsed=true;
         const repaired=await reviewCompiledAction({...reviewInput,citationRepair:{requirements:review.requirements,
           issues:coverage.mappingIssues,instruction:'The compiled plan and computed data have not changed. Preserve the exact requirement descriptions, evidence kinds, order and requested outputs. For satisfied outcomes repair only their stepIds using the typed evidence for the actual plan (displayEvidence, numericAssignmentEvidence or constraintEvidence). If an output is genuinely absent, mark it unsatisfied; never approve by removing it.'}},startedAt,payload,AI_MODELS.complex);
-        if(citationRepair.sameObligations(review,repaired)){
-          const verified=actionReview.validateReview(repaired,result,{pipeline,computed});
+        if(citationRepair.sameObligations(review,repaired)&&dashboardPresentation.sameReviewIntent(review,repaired)){
+          const verified=validateCompiledReview(repaired,result,{pipeline,computed});
           if(verified.ok){review=repaired;coverage=verified;}
         }
       }
