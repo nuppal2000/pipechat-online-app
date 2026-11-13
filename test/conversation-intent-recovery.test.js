@@ -97,11 +97,11 @@ test('typed read-only workspace plans never trigger record-write ambiguity; mixe
   }
 });
 
-test('existing-task bypass admits only explicit task-only operations and neutral read dependencies',()=>{
+test('a proposed task-only plan cannot waive ambiguous record identity without a saved task match',()=>{
   const {payload}=fixture('Move Acorn review to Friday.');
   for(const op of ['update_tasks','add_unlinked_task','select_records','read_records','read_history','report','dashboard']){
     const result={crmAction:{action:'workspace_plan',steps:[{op:'update_tasks'},{op}]}};
-    assert.equal(Grounding.guardIdentity(payload,result),result,op);
+    assert.equal(Grounding.guardIdentity(payload,result).crmAction.action,'clarify',op);
   }
   for(const op of ['delete_records','merge_records','create_records','update_records','add_todos',
     'add_field','rename_choice_option','unknown_operation',null])for(const reverse of [false,true]){

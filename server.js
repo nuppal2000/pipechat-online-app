@@ -18,6 +18,8 @@ const classificationIntent = require('./lib/conditional-classification-intent.js
 const derivedIntent = require('./lib/derived-calculation-intent.js');
 const ratioIntent = require('./lib/ratio-calculation-intent.js');
 const taskQueryIntent = require('./lib/task-query-intent.js');
+const dateShiftIntent = require('./lib/date-shift-intent.js');
+const activityQueryIntent = require('./lib/activity-query-intent.js');
 const dashboardPresentation = require('./lib/dashboard-presentation-contract.js');
 const agentPersona = require('./lib/agent-persona.js');
 const {localStore:localAgentProfileStore} = require('./lib/agent-profile-store.js');
@@ -452,7 +454,10 @@ function responseSchema(customFields,tableSchema,conversationFocus=null) {
   });
   action.properties.action.enum=action.properties.action.enum.filter(name=>!['update_record','bulk_update','update_records','update_todo','move_todos','show_report','filter_view','clear_view'].includes(name));
   schema.properties.crmAction.anyOf.push({type:'object',additionalProperties:false,properties:{action:{type:'string',enum:['update_records']},changes:{type:'array',minItems:1,maxItems:200,items:{anyOf:selectors}}},required:['action','changes']});
-  schema.properties.crmAction.anyOf.push(workspacePlan.responseSchema(core,customFields,conversationFocus));
+  const planSchema=workspacePlan.responseSchema(core,customFields,conversationFocus);
+  const activitySchema=activityQueryIntent.schema(planSchema);
+  if(activitySchema)schema.properties.crmAction.anyOf.push(activitySchema);
+  schema.properties.crmAction.anyOf.push(planSchema);
   schema.properties.crmAction.anyOf.push(...businessActions.actionSchemas());
   schema.properties.crmAction.anyOf.push(...viewActions.actionSchemas());
   schema.properties.crmAction.anyOf.push(...businessCompiler.schemas());
@@ -792,7 +797,8 @@ function parseModelResponse(response,data,model){
   try{return modelResponse.parse(response,data);}
   catch(error){
     console.warn(JSON.stringify({event:'pipechat.ai_response',model,
-      outcome:'failed',code:error instanceof modelResponse.ModelResponseError?error.code:'invalid_response'}));
+      outcome:'failed',code:error instanceof modelResponse.ModelResponseError?error.code:'invalid_response',
+      ...(error instanceof modelResponse.ModelResponseError?error.diagnostics:{})}));
     throw error;
   }
 }
@@ -951,7 +957,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
             {
               type: "input_text",
               text: JSON.stringify({
-                task: "Respond as a conversational CRM assistant. Propose a supported CRM action when the user requests a table, field, layout, view, report or task change; you may also suggest propose_field for a recurring workflow concept with no equivalent existing field. Clarify missing details; explain unsupported requests conversationally.",
+                task: "Respond as a conversational CRM assistant. Compile supported read-only questions about saved data as typed CRM reads, including current-cell projections, even when no change or history is requested. Propose a supported CRM action for requested table, field, layout, view, report or task changes; you may also suggest propose_field for a recurring workflow concept with no equivalent existing field. Use conversation-only output for advice or acknowledgements that require no saved-data evidence. Clarify genuinely missing details; explain unsupported requests conversationally.",
                 supportedActions:modelResponseSchema.properties.crmAction.anyOf.flatMap(branch=>branch.properties?.action?.enum||[]),
                 readOnlyContext:{object:pipeline?.conversationFocus?.kind|| (pipeline?.currentView==='dashboard'?'report':'table'),contextualRefinement:'workspace_plan',freshRecordSearch:'workspace_plan',temporaryMetric:'workspace_plan',countsAndNames:'audit_records',savedKpiRequiresExplicitRequest:true},
                 userCommand,
@@ -1000,7 +1006,8 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   }
   if(!csv&&!tableBuild&&!spreadsheetBuild){
     const body=JSON.parse(requestOptions.body);
-      body.instructions+='\n'+actionReview.compilerInstructions+'\n'+scopedTable.instructions+'\n'+conversationIntent.instructions;
+    body.instructions=activityQueryIntent.instructions+'\n'+body.instructions;
+    body.instructions+='\n'+actionReview.compilerInstructions+'\n'+scopedTable.instructions+'\n'+conversationIntent.instructions;
       body.instructions+='\nText prefix requests use starts_with on the named text field, not contains. Use equals/in for explicit complete names; never broaden a prefix to text appearing anywhere.';
     const input=JSON.parse(body.input[0].content[0].text);
     if(payload._reviewFeedback)input.compilerRepair=payload._reviewFeedback;
@@ -1056,7 +1063,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   }
   if (!memoryUpdate) result.memoryNote = null;
   else if (typeof result.memoryNote !== 'string' || result.memoryNote.length > 3200) result.memoryNote = null;
-  try { result=actionLifecycle.normalizeResult(result); result.crmAction=numericIntent.normalizeAction(scopedTable.compile(result.crmAction),pipeline); }
+  try { result=actionLifecycle.normalizeResult(result); result.crmAction=numericIntent.normalizeAction(activityQueryIntent.compile(scopedTable.compile(result.crmAction)),pipeline); }
   catch(error) {
     recordValidationFailure(payload,'response',null,null,result?.crmAction,error);
     if(!payload._responseAttempt&&Date.now()-startedAt<55000)return planPipeChatAction({...payload,_responseAttempt:1,_reviewFeedback:{issues:[error.message]}},{tier:'complex',model:AI_MODELS.complex,reason:'response_contract_repair'},startedAt);
@@ -1075,21 +1082,34 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   if(grounded===result&&actionReview.needsReview(payload,result)){
     let review,coverage,stage='evidence',citationRepairUsed=false;
     try{
-      const computed=actionReview.evidence(payload,result);
+      let computed=actionReview.evidence(payload,result);
       grounded.lifecycle=computed.lifecycle;
       stage='review';
       const reviewInput={userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed};
       // Read intent without the candidate plan or its prose, then compare the
       // complete requested population against authenticated execution evidence.
       for(const [name,checker] of [['conditional_classification',classificationIntent],['derived_calculation',derivedIntent],
-        ['ratio_calculation',ratioIntent],['task_query',taskQueryIntent],['named_numeric',numericIntent]]){
-        if(coverage||!checker.eligible(result.crmAction))continue;
+        ['ratio_calculation',ratioIntent],['task_query',taskQueryIntent],['named_numeric',numericIntent],['date_shift',dateShiftIntent]]){
+        const gate=checker===numericIntent?checker.candidateEligible:checker.eligible;
+        if(coverage||!gate(result.crmAction,pipeline))continue;
         const input=checker.input(payload),schema=checker.schemaFor?checker.schemaFor(pipeline):checker.schema;
         if(!input||!schema)continue;
         const intent=await runStructuredReview({name:'pipechat_'+name+'_intent',schema,
           instructions:checker.instructions,input},startedAt,payload);
-        if(intent?.completeIntent===false)continue;
-        const assessment=checker.assess(intent,result.crmAction,{pipeline,computed});
+        const ratioGuard=checker===ratioIntent;
+        if(intent?.completeIntent===false&&(!ratioGuard||Array.isArray(intent.ratios)&&intent.ratios.length===0))continue;
+        let assessment=checker.assess(intent,result.crmAction,{pipeline,computed});
+        // Complete bounded intent can compile locally, then must pass the same
+        // fresh evidence checks. Numeric changes still require confirmation.
+        if((ratioGuard||checker===numericIntent)&&!assessment.ok&&intent?.completeIntent===true&&assessment.expectedAction){
+          const prepared=checker.prepare(intent,pipeline);
+          result.crmAction=prepared.action;
+          computed=actionReview.evidence(payload,result);
+          grounded.lifecycle=computed.lifecycle;
+          reviewInput.compiled=result.crmAction;reviewInput.computed=computed;
+          assessment=checker.assess(intent,result.crmAction,{pipeline,computed});
+        }
+        if(ratioGuard&&assessment.ok&&assessment.requiresGeneralReview===true)continue;
         const exact=assessment.complete===true&&assessment.ok===true;
         review={requirements:[],issues:exact?[]:assessment.issues?.length?assessment.issues:
           ['The complete requested population and operation must match the proposed plan. Preserve unknown values and include requested coverage.'],clarificationQuestion:null};

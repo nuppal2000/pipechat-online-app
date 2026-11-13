@@ -245,7 +245,7 @@ function modelWireHarness(){
   const bodies=[],stop=new BackendError('Offline request captured.',503);
   const model=vm.createContext({pipelineCore:Core,tableSchemaCore:Schema,todoCore:Todo,workspacePlan:Plan,
     reportEngine:Reports,dashboardBoard:Dashboard,actionReview:Review,dashboardPresentation:require('../lib/dashboard-presentation-contract'),
-    scopedTable:require('../lib/scoped-table-request'),aiGrounding:Grounding,conversationIntent:ConversationIntent,
+    scopedTable:require('../lib/scoped-table-request'),activityQueryIntent:require('../lib/activity-query-intent'),aiGrounding:Grounding,conversationIntent:ConversationIntent,
     customization:require('../public/workspace-customization'),todoActions:require('../public/todo-actions'),
     viewActions:require('../public/view-actions'),businessActions:require('../public/business-actions'),
     businessCompiler:require('../lib/business-compiler'),agentPersona:require('../lib/agent-persona'),

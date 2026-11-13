@@ -3,6 +3,7 @@ const pipelineCore=require('../public/pipeline-core.js'),tableSchemaCore=require
 const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
 const context={pipelineCore,tableSchemaCore,customization,structuredClone,todoCore:require('../public/todo-core.js'),todoActions:require('../public/todo-actions.js'),reportEngine:require('../public/report-engine.js'),dashboardBoard:require('../public/dashboard-board.js'),workspacePlan:require('../public/workspace-plan.js'),businessActions:require('../public/business-actions.js'),businessCompiler:require('../lib/business-compiler.js')};
 context.viewActions=require('../public/view-actions.js');
+context.activityQueryIntent=require('../lib/activity-query-intent.js');
 vm.runInNewContext(source.slice(source.indexOf('const actionSchema ='),source.indexOf('function sendJson('))+'\nthis.getSchema=responseSchema;',context);
 
 function assertStrictSchema(node){
