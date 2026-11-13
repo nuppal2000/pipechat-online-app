@@ -57,9 +57,12 @@
         step('update_records',{selection:str,assignments:{type:'array',minItems:1,maxItems:40,items:assignment}}),
         step('add_todos',{selection:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
         step('add_unlinked_task',{customTitle:str,status:{type:'string',enum:Todo.statuses},nextAction:str,notes:str,dueDate:{anyOf:[{type:'null'},date]}}),
-        step('update_tasks',{selection:TaskActions.actionSchemas(focus)[1].properties.updates.items.properties.selection,changes:{type:'array',minItems:1,maxItems:4,items:object({field:{type:'string',enum:['status','nextAction','notes','dueDate']},operation:{type:'string',enum:['set','append']},value:{anyOf:[str,date]}})}}),
+        step('update_tasks',{selection:TaskActions.actionSchemas(focus)[1].properties.updates.items.properties.selection,changes:{type:'array',minItems:1,maxItems:4,items:{anyOf:[
+          object({field:{type:'string',enum:['status','nextAction','notes','dueDate']},operation:{type:'string',enum:['set','append']},value:{anyOf:[str,date]}}),
+          object({field:{type:'string',enum:['dueDate']},operation:{type:'string',enum:['clear'],description:'Explicitly remove a task due date. Use value null, not an invalid/empty literal calendar date. Omitted fields, including notes, are preserved.'},value:{type:'null'}})
+        ]}}}),
         step('read_records',{selection:str,showTable:{type:'boolean'},outputs:{type:'array',minItems:1,maxItems:40,items:outputs}}),
-        step('read_history',{selection:str,kind:{type:'string',enum:['all','note','activity']},from:{type:['string','null']},to:{type:['string','null']},limit:{type:'integer',minimum:1,maximum:500}}),
+        step('read_history',{selection:str,kind:{type:'string',enum:['all','note','activity']},from:{type:['string','null']},to:{type:['string','null']},limit:{type:'integer',minimum:1,maximum:500},showActivity:{type:'boolean',description:'True when asked to show or filter the Activity view; false for a chat-only history answer.'}}),
         step('report',{selection:{type:['string','null'],description:'A preceding select_records step ID, or null for an independent report population.'},spec:Reports.responseSchema(core,custom).anyOf[1],questions:Dashboard.schemas(core,custom)[1].properties.questions,showDashboard:{type:'boolean'}}),
         step('dashboard',{plan:Dashboard.schemas(core,custom)[0]})
       ]}}
@@ -321,7 +324,13 @@
           const card={...Todo.create(`todo_${nonce}_${index}`,null,step.customTitle),status:step.status,nextAction:step.nextAction,notes:step.notes,dueDate:step.dueDate===null?'':materialize(step.dueDate)};
           next.todoCards=Todo.validate([...next.todoCards,card],next.records,next.tableSchema,next.customFields);addedCards.push(card);review.push({id:step.id,op:step.op,label:step.label,count:1});
         }else if(step.op==='update_tasks'){
-          const changes=step.changes.map(change=>({...change,value:materialize(change.value)}));
+          const changes=step.changes.map(change=>{
+            if(change?.operation==='clear'){
+              if(change.field!=='dueDate'||change.value!==null||Object.keys(change).some(k=>!['field','operation','value'].includes(k)))fail('Only a task due date supports clear, with an explicit null operand.','task_validation');
+              return {field:'dueDate',operation:'set',value:''};
+            }
+            return {...change,value:materialize(change.value)};
+          });
           taskUpdates.push({selection:step.selection,changes});
           // An unchanged prefix is valid; later steps can still contribute writes.
           const result=TaskActions.plan(workspace.todoCards,next.records,next.tableSchema,{action:'update_todos',updates:taskUpdates},focus,{allowUnchanged:true});
@@ -358,10 +367,11 @@
           queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),projected,...(rowCalculations.length?{rowCalculations}:{}),viewEffect:step.showTable?'show_table':'answer_only'});
           answers.push(lines.join('\n'));effects.push({kind:'table',show:step.showTable,ids:recordIds});review.push({id:step.id,op:step.op,label:step.label,count:rows.length});
         }else if(step.op==='read_history'){
+          if(step.showActivity!==undefined&&typeof step.showActivity!=='boolean')fail('Choose whether to display the Activity view.');
           const recordIds=selected(step.selection),rows=recordIds.map(id=>next.records.find(row=>row.id===id));
           const history=Inspector.query(rows,core.role('primary'),{kind:step.kind,from:step.from,to:step.to,limit:step.limit,timezone});
-          queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),history,viewEffect:'answer_only'});
-          answers.push(history.answer);effects.push({kind:'table',show:false,ids:recordIds.slice()});
+          queryResults.push({id:step.id,selection:step.selection,recordIds:recordIds.slice(),history,viewEffect:step.showActivity?'show_activity':'answer_only'});
+          answers.push(history.answer);effects.push(step.showActivity?{kind:'activity',ids:recordIds.slice(),from:step.from,to:step.to,historyKind:step.kind}:{kind:'table',show:false,ids:recordIds.slice()});
           review.push({id:step.id,op:step.op,label:step.label,count:rows.length,entries:history.total,omitted:history.omitted});
         }else if(step.op==='report'){
           const selection=Object.hasOwn(step,'selection')?step.selection:null;
