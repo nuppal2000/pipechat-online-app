@@ -42,6 +42,18 @@ test('F12 explicit clear and reopen compile atomically with unchanged notes, tas
   assert.equal(evidence.lifecycle.operation,'mutation');assert.equal(evidence.lifecycle.requiresConfirmation,true);
   assert.equal(evidence.lifecycle.executed,false);assert.equal(evidence.lifecycle.writesApplied,0);
   assert.deepEqual(evidence.taskPatches,p.taskPatches);assert.deepEqual(pipeline.records,before.records);
+  const html=Plan.render(p,s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;'),false);
+  for(const label of ['QA1110 Tide Glass','Task: QA1113 send samples','Board status','Due date','2026-11-14','(blank)'])assert(html.includes(label),label);
+  assert(!html.includes('>dueDate<'));
+});
+
+test('task change reviews keep the original task identity and escape user-controlled task text',()=>{
+  const w=fixture();w.todoCards[0].nextAction='<img src=x onerror=alert(1)>';
+  const p=prepare(w,[step(w,[set('nextAction','New task'),clear()])]);
+  const html=Plan.render(p,s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;'),false);
+  assert(html.includes('Task: &lt;img src=x onerror=alert(1)>'));
+  assert(!html.includes('<img'));
+  assert(html.includes('New task'));
 });
 
 test('typed clear is represented distinctly from setting a calendar literal in the model schema',()=>{

@@ -895,7 +895,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   const csv = csvImport ? csvImportCore.validateDescription(csvImport) : null;
   const tableSchema=tableSchemaCore.validate(pipeline?.tableSchema),core=pipelineCore.create(tableSchema),customFields=core.validateCustomFields(pipeline?.customFields);
   const csvCore=csvImportCore.forTable(tableSchema,customFields);
-  const modelResponseSchema=agentPersona.responseSchema(spreadsheetBuild?spreadsheetTypes.responseSchema:tableBuild?tableSchemaCore.designSchema:csv?csvCore.schema:actionReview.modelSchema(responseSchema(customFields,tableSchema,pipeline?.conversationFocus)),payload._agentContext);
+  const modelResponseSchema=agentPersona.responseSchema(spreadsheetBuild?spreadsheetTypes.responseSchema:tableBuild?tableSchemaCore.designSchema:csv?csvCore.schema:ratioIntent.extendResponseSchema(actionReview.modelSchema(responseSchema(customFields,tableSchema,pipeline?.conversationFocus)),pipeline),payload._agentContext);
   const controller = cloudBackend ? new AbortController() : null;
   const requestOptions = {
     method: "POST",
@@ -1006,7 +1006,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   }
   if(!csv&&!tableBuild&&!spreadsheetBuild){
     const body=JSON.parse(requestOptions.body);
-    body.instructions=activityQueryIntent.instructions+'\n'+body.instructions;
+    body.instructions=activityQueryIntent.instructions+'\n'+ratioIntent.compilerInstructions+'\n'+body.instructions;
     body.instructions+='\n'+actionReview.compilerInstructions+'\n'+scopedTable.instructions+'\n'+conversationIntent.instructions;
       body.instructions+='\nText prefix requests use starts_with on the named text field, not contains. Use equals/in for explicit complete names; never broaden a prefix to text appearing anywhere.';
     const input=JSON.parse(body.input[0].content[0].text);
@@ -1063,7 +1063,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   }
   if (!memoryUpdate) result.memoryNote = null;
   else if (typeof result.memoryNote !== 'string' || result.memoryNote.length > 3200) result.memoryNote = null;
-  try { result=actionLifecycle.normalizeResult(result); result.crmAction=numericIntent.normalizeAction(activityQueryIntent.compile(scopedTable.compile(result.crmAction)),pipeline); }
+  try { result=actionLifecycle.normalizeResult(result); result.crmAction=ratioIntent.normalizeAction(numericIntent.normalizeAction(activityQueryIntent.compile(scopedTable.compile(result.crmAction)),pipeline),pipeline); }
   catch(error) {
     recordValidationFailure(payload,'response',null,null,result?.crmAction,error);
     if(!payload._responseAttempt&&Date.now()-startedAt<55000)return planPipeChatAction({...payload,_responseAttempt:1,_reviewFeedback:{issues:[error.message]}},{tier:'complex',model:AI_MODELS.complex,reason:'response_contract_repair'},startedAt);
@@ -1082,26 +1082,50 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
   if(grounded===result&&actionReview.needsReview(payload,result)){
     let review,coverage,stage='evidence',citationRepairUsed=false;
     try{
+      // Extract answer-only ratios before executing candidate steps: omitted
+      // percentages or broken goal references cannot block this independent check.
+      let independentRatios=null,ratioRequiresGeneralReview=false;
+      if(ratioIntent.candidateEligible(result.crmAction)){
+        const input=ratioIntent.input(payload),schema=ratioIntent.schemaFor(pipeline);
+        if(input&&schema){
+          stage='review';
+          independentRatios=await runStructuredReview({name:'pipechat_ratio_calculation_intent',schema,
+            instructions:ratioIntent.instructions,input},startedAt,payload);
+          if(!independentRatios||typeof independentRatios.completeIntent!=='boolean'||
+            typeof independentRatios.otherRequestedWork!=='boolean'||typeof independentRatios.ambiguity!=='boolean'||
+            !Array.isArray(independentRatios.ratios))throw new Error('The independent percentage intent could not be verified.');
+          if(independentRatios?.completeIntent===true)result.crmAction=ratioIntent.prepare(independentRatios,pipeline).action;
+        }
+      }
+      stage='evidence';
       let computed=actionReview.evidence(payload,result);
       grounded.lifecycle=computed.lifecycle;
       stage='review';
       const reviewInput={userCommand,pendingClarification,clarificationAnswer:clarificationContext.resolve(pendingClarification,userCommand),pendingAction,conversationHistory,conversationMemory,pipeline,dateContext:dateCalendar.dateContext(pipeline.currentDate),compiled:result.crmAction,proposalMessage:result.assistantMessage,computed};
+      if(independentRatios&&(independentRatios.completeIntent===true||independentRatios.ratios?.length)){
+        const assessment=ratioIntent.assess(independentRatios,result.crmAction,{pipeline,computed});
+        ratioRequiresGeneralReview=assessment.ok===true&&assessment.requiresGeneralReview===true;
+        if(!ratioRequiresGeneralReview){
+          const exact=assessment.complete===true&&assessment.ok===true;
+          review={requirements:[],issues:exact?[]:assessment.issues,clarificationQuestion:null};
+          coverage={ok:exact,requested:assessment.requested??1,compiled:exact?(assessment.compiled??assessment.requested??1):0,mappingIssues:[]};
+        }
+      }
       // Read intent without the candidate plan or its prose, then compare the
       // complete requested population against authenticated execution evidence.
       for(const [name,checker] of [['conditional_classification',classificationIntent],['derived_calculation',derivedIntent],
-        ['ratio_calculation',ratioIntent],['task_query',taskQueryIntent],['named_numeric',numericIntent],['date_shift',dateShiftIntent]]){
+        ['task_query',taskQueryIntent],['named_numeric',numericIntent],['date_shift',dateShiftIntent]]){
         const gate=checker===numericIntent?checker.candidateEligible:checker.eligible;
-        if(coverage||!gate(result.crmAction,pipeline))continue;
+        if(coverage||ratioRequiresGeneralReview||!gate(result.crmAction,pipeline))continue;
         const input=checker.input(payload),schema=checker.schemaFor?checker.schemaFor(pipeline):checker.schema;
         if(!input||!schema)continue;
         const intent=await runStructuredReview({name:'pipechat_'+name+'_intent',schema,
           instructions:checker.instructions,input},startedAt,payload);
-        const ratioGuard=checker===ratioIntent;
-        if(intent?.completeIntent===false&&(!ratioGuard||Array.isArray(intent.ratios)&&intent.ratios.length===0))continue;
+        if(intent?.completeIntent===false)continue;
         let assessment=checker.assess(intent,result.crmAction,{pipeline,computed});
         // Complete bounded intent can compile locally, then must pass the same
         // fresh evidence checks. Numeric changes still require confirmation.
-        if((ratioGuard||checker===numericIntent)&&!assessment.ok&&intent?.completeIntent===true&&assessment.expectedAction){
+        if((checker===numericIntent||checker===dateShiftIntent)&&!assessment.ok&&intent?.completeIntent===true&&assessment.expectedAction){
           const prepared=checker.prepare(intent,pipeline);
           result.crmAction=prepared.action;
           computed=actionReview.evidence(payload,result);
@@ -1109,7 +1133,6 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
           reviewInput.compiled=result.crmAction;reviewInput.computed=computed;
           assessment=checker.assess(intent,result.crmAction,{pipeline,computed});
         }
-        if(ratioGuard&&assessment.ok&&assessment.requiresGeneralReview===true)continue;
         const exact=assessment.complete===true&&assessment.ok===true;
         review={requirements:[],issues:exact?[]:assessment.issues?.length?assessment.issues:
           ['The complete requested population and operation must match the proposed plan. Preserve unknown values and include requested coverage.'],clarificationQuestion:null};

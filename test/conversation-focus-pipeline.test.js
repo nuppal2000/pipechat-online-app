@@ -6,6 +6,7 @@ const Plan=require('../public/workspace-plan'),Reports=require('../public/report
 const Conversation=require('../public/conversation'),ConversationCore=require('../lib/conversation-core');
 const ConversationIntent=require('../lib/conversation-intent-context');
 const Grounding=require('../lib/ai-grounding'),Review=require('../lib/action-review');
+const Ratio=require('../lib/ratio-calculation-intent');
 const {BackendError}=require('../lib/backend-contract');
 const F=require('./fixtures/workspace-plans.cjs');
 const plain=value=>JSON.parse(JSON.stringify(value));
@@ -245,7 +246,7 @@ function modelWireHarness(){
   const bodies=[],stop=new BackendError('Offline request captured.',503);
   const model=vm.createContext({pipelineCore:Core,tableSchemaCore:Schema,todoCore:Todo,workspacePlan:Plan,
     reportEngine:Reports,dashboardBoard:Dashboard,actionReview:Review,dashboardPresentation:require('../lib/dashboard-presentation-contract'),
-    scopedTable:require('../lib/scoped-table-request'),activityQueryIntent:require('../lib/activity-query-intent'),aiGrounding:Grounding,conversationIntent:ConversationIntent,
+    scopedTable:require('../lib/scoped-table-request'),activityQueryIntent:require('../lib/activity-query-intent'),ratioIntent:Ratio,aiGrounding:Grounding,conversationIntent:ConversationIntent,
     customization:require('../public/workspace-customization'),todoActions:require('../public/todo-actions'),
     viewActions:require('../public/view-actions'),businessActions:require('../public/business-actions'),
     businessCompiler:require('../lib/business-compiler'),agentPersona:require('../lib/agent-persona'),
@@ -324,6 +325,8 @@ for(const packing of ['recent suffix','byte-clipped suffix','multi-message comma
   const {bodies,stop,model}=modelWireHarness();
   await assert.rejects(model.plan(payload,{tier:'complex',model:'offline'},Date.now()),error=>error===stop);
   assert.equal(bodies.length,1);
+  assert(bodies[0].instructions.includes(Ratio.compilerInstructions));
+  assert(bodies[0].text.format.schema.properties.crmAction.anyOf.some(branch=>branch.properties?.action?.enum?.includes('ratio_transport')));
   const planner=JSON.parse(bodies[0].input[0].content[0].text);assertMapping(planner);
   const compiled=F.plan([F.select('selected',[]),read(['count'])]);
   const computed=Review.evidence(payload,{crmAction:compiled});

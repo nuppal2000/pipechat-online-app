@@ -56,11 +56,12 @@ function displayReview(action,satisfied=true){
 function harness(planner,intentReviewer,reviewer=()=>assert.fail('Unexpected general review')){
   const filename=path.join(__dirname,'../server.js'),source=fs.readFileSync(filename,'utf8'),localRequire=createRequire(filename);
   const startup=source.lastIndexOf('start().catch(');assert(startup>0);
-  const calls=[],logs=[],failures=[],evidence=[],assessments=[],preparations=[],renders=[],validations=[];
+  const calls=[],logs=[],failures=[],evidence=[],assessments=[],preparations=[],renders=[],validations=[],events=[],normalizations=[],otherChecks=[];
   const requireOffline=name=>{
     if(name==='node:http')return {createServer:()=>({})};
     if(name==='./lib/action-review.js')return {...Review,
       evidence:(payload,result)=>{
+        events.push('evidence');
         const computed=Review.evidence(payload,result);evidence.push({payload,action:result.crmAction,computed});return computed;
       },
       validateReview:(review,result,context)=>{
@@ -71,20 +72,34 @@ function harness(planner,intentReviewer,reviewer=()=>assert.fail('Unexpected gen
       }
     };
     if(name==='./lib/ratio-calculation-intent.js')return {...Ratio,
+      normalizeAction:(action,pipeline)=>{
+        events.push('normalize');const normalized=Ratio.normalizeAction(action,pipeline);
+        normalizations.push({action,normalized,pipeline});return normalized;
+      },
       prepare:(intent,pipeline)=>{
+        events.push('prepare');
         const prepared=Ratio.prepare(intent,pipeline);preparations.push({intent,pipeline,prepared});return prepared;
       },
       assess:(intent,action,context)=>{
+        events.push('assess');
         const checked=Ratio.assess(intent,action,context);assessments.push({intent,action,context,checked});return checked;
       }
     };
+    if(['./lib/conditional-classification-intent.js','./lib/derived-calculation-intent.js','./lib/task-query-intent.js',
+      './lib/named-numeric-intent.js','./lib/date-shift-intent.js'].includes(name)){
+      const checker=localRequire(name),wrapped={...checker};
+      for(const method of ['eligible','candidateEligible','input','assess'])if(typeof checker[method]==='function')wrapped[method]=(...args)=>{
+        otherChecks.push({name,method});return checker[method](...args);
+      };
+      return wrapped;
+    }
     return localRequire(name);
   };
   const fetchOffline=async(url,options)=>{
     try{
       assert.equal(url,'https://api.openai.com/v1/responses');
       const body=JSON.parse(options.body),input=JSON.parse(typeof body.input==='string'?body.input:body.input[0].content[0].text);
-      const name=body.text.format.name;calls.push({name,body,input});
+      const name=body.text.format.name;calls.push({name,body,input});events.push(name);
       assert([plannerFormat,ratioFormat,reviewFormat].includes(name),'Unexpected model call: '+name);
       const result=await (name===plannerFormat?planner:name===ratioFormat?intentReviewer:reviewer)(input,body);
       return {ok:true,json:async()=>({output_text:JSON.stringify(result)})};
@@ -94,7 +109,7 @@ function harness(planner,intentReviewer,reviewer=()=>assert.fail('Unexpected gen
     ['require','process','fetch','__dirname','console'],{filename});
   const plan=load(requireOffline,{env:{PIPECHAT_STORAGE_PROVIDER:'json',OPENAI_API_KEY:'OFFLINE_FIXTURE_ONLY',NODE_ENV:'test'}},
     fetchOffline,path.dirname(filename),{log:line=>logs.push(JSON.parse(line)),warn:line=>logs.push(JSON.parse(line))});
-  return {calls,logs,evidence,assessments,preparations,renders,validations,plan:async(payload,startedAt=Date.now())=>{
+  return {calls,logs,evidence,assessments,preparations,renders,validations,events,normalizations,otherChecks,plan:async(payload,startedAt=Date.now())=>{
     try{return await plan(payload,{tier:'complex',model:'gpt-5.2',reason:'offline_test'},startedAt);}
     finally{if(failures.length)throw failures[0];}
   }};
@@ -103,22 +118,23 @@ function harness(planner,intentReviewer,reviewer=()=>assert.fail('Unexpected gen
 test('server locally repairs count-based value percentages into a freshly proved answer-only count/sum plan',async()=>{
   for(const command of commands){
     const {payload,intent}=fixture(false,command),before=copy(payload.pipeline),candidate=dashboard(intent,true);
+    const wrong=Review.evidence(payload,{crmAction:candidate});
+    assert.equal(wrong.displayed[0].summaries[0].value,1/7*100);
+    assert.equal(wrong.displayed[1].summaries[0].value,1/6*100);
     const h=harness(()=>proposal(candidate),(input,body)=>{
       assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
       assert.equal(input.userCommand,command);assert.equal(body.text.format.strict,true);
       assert.doesNotMatch(JSON.stringify(input),/PRIVATE_PLANNER_PROSE|PRIVATE_UNRELATED_RECORD|QA1110 Deal 1/);
+      assert.equal(h.evidence.length,0,'Independent extraction precedes candidate execution');
       return intent;
     });
     const result=await h.plan(payload);
     assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat],'No planner retry or general review is needed');
-    assert.equal(h.preparations.length,1);assert.equal(h.evidence.length,2);assert.equal(h.assessments.length,2);
-    const [original,rebound]=h.evidence,[rejected,verified]=h.assessments,prepared=h.preparations[0].prepared;
-    assert.equal(original.computed.displayed[0].summaries[0].value,1/7*100);
-    assert.equal(original.computed.displayed[1].summaries[0].value,1/6*100);
-    assert.equal(rejected.checked.ok,false);assert(rejected.checked.expectedAction);
+    assert.equal(h.preparations.length,1);assert.equal(h.evidence.length,1);assert.equal(h.assessments.length,1);
+    const [rebound]=h.evidence,[verified]=h.assessments,prepared=h.preparations[0].prepared;
     assert.deepEqual(result.crmAction,Ratio.compile(intent,payload.pipeline));
     assert.strictEqual(rebound.payload,payload);assert.strictEqual(rebound.action,result.crmAction);
-    assert.notStrictEqual(rebound.computed,original.computed);
+    assert.notStrictEqual(rebound.action,candidate);
     assert.notStrictEqual(rebound.computed,prepared.computed,'Server must rebuild evidence with the actual request payload');
     assert.strictEqual(verified.context.computed,rebound.computed);assert.strictEqual(verified.context.pipeline,payload.pipeline);
     assert.deepEqual(verified.checked,{complete:true,ok:true,issues:[],requested:2,compiled:2});
@@ -134,8 +150,128 @@ test('server locally repairs count-based value percentages into a freshly proved
     assert.match(result.computedAnswer,/22\.9% \(\$15,000\.00 \/ \$65,500\.00 x 100\)/);
     assert.match(result.computedAnswer,/7 records represented/);assert.match(result.computedAnswer,/6 numeric values/);
     assert.doesNotMatch(result.computedAnswer,/16\.67%|PRIVATE_PLANNER_PROSE/);
+    assert.deepEqual(h.events,[plannerFormat,'normalize',ratioFormat,'prepare','evidence','assess']);
+    assert.deepEqual(h.otherChecks,[]);
     assert.equal(h.validations.length,0);assert.deepEqual(h.logs,[]);assert.deepEqual(payload.pipeline,before);
   }
+});
+
+function rawOperandPlan(intent){
+  return F.plan([F.select('cohort',copy(intent.ratios[0].population.where)),
+    {id:'raw_count',op:'read_records',label:'Count operands',selection:'cohort',showTable:false,outputs:[{kind:'count',field:null}]},
+    {id:'raw_value',op:'read_records',label:'Value operands',selection:'cohort',showTable:false,outputs:[{kind:'sum',field:'f_value'}]}]);
+}
+
+function answerReview(action){
+  return {requirements:action.steps.map(step=>({description:step.label,evidenceKind:'computed_read',
+    stepIds:[step.id+'/percentage:0'],requiredOutputs:['percentages','numerator','denominator',step.spec.measures[0].metric],satisfied:true})),
+    issues:[],clarificationQuestion:null,answerIntent:'canonical',answerSelection:null,presentationIntent:{status:'not_requested',elements:[]}};
+}
+
+test('ordinary planner exposes compact ratio transport and normalizes it before independent extraction and fresh evidence',async()=>{
+  for(const omitted of [false,true]){
+    const {payload,intent}=fixture(),before=copy(payload.pipeline),transport={action:'ratio_transport',ratios:copy(intent.ratios)};
+    if(omitted)transport.ratios.pop();
+    const h=harness((input,body)=>{
+      assert(input.supportedActions.includes('ratio_transport'));
+      const schema=body.text.format.schema.properties.crmAction.anyOf.find(branch=>branch.properties?.action?.enum?.includes('ratio_transport'));
+      assert.deepEqual(schema,Ratio.transportSchemaFor(payload.pipeline));
+      assert(body.instructions.includes(Ratio.compilerInstructions));
+      return proposal(transport);
+    },input=>{
+      assert.equal(h.normalizations.length,1);assert.equal(h.evidence.length,0);
+      assert.deepEqual(h.normalizations[0].action,transport);
+      assert.equal(h.normalizations[0].normalized.action,'workspace_plan');
+      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
+      assert.doesNotMatch(JSON.stringify(input),/PRIVATE_PLANNER_PROSE|PRIVATE_UNRELATED_RECORD|QA1110 Deal 1|ratio_transport/);
+      return intent;
+    });
+    const result=await h.plan(payload);
+    assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat]);
+    assert.deepEqual(h.events,[plannerFormat,'normalize',ratioFormat,'prepare','evidence','assess']);
+    assert.equal(h.preparations.length,1);assert.equal(h.evidence.length,1);assert.equal(h.assessments.length,1);
+    assert.deepEqual(result.crmAction,Ratio.compile(intent,payload.pipeline));
+    assert.deepEqual(result.coverage,{requested:2,compiled:2});
+    assert.strictEqual(h.assessments[0].context.computed,h.evidence[0].computed);
+    assert.notStrictEqual(h.evidence[0].computed,h.preparations[0].prepared.computed);
+    assert.match(result.computedAnswer,/14\.29% \(1 \/ 7 x 100\)/);
+    assert.match(result.computedAnswer,/22\.9% \(\$15,000\.00 \/ \$65,500\.00 x 100\)/);
+    assert.deepEqual(h.otherChecks,[]);assert.deepEqual(h.logs,[]);assert.deepEqual(payload.pipeline,before);
+  }
+});
+
+test('server repairs omitted percentage outputs before executing raw operands',async()=>{
+  for(const command of commands){
+    const {payload,intent}=fixture(false,command),before=copy(payload.pipeline),candidate=rawOperandPlan(intent);
+    const h=harness(()=>proposal(candidate),input=>{
+      assert.equal(input.userCommand,command);
+      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
+      assert.equal(h.evidence.length,0);
+      return intent;
+    });
+    const result=await h.plan(payload);
+    assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat]);
+    assert.equal(h.preparations.length,1);assert.equal(h.evidence.length,1);assert.equal(h.assessments.length,1);
+    assert.deepEqual(result.coverage,{requested:2,compiled:2});
+    assert.match(result.computedAnswer,/14\.29% \(1 \/ 7 x 100\)/);
+    assert.match(result.computedAnswer,/22\.9% \(\$15,000\.00 \/ \$65,500\.00 x 100\)/);
+    assert.strictEqual(h.renders[0].computed,h.evidence[0].computed);
+    assert.notStrictEqual(h.renders[0].computed,h.preparations[0].prepared.computed);
+    assert.deepEqual(h.otherChecks,[]);
+    assert.deepEqual(h.logs,[]);assert.deepEqual(payload.pipeline,before);
+  }
+});
+
+test('broader candidate extraction defers ordinary totals without inventing or approving percentage intent',async()=>{
+  const {payload,intent}=fixture(),candidate=rawOperandPlan(intent);
+  payload.userCommand='Count QA1110 deals and total their known Deal Value.';
+  const h=harness(()=>proposal(candidate),()=>({completeIntent:false,otherRequestedWork:true,ambiguity:false,ratios:[]}),
+    ()=>({requirements:[
+      {description:'Count records',stepIds:['raw_count'],requiredOutputs:['count'],evidenceKind:'computed_read',satisfied:true},
+      {description:'Total known value',stepIds:['raw_value'],requiredOutputs:['sum'],evidenceKind:'computed_read',satisfied:true}
+    ],issues:[],clarificationQuestion:null,answerIntent:'canonical',answerSelection:null,presentationIntent:{status:'not_requested',elements:[]}}));
+  const result=await h.plan(payload);
+  assert.equal(h.validations[0].checked.ok,true,JSON.stringify(h.validations[0].checked));
+  assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat,reviewFormat]);
+  assert.equal(h.preparations.length,0);assert.equal(h.assessments.length,0);
+  assert.equal(h.evidence.length,1);assert.equal(h.validations.length,1);assert(h.otherChecks.length>0);
+  assert(h.events.indexOf(ratioFormat)<h.events.indexOf('evidence'));
+  assert.deepEqual(result.crmAction,candidate);assert.deepEqual(result.coverage,{requested:2,compiled:2});
+});
+
+test('complete independent ratio intent recovers uncovered operations before candidate evidence can throw',async()=>{
+  for(const command of commands){
+    const {payload,intent}=fixture(false,command),before=copy(payload.pipeline),candidate=Ratio.compile(intent,payload.pipeline);
+    candidate.goals.pop();
+    assert.throws(()=>Review.evidence(payload,{crmAction:candidate}),error=>
+      error.reasonCode==='goal_coverage_invalid'&&error.goalCoverage.uncoveredOperations===1);
+    const h=harness(()=>proposal(candidate),()=>{
+      assert.equal(h.evidence.length,0);return intent;
+    });
+    const result=await h.plan(payload);
+    assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat]);
+    assert.equal(h.preparations.length,1);assert.equal(h.evidence.length,1);assert.equal(h.assessments.length,1);
+    assert.deepEqual(result.crmAction,Ratio.compile(intent,payload.pipeline));
+    assert.deepEqual(result.coverage,{requested:2,compiled:2});
+    assert.match(result.computedAnswer,/14\.29% \(1 \/ 7 x 100\)/);
+    assert.match(result.computedAnswer,/22\.9% \(\$15,000\.00 \/ \$65,500\.00 x 100\)/);
+    assert.deepEqual(h.otherChecks,[]);assert.deepEqual(h.logs,[]);assert.deepEqual(payload.pipeline,before);
+  }
+});
+
+test('complete ratio intent cannot be preempted by an executable derived-total candidate',async()=>{
+  const {payload,intent}=fixture(),candidate=rawOperandPlan(intent);
+  candidate.steps[2].outputs=[{kind:'row_calculation',expression:{kind:'sum_product',factors:['f_value'],divisor:1}}];
+  assert.equal(require('../lib/derived-calculation-intent').eligible(candidate),true);
+  assert.doesNotThrow(()=>Review.evidence(payload,{crmAction:candidate}));
+  const h=harness(()=>proposal(candidate),()=>{
+    assert.equal(h.evidence.length,0);return intent;
+  });
+  const result=await h.plan(payload);
+  assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat]);
+  assert.deepEqual(h.otherChecks,[]);assert.equal(h.preparations.length,1);assert.equal(h.evidence.length,1);
+  assert.deepEqual(result.coverage,{requested:2,compiled:2});
+  assert.deepEqual(result.crmAction,Ratio.compile(intent,payload.pipeline));
 });
 
 test('server blocks an incorrect partial ratio before general review and never locally drops its display obligations',async()=>{
@@ -155,6 +291,7 @@ test('server blocks an incorrect partial ratio before general review and never l
   assert.equal(h.assessments.length,2);assert(h.assessments.every(({intent,checked})=>intent.completeIntent===false&&checked.complete&&
     checked.ok===false&&checked.expectedAction===undefined));
   assert(h.evidence.every(item=>item.action.action==='dashboard_plan'));
+  assert.deepEqual(h.otherChecks,[]);
   assert.deepEqual(h.logs.map(log=>[log.attempt,log.stage,log.counts.requested,log.counts.compiled]),[[0,'mapping',2,0],[1,'mapping',2,0]]);
   assert.deepEqual(payload.pipeline,before);
 });
@@ -175,6 +312,7 @@ test('a correct partial ratio reaches real general review, whose remaining displ
     const result=await h.plan(payload,satisfied?Date.now():Date.now()-60000);
     assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat,reviewFormat]);
     assert.equal(h.preparations.length,0);assert.equal(h.evidence.length,1);assert.equal(h.assessments.length,1);
+    assert.deepEqual(h.otherChecks,[],'Partial ratio proof cannot authorize another bounded checker to approve the whole request');
     assert.deepEqual(h.assessments[0].checked,{complete:false,ok:true,issues:[],requested:2,compiled:2,requiresGeneralReview:true});
     assert.equal(h.validations.length,1);assert.equal(h.validations[0].checked.ok,satisfied);
     assert.strictEqual(h.validations[0].context.computed,h.evidence[0].computed);
@@ -191,4 +329,46 @@ test('a correct partial ratio reaches real general review, whose remaining displ
     }
     assert.deepEqual(payload.pipeline,before);
   }
+});
+
+test('answer-only fractions do not discard an additional display obligation from partial independent intent',async()=>{
+  const {payload,intent}=fixture(true),before=copy(payload.pipeline);
+  const candidate=Ratio.compile({...intent,completeIntent:true,otherRequestedWork:false},payload.pipeline);
+  const h=harness(()=>proposal(candidate),()=>intent,input=>{
+    assert.deepEqual(input.compiled,candidate);
+    const review=answerReview(candidate);
+    review.requirements.push({description:'Two separate temporary dashboard panels',evidenceKind:'computed_read',
+      stepIds:candidate.steps.map(step=>step.id),requiredOutputs:['separate_widgets'],satisfied:false});
+    review.issues=['The requested dashboard panels are absent.'];
+    review.presentationIntent=displayReview(dashboard(intent)).presentationIntent;
+    return review;
+  });
+  const result=await h.plan(payload,Date.now()-60000);
+  assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat,reviewFormat]);
+  assert.equal(h.preparations.length,0);assert.equal(h.evidence.length,1);assert.equal(h.assessments.length,1);
+  assert.equal(h.assessments[0].checked.requiresGeneralReview,true);assert.deepEqual(h.otherChecks,[]);
+  assert.equal(h.validations[0].checked.ok,false);assert.equal(h.validations[0].checked.requested,3);assert.equal(h.validations[0].checked.compiled,2);
+  assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);assert.equal(result.computedAnswer,undefined);
+  assert.equal(h.renders.length,0);assert.deepEqual(payload.pipeline,before);
+});
+
+for(const [label,verdict] of [['empty object',{}],['non-array ratios',{
+  completeIntent:false,otherRequestedWork:true,ambiguity:false,ratios:null
+}]])test('malformed '+label+' ratio verdict cannot fall through to generic approval',async()=>{
+  const {payload,intent}=fixture(),candidate=Ratio.compile(intent,payload.pipeline);
+  const h=harness(()=>proposal(candidate),()=>verdict,()=>answerReview(candidate));
+  const result=await h.plan(payload,Date.now()-60000);
+  assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);assert.equal(result.computedAnswer,undefined);
+  assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat]);
+  assert.equal(h.preparations.length,0);assert.equal(h.validations.length,0);assert.equal(h.renders.length,0);
+  assert.deepEqual(h.otherChecks,[]);
+});
+
+test('null ratio response rejects at the provider boundary without generic review or candidate execution',async()=>{
+  const {payload,intent}=fixture(),candidate=Ratio.compile(intent,payload.pipeline);
+  const h=harness(()=>proposal(candidate),()=>null);
+  await assert.rejects(()=>h.plan(payload,Date.now()-60000),error=>error.status===502);
+  assert.deepEqual(h.calls.map(call=>call.name),[plannerFormat,ratioFormat,ratioFormat],'Provider parsing permits one bounded model fallback');
+  assert.equal(h.evidence.length,0);assert.equal(h.preparations.length,0);assert.equal(h.validations.length,0);assert.equal(h.renders.length,0);
+  assert.deepEqual(h.otherChecks,[]);
 });
