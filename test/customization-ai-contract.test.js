@@ -106,10 +106,11 @@ test('card edits, saved focus and chart refinements have compact typed contracts
     const branches=context.getSchema([],table).properties.crmAction.anyOf;
     const find=name=>branches.find(b=>b.properties?.action.enum.includes(name));
     const query=find('query_todos'),edit=find('update_todos'),report=find('show_report'),refine=find('refine_report');
-    assert(query&&edit&&report&&refine);assert.deepEqual([...query.required],['action','selection']);assert.deepEqual([...edit.required],['action','updates']);
+    assert(query&&edit&&report&&refine);assert.deepEqual([...query.required],['action','selection','result']);assert.deepEqual([...edit.required],['action','updates']);
+    assert.deepEqual([...query.properties.result.enum],['tasks','records']);
     assert.deepEqual([...report.required],['action','smartReport']);assert.equal(find('update_todo'),undefined);assert.equal(find('move_todos'),undefined);
     assert.deepEqual([...edit.properties.updates.items.properties.changes.items.properties.field.enum],['status','nextAction','notes','dueDate']);
-    assert.deepEqual([...query.properties.selection.anyOf].map(s=>s.properties.source.enum[0]),['all','ids','references']);
+    assert.deepEqual([...query.properties.selection.anyOf].map(s=>s.properties.source.enum[0]),['all','ids','references','linked_records']);
     const references=query.properties.selection.anyOf.find(s=>s.properties.source.enum[0]==='references');
     assert.deepEqual([...references.required],['source','references','conditions']);assert.equal(references.properties.references.minItems,1);assert.equal(references.properties.references.maxItems,200);
     assert.deepEqual([...references.properties.references.items.required],['taskName','recordName']);

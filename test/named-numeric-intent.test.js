@@ -5,7 +5,7 @@ const Compact=require('../lib/scoped-table-request'),F=require('./fixtures/works
 const names=['QA1105 Cedar Consulting','QA1105 Cedar North','QA1105 Maple Retail','QA1105 Elm Design','Hidden control','Control Other'];
 const original='Add a number field called Probability percent. Set it to 50 for QA1105 Cedar Consulting, 80 for QA1105 Cedar North, and 25 for QA1105 Maple Retail.';
 const variant='Create a numeric column named QA confidence. Give QA1105 Maple Retail 12.5 and QA1105 Elm Design 0 in that column; leave the other rows blank.';
-const intent=(fieldName,entries,leaveOthersBlank)=>({completeIntent:true,fieldName,
+const intent=(fieldName,entries,leaveOthersBlank)=>({completeIntent:true,operation:'create',fieldName,
   assignments:entries.map(([i,value])=>({name:names[i],value})),leaveOthersBlank,otherRequestedWork:false,ambiguity:false});
 const first=intent('Probability percent',[[0,50],[1,80],[2,25]],false),second=intent('QA confidence',[[2,12.5],[3,0]],true);
 const add=name=>({op:'add_field',id:'field',label:'Untrusted heading',name,type:'number',options:[]});

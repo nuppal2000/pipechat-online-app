@@ -130,5 +130,5 @@ test('extractor input contains only user text and schema, not rows, prior AI tex
   assert.equal(Intent.input({...payload,pendingClarification:{originalCommand:command,answers:[]}}),null);
   const schema=Intent.schemaFor(p);
   assert.equal(schema.additionalProperties,false);
-  assert.deepEqual(schema.required.toSorted(),Object.keys(intent()).toSorted());
+  assert.deepEqual(schema.required.toSorted(),[...Object.keys(intent()),'rules','whenUnmatched'].toSorted());
 });

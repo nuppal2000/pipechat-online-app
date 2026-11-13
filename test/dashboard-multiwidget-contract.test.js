@@ -177,7 +177,9 @@ test('review schema uses the supplied persisted board for updates and analysis, 
     changes:[{field:'measures',value:spec('sum').measures}]}],questions:[]};
   const result={crmAction:action},computed=Review.evidence({pipeline},result),context={pipeline,computed};
   assert.equal(computed.displayed[1].summaries[0].metric,'sum');
-  const allowed=Review.schemaFor(action,context).properties.requirements.items.properties.stepIds.items.enum;
+  const updateSchema=Review.schemaFor(action,context).properties.requirements.items;
+  assert.deepEqual(updateSchema.anyOf.find(s=>s.properties['editGraph:stage_average']).properties.stepIds.items.enum,['graph:stage_average']);
+  const allowed=Review.allowedStepIdsFor(action,context);
   assert.deepEqual(allowed,['root','graph:stage_counts','graph:stage_average','unchanged:graph:stage_counts','lifecycle:preview_only',...retainedKpiIds]);
   const review={requirements:[requirement('Updated total',['sum','groups'],['graph:stage_average']),
     requirement('Retain counts',['unchanged_graphs'],['unchanged:graph:stage_counts'])],issues:[],clarificationQuestion:null};
@@ -203,7 +205,7 @@ test('cross-graph percentage evidence belongs to root, not either operand or the
     {kind:'percentage',label:'Record ratio',left:{elementId:'left',measure:0,stat:'records'},right:{elementId:'right',measure:0,stat:'records'}}]};
   const pipeline={...workspace(),currentDate:today},result={crmAction:action};
   assert.match(Review.evidence({pipeline},result).answer,/Record ratio: 100%/);
-  assert.deepEqual(Review.schemaFor(action,{pipeline}).properties.requirements.items.properties.stepIds.items.enum,['root','graph:left','graph:right']);
+  assert.deepEqual(Review.schemaFor(action,{pipeline}).properties.requirements.items.properties.stepIds.items.enum,['root','graph:left','graph:right','percentage:0']);
   const review={requirements:[requirement('Record ratio',['percentages'])],issues:[],clarificationQuestion:null};
   assert.equal(Review.validateReview(review,result,{pipeline}).ok,true);
   for(const stepIds of [['graph:left'],['graph:right'],['graph:left','graph:right']]){

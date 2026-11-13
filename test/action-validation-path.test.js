@@ -44,12 +44,19 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
       if(name==='./lib/named-numeric-intent.js'){
         const numeric=localRequire(name);
         return {...numeric,eligible:action=>numeric.eligible(copy(action)),
-          matches:(intent,action,context)=>numeric.matches(copy(intent),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
+          normalizeAction:(action,pipeline)=>numeric.normalizeAction(action==null?action:copy(action),copy(pipeline)),
+          assess:(intent,action,context)=>numeric.assess(copy(intent),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
       }
-      if(['./lib/conditional-classification-intent.js','./lib/derived-calculation-intent.js'].includes(name)){
+      if(['./lib/conditional-classification-intent.js','./lib/derived-calculation-intent.js',
+        './lib/ratio-calculation-intent.js','./lib/task-query-intent.js'].includes(name)){
         const intent=localRequire(name);
         return {...intent,eligible:action=>intent.eligible(copy(action)),assess:(value,action,context)=>
           intent.assess(copy(value),copy(action),{...context,pipeline:evidencePipelines.get(context.computed)})};
+      }
+      if(name==='./lib/dashboard-presentation-contract.js'){
+        const presentation=localRequire(name);
+        return {...presentation,assess:(value,action,context)=>presentation.assess(value==null?value:copy(value),copy(action),
+          {...context,pipeline:evidencePipelines.get(context.computed)||context.pipeline})};
       }
       if(name==='./lib/conversation-core.js'){
         const core=localRequire(name);return {...core,validateState:input=>core.validateState(copy(input)),contextFor:(page,command,recalled)=>core.contextFor(copy(page),command,copy(recalled))};
@@ -62,7 +69,11 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
       const name=body.text.format.name,isReview=name==='pipechat_action_review';calls.push({name,body,input,isReview});
       let result;
       try{result=await (isReview?reviewer:name==='pipechat_named_numeric_intent'?numericReviewer:
-        ['pipechat_conditional_classification_intent','pipechat_derived_calculation_intent'].includes(name)?populationReviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
+        ['pipechat_conditional_classification_intent','pipechat_derived_calculation_intent','pipechat_ratio_calculation_intent','pipechat_task_query_intent'].includes(name)?populationReviewer:planner)(input,body);}catch(error){if(error.code==='ERR_ASSERTION')assertions.push(error);throw error;}
+      // Existing semantic-review fixtures are answer-only unless a test explicitly
+      // supplies the new presentation obligation or deliberately omits it.
+      if(isReview&&body.text.format.schema.properties.presentationIntent&&!Object.hasOwn(result,'presentationIntent'))
+        result={...result,presentationIntent:{status:'not_requested',elements:[]}};
       return {ok:true,json:async()=>({output_text:JSON.stringify(result)})};
     }};
   const startup=source.lastIndexOf('start().catch(');assert(startup>0);
@@ -70,7 +81,7 @@ function harness(planner,reviewer,numericReviewer=()=>assert.fail('Unexpected na
   return {calls,logs,turn:async(req,...args)=>{
     if(req.backend)Object.assign(req.backend,{readAgentProfile:async()=>null,saveAgentProfile:async assignment=>assignment});
     return context.turnTest(req,...args);
-  },plan:async payload=>{try{return await context.planTest(payload,{tier:'complex',model:'gpt-5.2',reason:'offline_test'});}finally{if(assertions.length)throw assertions[0];}}};
+  },plan:async(payload,options={})=>{try{return await context.planTest(payload,{tier:'complex',model:'gpt-5.2',reason:'offline_test'},options.startedAt??Date.now());}finally{if(assertions.length)throw assertions[0];}}};
 }
 
 const plannerFormat='pipechat_response',numericFormat='pipechat_named_numeric_intent',genericFormat='pipechat_action_review';
@@ -136,7 +147,7 @@ function numericFixture(){
 const numericProposal=(harbor,cedar)=>({assistantMessage:'PRIVATE_PROPOSAL_SENTINEL',memoryNote:null,
   crmAction:{action:'scoped_table_request',title:'Add confidence scores',source:'all',where:[],operation:{kind:'add_named_numbers',name:'Confidence score',
     entries:[{recordName:'Harbor Studio',value:harbor},{recordName:'Cedar Grove',value:cedar}]}}});
-const numericIntent=()=>({completeIntent:true,fieldName:'Confidence score',assignments:[{name:'Harbor Studio',value:12.75},{name:'Cedar Grove',value:0}],
+const numericIntent=()=>({completeIntent:true,operation:'create',fieldName:'Confidence score',assignments:[{name:'Harbor Studio',value:12.75},{name:'Cedar Grove',value:0}],
   leaveOthersBlank:true,otherRequestedWork:false,ambiguity:false});
 
 test('named numeric intent receives only the user command and approves the exact decimal/zero preview',async()=>{
@@ -184,6 +195,210 @@ test('additional work falls through to generic validation; a numeric write canno
   assert.deepEqual(h.logs.map(l=>[l.counts.requested,l.counts.compiled,l.mappingReasons.no_evidence_action]),[[4,3,1],[4,3,1]]);
 });
 
+test('standalone Number transport normalizes before evidence and needs just one independent creation proof',async()=>{
+  const payload=fixture();payload.userCommand='Add a number column named Seats.';
+  payload.pipeline.customFields=[{id:'cf_license',name:'License seats',type:'number'}];
+  payload.pipeline.records[0].cf_license=12;
+  const before=copy(payload.pipeline),h=harness(()=>({assistantMessage:'Review the column.',memoryNote:null,
+    crmAction:{action:'add_field',newFieldName:'Seats',targetType:'number',dropdownOptions:[]}}),
+    ()=>assert.fail('No generic reviewer is needed for a complete standalone numeric proof'),()=>({completeIntent:true,operation:'create',
+      fieldName:'Seats',assignments:[],leaveOthersBlank:true,otherRequestedWork:false,ambiguity:false}));
+  const result=await h.plan(payload);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat]);
+  assert.equal(result.crmAction.action,'workspace_plan');assert.equal(result.crmAction.steps.length,1);
+  assert.deepEqual(copy(result.coverage),{requested:1,compiled:1});
+  assert.equal(result.lifecycle.requiresConfirmation,true);assert.equal(result.lifecycle.writesApplied,0);
+  assert.deepEqual(payload.pipeline,before);
+});
+
+test('existing Number updates normalize their exact names and report two assignments, not a phantom field creation',async()=>{
+  const payload=numericFixture();payload.userCommand='Set Seats to 12 for Harbor Studio and 0 for Cedar Grove. Leave the rest blank.';
+  payload.pipeline.customFields=[{id:'cf_seats',name:'Seats',type:'number'}];
+  payload.pipeline.records.forEach(row=>row.cf_seats=null);
+  const before=copy(payload.pipeline),h=harness(()=>({assistantMessage:'Review both values.',memoryNote:null,
+    crmAction:{action:'update_records',changes:[['Harbor Studio',12],['Cedar Grove',0]].map(([recordMatch,value])=>({
+      recordMatch,ids:null,filter:null,field:'cf_seats',operation:'set',value}))}}),
+    ()=>assert.fail('Complete exact-number proof must not need a generic mapping'),()=>({...numericIntent(),operation:'assign',fieldName:'Seats',
+      assignments:[{name:'Harbor Studio',value:12},{name:'Cedar Grove',value:0}]}));
+  const result=await h.plan(payload);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat]);
+  assert.deepEqual(copy(result.coverage),{requested:2,compiled:2});
+  assert(result.crmAction.steps.every(s=>s.op!=='add_field'));assert.deepEqual(payload.pipeline,before);
+});
+
+test('malformed numeric independent verdict fails closed, including when the repair budget has elapsed',async()=>{
+  const h=harness(()=>numericProposal(12.75,0),()=>assert.fail('No fallback from malformed supported-intent evidence'),()=>({}));
+  const result=await h.plan(numericFixture(),{startedAt:Date.now()-60000});
+  assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,numericFormat]);
+});
+
+function ratioFixture(){
+  const F=require('./fixtures/workspace-plans.cjs'),p=F.workspace(),template=p.records[0];
+  p.currentDate='2026-11-13';p.workspaceVersion='ratio-current';p.visibleIds=[1];
+  p.records=[15000,18000,22000,8500,2000,0,null].map((f_value,index)=>({...copy(template),id:index+1,
+    f_deal:'QA1110 Deal '+(index+1),f_value,f_stage:index?'Qualified':'Closed Won'}));
+  p.records.push({...copy(template),id:8,f_deal:'PRIVATE_UNRELATED_ACCOUNT',f_value:999999,f_stage:'Closed Won'});
+  const cohort=[[F.where('f_deal','starts_with','QA1110')]],won=[[F.where('f_stage','equals','Closed Won')]];
+  const ratio=(label,metric,field)=>({label,population:{source:'all',where:cohort},
+    numerator:{metric,field,where:won},denominator:{metric,field,where:[]}});
+  const intent={completeIntent:true,otherRequestedWork:false,ambiguity:false,
+    ratios:[ratio('Won record share','count',null),ratio('Won known value share','sum','f_value')]};
+  return {intent,payload:{pipeline:p,userCommand:'Show the percentage of QA1110 deals that are Won, next to the percentage of their known value that is Won.'}};
+}
+
+test('paired-percentage server check returns both actual fractions without generic review or dashboard mutations',async()=>{
+  const {payload,intent}=ratioFixture(),Ratio=require('../lib/ratio-calculation-intent'),before=copy(payload.pipeline);
+  const h=harness(()=>({assistantMessage:'Provisional arithmetic is not authoritative.',crmAction:Ratio.compile(intent,payload.pipeline)}),
+    ()=>assert.fail('Typed full-percentage proof should finish in one check'),undefined,(input,body)=>{
+      assert.equal(body.text.format.name,'pipechat_ratio_calculation_intent');
+      assert.deepEqual(Object.keys(input).sort(),['fields','primaryField','userCommand']);
+      assert(!JSON.stringify(input).includes('PRIVATE_UNRELATED_ACCOUNT'));return intent;
+    });
+  const result=await h.plan(payload);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_ratio_calculation_intent']);
+  assert.deepEqual(copy(result.coverage),{requested:2,compiled:2});
+  assert.match(result.computedAnswer,/14\.29% \(1 \/ 7 x 100\)/);
+  assert.match(result.computedAnswer,/22\.9% \(\$15,000\.00 \/ \$65,500\.00 x 100\)/);
+  assert.equal(result.lifecycle.operation,'read');assert.deepEqual(payload.pipeline,before);
+});
+
+test('missing second percentage enters one bounded repair instead of gaining generic approval',async()=>{
+  const {payload,intent}=ratioFixture(),Ratio=require('../lib/ratio-calculation-intent');let attempt=0;
+  const h=harness(input=>{
+    if(attempt)assert.match(JSON.stringify(input.compilerRepair),/Every requested percentage|Expected percentage intent/);
+    return {assistantMessage:'Calculated shares.',crmAction:Ratio.compile(attempt++?intent:{...intent,ratios:intent.ratios.slice(0,1)},payload.pipeline)};
+  },()=>assert.fail('A supported percentage mismatch must not reach a generic approval'),undefined,()=>intent);
+  const result=await h.plan(payload);
+  assert.equal(result.coverage.compiled,2);assert.equal(attempt,2);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_ratio_calculation_intent',plannerFormat,'pipechat_ratio_calculation_intent']);
+  assert.equal(h.logs.length,1);assert.equal(h.logs[0].counts.compiled,0);
+});
+
+test('negative or malformed percentage verdict is never accepted by falling through',async()=>{
+  for(const malformed of [false,true]){
+    const {payload,intent}=ratioFixture(),Ratio=require('../lib/ratio-calculation-intent');
+    const wrong={...intent,ratios:intent.ratios.slice(0,1)};
+    const h=harness(()=>({assistantMessage:'Partial answer.',crmAction:Ratio.compile(wrong,payload.pipeline)}),
+      ()=>assert.fail('No silent generic fallback'),undefined,()=>malformed?{}:intent);
+    const result=await h.plan(payload);
+    assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);
+    assert.equal(h.calls.length,4);assert(h.calls.every(c=>!c.isReview));
+  }
+});
+
+function taskReadFixture(result='tasks'){
+  const F=require('./fixtures/workspace-plans.cjs'),Todo=require('../public/todo-core'),p=F.workspace();
+  p.currentDate='2026-11-13';p.workspaceVersion='tasks-current';p.visibleIds=[3];
+  p.records=p.records.slice(0,3).map((row,i)=>({...row,f_deal:['QA1110 Beacon Print','QA1110 Tide Glass','Unrelated'][i],f_follow:p.currentDate}));
+  const card=(id,recordId,nextAction,dueDate,status='To Do')=>({...Todo.create(id,recordId),nextAction,dueDate,status,notes:'Saved task notes'});
+  p.todoCards=[card('todo_proof',1,'Proof review','2026-11-12'),card('todo_samples',2,'Send samples','2026-11-17'),
+    card('todo_done',1,'Already done','2026-11-11','Done'),card('todo_unrelated',3,'QA1110 Beacon Print mention','2026-11-10')];
+  const intent={completeIntent:true,result,linkedRecords:{where:[[F.where('f_deal','starts_with','QA1110'),
+    ...(result==='records'?[F.where('f_follow','equals',p.currentDate)]:[])]]},
+    taskStatus:'open',due:{kind:'overdue',date:null},taskText:[],otherRequestedWork:false,ambiguity:false};
+  return {intent,payload:{pipeline:p,userCommand:result==='records'?'Which QA1110 deals have a follow-up today but an overdue task?':
+    'Show overdue QA1110 tasks, with their linked deal and due date.'}};
+}
+
+for(const target of ['tasks','records'])test('server wires linked-record task '+target+' schema, instructions and complete read evidence',async()=>{
+  const {payload,intent}=taskReadFixture(target),Task=require('../lib/task-query-intent'),before=copy(payload.pipeline);
+  const h=harness((input,body)=>{
+    const schema=body.text.format.schema.properties.crmAction.anyOf.find(s=>s.properties?.action?.enum?.includes('query_todos'));
+    assert(schema.properties.result.enum.includes('records'));
+    assert(schema.properties.selection.anyOf.some(s=>s.properties.source.enum.includes('linked_records')));
+    assert(body.instructions.includes(require('../public/todo-actions').queryInstructions));
+    return {assistantMessage:'Read the task population.',crmAction:Task.compile(intent,payload.pipeline).action};
+  },()=>assert.fail('An independently checked task join does not need generic approval'),undefined,(input,body)=>{
+    assert.equal(body.text.format.name,'pipechat_task_query_intent');
+    assert.deepEqual(Object.keys(input).sort(),['dateContext','fields','primaryField','userCommand']);
+    assert(!JSON.stringify(input).includes('Proof review'));return intent;
+  });
+  const result=await h.plan(payload);
+  assert.equal(result.crmAction?.action,'query_todos',JSON.stringify({result,logs:h.logs}));
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_task_query_intent']);
+  assert.match(result.computedAnswer,/QA1110 Beacon Print/);assert.match(result.computedAnswer,/Proof review/);
+  assert.doesNotMatch(result.computedAnswer,/Already done|QA1110 Beacon Print mention|Send samples/);
+  assert.equal(result.lifecycle.operation,'read');assert.deepEqual(payload.pipeline,before);
+});
+
+test('incorrect task text scoping cannot replace a linked-record query; repair receives the checked expected action',async()=>{
+  const {payload,intent}=taskReadFixture(),Task=require('../lib/task-query-intent');let attempt=0;
+  const expected=Task.compile(intent,payload.pipeline).action;
+  const h=harness(input=>{
+    if(attempt){assert.deepEqual(input.compilerRepair.expectedAction,expected);return {assistantMessage:'Matched saved tasks.',crmAction:expected};}
+    attempt++;
+    return {assistantMessage:'Matched task text.',crmAction:{action:'query_todos',result:'tasks',selection:{source:'all',ids:[],focusId:null,
+      conditions:[{field:'nextAction',operator:'contains',value:'QA1110',values:[]}]}}};
+  },()=>assert.fail('A rejected task join must not fall through'),undefined,()=>intent);
+  const result=await h.plan(payload);
+  assert.equal(result.crmAction?.selection.source,'linked_records',JSON.stringify({result,logs:h.logs}));
+  assert.equal(h.calls.length,4);assert.equal(h.logs.length,1);
+});
+
+test('malformed independent task-read verdict remains rejected after the single repair',async()=>{
+  const {payload,intent}=taskReadFixture(),Task=require('../lib/task-query-intent');
+  const h=harness(()=>({assistantMessage:'Tasks found.',crmAction:Task.compile(intent,payload.pipeline).action}),
+    ()=>assert.fail('A malformed task verdict cannot gain generic approval'),undefined,()=>({}));
+  const result=await h.plan(payload);
+  assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,'pipechat_task_query_intent',plannerFormat,'pipechat_task_query_intent']);
+});
+
+function presentationFixture(showDashboard){
+  const F=require('./fixtures/workspace-plans.cjs'),p=F.workspace();p.currentDate='2026-11-13';p.workspaceVersion='display-current';
+  const spec={version:1,title:'Median deal value',chart:'kpi',scope:'all',groupBy:null,splitBy:null,bucket:'none',where:[],
+    sort:'label_asc',limit:null,measures:[{label:'Median',metric:'median',field:'f_value',where:[]}]};
+  const action=F.plan([{op:'report',id:'metric',label:'Median value and coverage',selection:null,spec,showDashboard,
+    questions:[{kind:'summary',elementIds:['metric']}]}]);
+  const presentationIntent={status:'resolved',elements:[{chart:'kpi',groupBy:null,splitBy:null,bucket:'none',measures:[{metric:'median',field:'f_value'}]}]};
+  return {payload:{userCommand:'Show median deal value as a temporary KPI and say how many numeric values it uses.',pipeline:p},action,presentationIntent};
+}
+const medianReview=presentationIntent=>({...review([{...requirement('Median and numeric coverage','computed_read',true,['metric']),requiredOutputs:['median','count']}]),
+  answerIntent:'canonical',answerSelection:null,presentationIntent});
+
+test('a correct numerical answer without the requested KPI fails the supplemental check and repairs without another review call',async()=>{
+  const {payload,presentationIntent}=presentationFixture(false);let attempt=0;
+  const h=harness(input=>{
+    if(attempt)assert.match(JSON.stringify(input.compilerRepair),/Missing final displayed element/);
+    return {assistantMessage:'Median computed.',crmAction:presentationFixture(attempt++>0).action};
+  },(input,body)=>{
+    assert(body.text.format.schema.required.includes('presentationIntent'));
+    assert(body.instructions.includes('supplemental presentation check'));
+    assert(input.computed&&input.pipeline);return medianReview(presentationIntent);
+  });
+  const result=await h.plan(payload);
+  assert.equal(result.crmAction?.steps[0].showDashboard,true,JSON.stringify({result,logs:h.logs}));
+  assert.equal(attempt,2);assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,genericFormat,plannerFormat,genericFormat]);
+  assert.equal(result.lifecycle.operation,'view');assert.equal(result.lifecycle.writesApplied,0);
+});
+
+test('passing presentation never overrides an unsatisfied semantic obligation',async()=>{
+  const {payload,action,presentationIntent}=presentationFixture(true);
+  const h=harness(()=>({assistantMessage:'The graph is visible.',crmAction:action}),()=>({...medianReview(presentationIntent),
+    requirements:[{...requirement('The requested cohort was not selected','computed_read',false,['metric']),requiredOutputs:['median']}]}));
+  const result=await h.plan(payload);
+  assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);assert.equal(result.computedAnswer,undefined);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,genericFormat,plannerFormat,genericFormat]);
+});
+
+test('a malformed presentation inventory cannot silently approve a request or consume a citation-only repair',async()=>{
+  const {payload,action}=presentationFixture(true);
+  const h=harness(()=>({assistantMessage:'Graph prepared.',crmAction:action}),()=>medianReview(null));
+  const result=await h.plan(payload);
+  assert.equal(result.outcome,'validation_failed');assert.equal(h.calls.length,4);
+  assert(h.calls.filter(c=>c.isReview).every(c=>!c.input.citationRepair));
+});
+
+test('answer-only analysis uses the ordinary review once; new intent extractors stay gated',async()=>{
+  const {payload,action}=presentationFixture(false);payload.userCommand='What is the median value and how many numeric values are there? Do not change the dashboard.';
+  const h=harness(()=>({assistantMessage:'Analysis prepared.',crmAction:action}),()=>medianReview({status:'not_requested',elements:[]}),
+    ()=>assert.fail('No numeric-write extraction for a read'),()=>assert.fail('No ratio, weighted or task extraction for an ordinary median'));
+  const result=await h.plan(payload);
+  assert.equal(result.lifecycle.operation,'read');assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,genericFormat]);
+  assert(result.computedAnswer.includes('numeric values'));
+});
+
 test('typed proposal reviewer receives representation disclosure and the same full entity contract',async()=>{
   const payload=fixture(),before=copy(payload),result=contact();
   const h=harness(()=>result,(input,body)=>{
@@ -202,6 +417,7 @@ test('general advice uses conversational evidence, while missing saved reads can
   const payload=fixture();payload.userCommand='What should I ask a client in an initial search briefing? Advice only; do not change anything.';
   const response={assistantMessage:'Discuss the role outcomes, search scope, decision process and interview timeline.',crmAction:null,memoryNote:null};
   const h=harness(()=>response,(_input,body)=>{
+    assert.equal(body.text.format.schema.properties.presentationIntent,undefined);
     assert.deepEqual(body.text.format.schema.properties.answerIntent,{type:'string',enum:['canonical']});
     assert.deepEqual(body.text.format.schema.properties.answerSelection,{type:'null'});
     assert.match(body.instructions,/General advice, hypothetical examples and conversational coaching/);
@@ -209,8 +425,21 @@ test('general advice uses conversational evidence, while missing saved reads can
   });
   const result=await h.plan(payload);
   assert.equal(result.crmAction,null);assert.equal(result.assistantMessage,response.assistantMessage);assert.equal(result.coverage.compiled,1);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,genericFormat]);
   const missing={...review([requirement('What did the saved client say?','computed_read')]),answerIntent:'canonical',answerSelection:null};
   assert.equal(Review.validateReview(missing,response).ok,false);
+});
+
+test('null-action prose cannot satisfy a requested visual through generic semantic review',async()=>{
+  const {payload}=presentationFixture(false);
+  const h=harness(()=>({assistantMessage:'The median KPI is ready.',crmAction:null,memoryNote:null}),(_input,body)=>{
+    assert.equal(body.text.format.schema.properties.presentationIntent,undefined);
+    return {...review([{...requirement('Display the computed median as a KPI','computed_read',true,['root']),
+      requiredOutputs:['median','scalar_kpi']}]),answerIntent:'canonical',answerSelection:null};
+  });
+  const result=await h.plan(payload);
+  assert.equal(result.outcome,'validation_failed');assert.equal(result.crmAction,null);assert.equal(result.computedAnswer,undefined);
+  assert.deepEqual(h.calls.map(c=>c.name),[plannerFormat,genericFormat,plannerFormat,genericFormat]);
 });
 
 test('new primary records preserve supplied facts without forcing a read or speculative schema changes',async()=>{

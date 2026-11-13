@@ -83,7 +83,7 @@ test('adding a comparison graph exits local focus and displays blanks separately
   assert.deepEqual(await graph.locator('tr').filter({hasText:'Blank amount'}).locator('td').allTextContents(),
     ['Blank amount','average','Not set','1 (0 numeric values)']);
   assert.deepEqual(await graph.locator('tr').filter({hasText:'Alpha'}).locator('td').allTextContents(),
-    ['Alpha','average','$0.00','1']);
+    ['Alpha','average','$0.00','1 (1 numeric value)']);
 });
 
 test('objective 11 UI: comparison uses two columns on large screens, one on mobile, with real stage doughnuts',async t=>{
