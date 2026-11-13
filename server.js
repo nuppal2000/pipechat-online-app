@@ -1094,6 +1094,7 @@ async function planPipeChatActionCore(payload, selectedRoute, startedAt) {
           if(!independentRatios||typeof independentRatios.completeIntent!=='boolean'||
             typeof independentRatios.otherRequestedWork!=='boolean'||typeof independentRatios.ambiguity!=='boolean'||
             !Array.isArray(independentRatios.ratios))throw new Error('The independent percentage intent could not be verified.');
+          independentRatios=ratioIntent.normalizeIntent(independentRatios);
           if(independentRatios?.completeIntent===true)result.crmAction=ratioIntent.prepare(independentRatios,pipeline).action;
         }
       }
